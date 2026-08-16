@@ -1,4 +1,7 @@
-# Production deploy — existing Hostinger VPS + isolated Docker
+# Production deploy — existing Hostinger VPS + isolated Docker + GitHub
+
+## Repo
+https://github.com/sheddysmithlab-dot/webhook
 
 ## Target
 - Domain: `webhook.infradealer.com`
@@ -7,23 +10,36 @@
 - WhatsApp recipient: `8224000826`
 - **Does not** bind host 80/443 and **does not** modify other `/docker/*` apps
 
-## Hostinger steps
+## First-time Hostinger steps
 1. DNS A record: `webhook` → existing VPS IP (`200.97.171.119`)
-2. From Windows (SSH config host `hostinger-vps` ok):
+2. On VPS:
+
+```bash
+git clone https://github.com/sheddysmithlab-dot/webhook.git /docker/webhook-infradealer
+cd /docker/webhook-infradealer
+cp .env.production.example .env   # fill Meta + Postgres secrets
+chmod +x deploy/deploy.sh
+./deploy/deploy.sh
+```
+
+## Update from GitHub
+```bash
+cd /docker/webhook-infradealer
+git pull origin main
+./deploy/deploy.sh
+```
+
+Or from Windows (packaging fallback):
 
 ```powershell
 .\deploy\upload-and-deploy.ps1 -VpsIp hostinger-vps
 ```
 
-Or manually upload into `/docker/webhook-infradealer` and run `./deploy/deploy.sh`.
-
 ## After DNS is live
 Update Meta webhook callback to:
 `https://webhook.infradealer.com/webhook/whatsapp`
 
-Verify token: same as `META_VERIFY_TOKEN` in `.env.production`
-
-Register / connect WhatsApp business number ending in `8224000826` in Meta → Step 2 Production setup.
+Verify token: same as `META_VERIFY_TOKEN` in `.env`
 
 ## Useful
 ```bash

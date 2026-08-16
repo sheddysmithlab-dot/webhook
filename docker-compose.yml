@@ -27,7 +27,7 @@ services:
     container_name: webhook-infradealer-api
     restart: unless-stopped
     env_file:
-      - .env.production
+      - .env
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-infradealer}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-infradealer}
     depends_on:
