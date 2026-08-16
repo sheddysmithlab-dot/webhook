@@ -1,0 +1,22 @@
+{$DOMAIN:443} {
+	encode gzip
+
+	# WhatsApp webhook + API → FastAPI
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+	handle /webhook/* {
+		reverse_proxy api:8000
+	}
+	handle /docs* {
+		reverse_proxy api:8000
+	}
+	handle /openapi.json {
+		reverse_proxy api:8000
+	}
+
+	# Frontend SPA
+	handle {
+		reverse_proxy web:80
+	}
+}
