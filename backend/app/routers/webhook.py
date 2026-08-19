@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import BlockedNumber, Broadcast, BroadcastRecipient, Chat, Message
 from ..parser import parse_message
+from ..infradealer import push_listing as infra_push_listing
 from ..services import (
     get_or_create_settings,
     next_ref,
@@ -328,3 +329,70 @@ def manual_inbound(body: InboundIn, db: Session = Depends(get_db)):
     msg = ingest_inbound(db, body.from_mobile, body.text.strip(), name=body.name)
     db.commit()
     return {"ok": True, "ref": msg.ref, "id": msg.id}
+
+
+# ── InfraDealer moderation callback ──────────────────────────────────────────
+# InfraDealer backend calls this URL when an admin approves or rejects a listing.
+# URL: POST /api/v1/integrations/infradealer/callback
+# (This must match the callback_url stored in webhook_integrations on InfraDealer)
+
+class InfraDealerCallbackIn(BaseModel):
+    event: str = ""          # listing.approved | listing.rejected
+    code: str = ""           # LISTING_APPROVED | LISTING_REJECTED | LISTING_ALREADY_EXISTS
+    message: str = ""        # Human-readable message to forward to user
+    reply_to_user: str = ""  # Preferred field — same as message, for WhatsApp reply
+    phone: str | None = None
+    listing: dict = {}
+
+
+@router.post("/api/v1/integrations/infradealer/callback")
+async def infradealer_callback(request: Request, db: Session = Depends(get_db)):
+    """
+    InfraDealer backend se aata hai jab admin kisi listing ko approve ya reject karta hai.
+    Yahan hum user ko WhatsApp par reply bhejte hain.
+    """
+    raw = await request.body()
+    try:
+        payload: dict = json.loads(raw.decode() or "{}")
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Invalid JSON")
+
+    event = payload.get("event") or payload.get("code") or ""
+    phone = (payload.get("phone") or
+             (payload.get("listing") or {}).get("seller_contact") or "")
+    phone = normalize_mobile(str(phone))
+    reply_text = (payload.get("reply_to_user") or
+                  payload.get("message") or "").strip()
+
+    import logging
+    log = logging.getLogger("infradealer.callback")
+    log.info("InfraDealer callback received: event=%s phone=%s", event, phone)
+
+    if not reply_text:
+        return {"ok": True, "note": "no_reply_text"}
+
+    if valid_mobile(phone):
+        meta = get_or_create_settings(db)
+        try:
+            result = send_whatsapp_text(meta, phone, reply_text)
+            store_chat(
+                db,
+                wamid=result.get("wamid") or f"infra.cb.{phone}.{int(utcnow().timestamp())}",
+                conversation_id=f"CONV_{phone}",
+                from_mobile=meta.phone_number_id or "infradealer",
+                from_name="InfraDealer",
+                to_mobile=phone,
+                direction="outbound",
+                body=reply_text,
+                status="sent",
+                unread=False,
+            )
+            db.commit()
+            log.info("WhatsApp reply sent to %s for event=%s", phone, event)
+            return {"ok": True, "sent": True, "phone": phone, "event": event}
+        except RuntimeError as exc:
+            log.error("WhatsApp reply failed for %s: %s", phone, exc)
+            return {"ok": False, "error": str(exc), "phone": phone}
+    else:
+        log.warning("InfraDealer callback: invalid/missing phone '%s', reply not sent.", phone)
+        return {"ok": True, "sent": False, "note": "invalid_phone", "event": event}

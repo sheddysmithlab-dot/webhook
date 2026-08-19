@@ -18,5 +18,12 @@ class Settings(BaseSettings):
     meta_verify_token: str = ""
     meta_test_recipient: str = ""
 
+    # ── InfraDealer backend connection ─────────────────────────────────────
+    # When set, every approved WhatsApp listing is pushed to InfraDealer for
+    # admin review via the authenticated webhook API.
+    infradealer_api_url: str = ""       # e.g. https://api.infradealer.com
+    infradealer_api_key: str = ""       # X-InfraDealer-Key  (idk_…)
+    infradealer_api_secret: str = ""    # HMAC signing secret (ids_…)
+
 
 settings = Settings()

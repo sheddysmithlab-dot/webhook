@@ -8,6 +8,7 @@ from ..models import BlockedNumber, Message, Otp, Product, Submission, User
 from ..parser import CATEGORIES, CONDITIONS
 from datetime import timedelta
 
+from ..infradealer import push_listing as infra_push_listing
 from ..services import (
     create_otp,
     deliver_otp,
@@ -92,6 +93,24 @@ def publish_card(db: Session, sub: Submission, user: User | None, mode: str) -> 
     sub.status = "published"
     sub.account_mode = mode
     db.flush()
+
+    # ── Push to InfraDealer for admin review (fire-and-forget, non-blocking) ──
+    try:
+        infra_push_listing(
+            phone=sub.mobile,
+            name=sub.name,
+            title=sub.title,
+            category=sub.category,
+            price=float(sub.price),
+            condition=sub.condition or "",
+            city=sub.city,
+            description=sub.description or "",
+            ref=sub.ref,
+        )
+    except Exception as exc:  # noqa: BLE001
+        import logging
+        logging.getLogger("infradealer.bridge").error("push_listing exception: %s", exc)
+
     return prod
 
 
