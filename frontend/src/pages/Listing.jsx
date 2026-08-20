@@ -11,6 +11,39 @@ function pinSvg() {
   );
 }
 
+function fmtPrice(n) {
+  const x = Number(n);
+  if (!x || x <= 0 || (x >= 1900 && x <= 2035)) return "Rate puchhein";
+  return `₹${x.toLocaleString("en-IN")}`;
+}
+
+function Photos({ photos, category }) {
+  const [i, setI] = useState(0);
+  const list = photos || [];
+  if (!list.length) {
+    return <div className="ph-block">{(category || "?").charAt(0).toUpperCase()}<span>{category} · Photo</span></div>;
+  }
+  const cur = list[Math.min(i, list.length - 1)];
+  return (
+    <>
+      <img className="listing-photo" src={cur.url} alt="" />
+      {list.length > 1 && (
+        <div className="photo-dots">
+          {list.map((_, n) => (
+            <button
+              key={n}
+              type="button"
+              className={n === i ? "on" : ""}
+              aria-label={`Photo ${n + 1}`}
+              onClick={(e) => { e.stopPropagation(); setI(n); }}
+            />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 function ProductModal({ product, onClose }) {
   useEffect(() => {
     document.body.classList.add("modal-open");
@@ -39,8 +72,8 @@ function ProductModal({ product, onClose }) {
         <button className="modal-close" aria-label="Close" onClick={onClose}>×</button>
         <div className="gallery">
           <span className="cat-badge lg">{product.category}</span>
-          <div className="ph-block">{(product.category || "?").charAt(0).toUpperCase()}<span>{product.category} · Photo</span></div>
-          <span className="gcount">1/1</span>
+          <Photos photos={product.photos} category={product.category} />
+          <span className="gcount">{Math.max((product.photos || []).length, 1)}/{Math.max((product.photos || []).length, 1)}</span>
         </div>
         <div className="modal-body">
           <div className="m-title">{product.title}</div>
@@ -53,7 +86,7 @@ function ProductModal({ product, onClose }) {
           </div>
           <div className="pricebox">
             <div className="pb-label">Asking Price</div>
-            <div className="pb-price mono">₹{product.price}</div>
+            <div className="pb-price mono">{fmtPrice(product.price)}</div>
             <div className="pb-meta">Last updated: {fmtTime(product.updated_at || product.created_at)}</div>
           </div>
           <div className="pipe">Key Details</div>
@@ -159,14 +192,14 @@ export default function Listing() {
               <div className="card-media">
                 <span className="cat-badge">{p.category}</span>
                 <button className={`icon-btn${fav ? " fav-active" : ""}`} aria-pressed={fav} aria-label={fav ? "Unfavorite" : "Favorite"} onClick={(e) => toggleFav(p.id, e)}>{fav ? "♥" : "♡"}</button>
-                <div className="ph-block">{(p.category || "?").charAt(0).toUpperCase()}<span>{p.category} · Photo</span></div>
+                <Photos photos={p.photos} category={p.category} />
               </div>
               <div className="body">
                 <div className="card-title">{p.title}</div>
                 <div className="card-sub">{p.category} · {p.condition}</div>
                 <div className="card-loc">{pinSvg()} {p.city}</div>
-                <div className="price mono">₹{p.price}</div>
-                <div className="seller"><span className="nm">{p.seller_name}</span> · <span className="ph">+91 {p.mobile}</span></div>
+                <div className="price mono">{fmtPrice(p.price)}</div>
+                <div className="seller"><span className="nm">{p.seller_name}</span> · <span className="ph">{p.mobile ? `+91 ${p.mobile}` : ""}</span></div>
               </div>
             </article>
           );
