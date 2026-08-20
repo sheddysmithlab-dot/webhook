@@ -31,12 +31,12 @@ log = logging.getLogger("infradealer.ai")
 
 
 def _ai_respond(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str:
-    """Hot path: simple Z.AI chat by default. Old listing engine only if AI_SIMPLE_CHAT=false."""
-    if getattr(settings, "ai_simple_chat", True):
+    """Hot path: fresh listing agent by default; plain chat if AI_SIMPLE_CHAT=true."""
+    if getattr(settings, "ai_simple_chat", False):
         return simple_respond(db, conv, text, media_note)
-    from .engine import respond
+    from .listing_agent import handle_message
 
-    return respond(db, conv, text, media_note)
+    return handle_message(db, conv, text, media_note)
 
 
 def _is_latest_inbound(db: Session, conversation_id: str, wamid: str, mobile: str = "") -> bool:
@@ -232,9 +232,9 @@ def process_inbound(
         # Do not store full message body in logs/events beyond truncate — already capped
         db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="inbound", detail=(text or "")[:200]))
 
-        simple = getattr(settings, "ai_simple_chat", True)
+        simple = getattr(settings, "ai_simple_chat", False)
         if simple:
-            # Do not create drafts / Card photo pipelines in clean chat mode
+            # Do not create drafts / Card photo pipelines in plain chat mode
             media_note = ""
             if media and media.get("kind"):
                 kind = (media.get("kind") or "image").lower()
@@ -253,9 +253,7 @@ def process_inbound(
         t_ai0 = time.perf_counter()
         try:
             reply = _ai_respond(db, conv, text, media_note)
-            path = "simple_zai" if simple else (
-                "llm" if (reply and len(reply) > 40 and "CARD-" not in (text or "")) else "router"
-            )
+            path = "simple_zai" if simple else "listing_agent"
             if not simple:
                 pl = _payload(conv)
                 if pl.get("active_card_id"):
@@ -264,7 +262,7 @@ def process_inbound(
             log.exception("ai respond failed mobile=***%s", mobile[-4:] if mobile else "")
             db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="error", detail=str(exc)[:300]))
             reply = (
-                "Ji, abhi thodi technical dikkat aa rahi hai. "
+                "Ji Sir, thodi technical dikkat hai. "
                 "Kripya ek pal baad phir se message bhej dijiye."
             )
             path = "error"

@@ -1,18 +1,16 @@
 # InfraDealer WhatsApp AI — Model Training Criteria
 
-> **ACTIVE (2026-08-20 reset):** Hot path is **clean Z.AI normal chat only**  
-> (`AI_SIMPLE_CHAT=true` → `backend/app/ai/simple_chat.py`).  
-> Listing / Card / OTP / account AI workflows below are **DISABLED** until re-enabled in controlled phases.  
-> Do **not** merge this legacy listing criteria into the live simple-chat path.
-
-**Legacy reference** (for future modules). Runtime clean prompt: `SIMPLE_SYSTEM_PROMPT` in `backend/app/ai/prompt.py`.
+> **ACTIVE:** Fresh **listing agent** on Z.AI (`listing_agent.py` + `agent_criteria.py`).  
+> Default: `AI_SIMPLE_CHAT=false`. Plain chat: set `AI_SIMPLE_CHAT=true`.  
+> Legacy `engine.respond` is **not** used on the hot path.
 
 | Item | Value |
 |------|--------|
 | Provider | **Z.AI only** (`https://api.z.ai/api/paas/v4`) |
-| Model | **glm-4.5-flash** (GLM family) |
-| Live mode | **Normal WhatsApp chat** (no auto listing/card/OTP) |
-| OpenAI | **Not allowed** — no OpenAI fallback |
+| Model | **glm-4.5-flash** |
+| Live mode | Listing executive (cards / photos / confirm / account) |
+| Orchestration | `backend/app/ai/listing_agent.py` (fresh) |
+| OpenAI | **Not allowed** |
 
 ---
 
