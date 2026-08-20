@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -13,6 +13,9 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(120))
     mobile: Mapped[str] = mapped_column(String(10), unique=True, index=True)
     source: Mapped[str] = mapped_column(String(40), default="form")
+    role: Mapped[str] = mapped_column(String(20), default="user")
+    password_hash: Mapped[str] = mapped_column(String(128), default="")
+    account_ready: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -34,6 +37,7 @@ class Product(Base):
     spam_flags: Mapped[int] = mapped_column(Integer, default=0)
     views: Mapped[int] = mapped_column(Integer, default=0)
     description: Mapped[str] = mapped_column(Text, default="")
+    photo_ids: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -101,6 +105,20 @@ class BlockedNumber(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class Contact(Base):
+    __tablename__ = "contacts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mobile: Mapped[str] = mapped_column(String(10), unique=True, index=True)
+    wa_id: Mapped[str] = mapped_column(String(20), default="")
+    name: Mapped[str] = mapped_column(String(120), default="")
+    city: Mapped[str] = mapped_column(String(80), default="")
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class Chat(Base):
     __tablename__ = "chats"
 
@@ -117,7 +135,8 @@ class Chat(Base):
     sent_to_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_test: Mapped[bool] = mapped_column(Boolean, default=False)
     broadcast_id: Mapped[int | None] = mapped_column(ForeignKey("broadcasts.id"), nullable=True)
-    timestamp_ms: Mapped[int] = mapped_column(Integer, default=0)
+    timestamp_ms: Mapped[int] = mapped_column(BigInteger, default=0)
+    media_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -153,7 +172,7 @@ class MetaSettings(Base):
     app_id: Mapped[str] = mapped_column(String(80), default="")
     waba_id: Mapped[str] = mapped_column(String(80), default="")
     phone_number_id: Mapped[str] = mapped_column(String(80), default="")
-    system_user_token: Mapped[str] = mapped_column(String(400), default="")
+    system_user_token: Mapped[str] = mapped_column(String(512), default="")
     graph_version: Mapped[str] = mapped_column(String(20), default="v23.0")
     test_recipient: Mapped[str] = mapped_column(String(10), default="")
     field_messages: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -163,4 +182,186 @@ class MetaSettings(Base):
     last_delivery: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error_log: Mapped[str] = mapped_column(Text, default="[]")
     seq: Mapped[int] = mapped_column(Integer, default=1000)
+    ai_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    ai_api_key: Mapped[str] = mapped_column(String(1024), default="")
+    ai_api_base: Mapped[str] = mapped_column(String(300), default="https://api.openai.com/v1")
+    ai_model: Mapped[str] = mapped_column(String(80), default="gpt-4o-mini")
+    ai_reply_language: Mapped[str] = mapped_column(String(16), default="auto")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AiConversation(Base):
+    __tablename__ = "ai_conversations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mobile: Mapped[str] = mapped_column(String(10), unique=True, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(80), index=True)
+    state: Mapped[str] = mapped_column(String(32), default="NEW_CHAT", index=True)
+    intent: Mapped[str] = mapped_column(String(12), default="")
+    profile_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    profile_status: Mapped[str] = mapped_column(String(24), default="none")
+    customer_name: Mapped[str] = mapped_column(String(120), default="")
+    draft_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    last_wamid: Mapped[str] = mapped_column(String(128), default="")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    language: Mapped[str] = mapped_column(String(16), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AiListingDraft(Base):
+    __tablename__ = "ai_listing_drafts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("ai_conversations.id"), index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    mobile: Mapped[str] = mapped_column(String(10), index=True)
+    intent: Mapped[str] = mapped_column(String(12), default="")
+    status: Mapped[str] = mapped_column(String(32), default="PENDING_REVIEW", index=True)
+    customer_json: Mapped[str] = mapped_column(Text, default="{}")
+    inferred_json: Mapped[str] = mapped_column(Text, default="{}")
+    confirmed_json: Mapped[str] = mapped_column(Text, default="{}")
+    title: Mapped[str] = mapped_column(String(200), default="")
+    posted_product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AiMedia(Base):
+    __tablename__ = "ai_media"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("ai_conversations.id"), index=True)
+    draft_id: Mapped[int | None] = mapped_column(ForeignKey("ai_listing_drafts.id"), nullable=True)
+    wamid: Mapped[str] = mapped_column(String(128), default="", index=True)
+    meta_media_id: Mapped[str] = mapped_column(String(128), default="")
+    kind: Mapped[str] = mapped_column(String(20), default="image")
+    mime: Mapped[str] = mapped_column(String(80), default="")
+    caption: Mapped[str] = mapped_column(Text, default="")
+    local_path: Mapped[str] = mapped_column(String(400), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AiEvent(Base):
+    __tablename__ = "ai_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    wamid: Mapped[str] = mapped_column(String(128), default="", index=True)
+    mobile: Mapped[str] = mapped_column(String(10), index=True)
+    event_type: Mapped[str] = mapped_column(String(32), index=True)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AiAgentMemory(Base):
+    __tablename__ = "ai_agent_memory"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(24), default="slang", index=True)
+    cue: Mapped[str] = mapped_column(String(120), default="", index=True)
+    meaning: Mapped[str] = mapped_column(String(300), default="")
+    fields_json: Mapped[str] = mapped_column(Text, default="{}")
+    source: Mapped[str] = mapped_column(String(24), default="rule")
+    hits: Mapped[int] = mapped_column(Integer, default=1)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class InfraDealerIntegration(Base):
+    __tablename__ = "infradealer_integration"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    base_url: Mapped[str] = mapped_column(String(300), default="")
+    api_key_enc: Mapped[str] = mapped_column(String(512), default="")
+    api_secret_enc: Mapped[str] = mapped_column(String(512), default="")
+    integration_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    callback_url: Mapped[str] = mapped_column(String(300), default="")
+    api_version: Mapped[str] = mapped_column(String(10), default="v1")
+    mode: Mapped[str] = mapped_column(String(10), default="LIVE")
+    connected: Mapped[bool] = mapped_column(Boolean, default=False)
+    connection_status: Mapped[str] = mapped_column(String(20), default="DISCONNECTED")
+    event_flags_json: Mapped[str] = mapped_column(Text, default="{}")
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error_code: Mapped[str] = mapped_column(String(80), default="")
+    avg_latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class InfraDealerOutbox(Base):
+    __tablename__ = "infradealer_outbox"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(40), index=True)
+    request_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="PENDING", index=True)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    parent_request_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    conversation_id: Mapped[int | None] = mapped_column(ForeignKey("ai_conversations.id"), nullable=True, index=True)
+    draft_id: Mapped[int | None] = mapped_column(ForeignKey("ai_listing_drafts.id"), nullable=True, index=True)
+    mobile: Mapped[str] = mapped_column(String(20), default="", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(String(300), default="")
+    business_status: Mapped[str] = mapped_column(String(40), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class InfraDealerRequest(Base):
+    __tablename__ = "infradealer_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(64), index=True)
+    event_type: Mapped[str] = mapped_column(String(40), index=True)
+    mobile: Mapped[str] = mapped_column(String(20), default="", index=True)
+    user_id: Mapped[str] = mapped_column(String(64), default="")
+    http_status: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(24), default="PENDING", index=True)
+    response_class: Mapped[str] = mapped_column(String(24), default="")
+    business_code: Mapped[str] = mapped_column(String(80), default="")
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    safe_headers_json: Mapped[str] = mapped_column(Text, default="{}")
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    response_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_message: Mapped[str] = mapped_column(String(300), default="")
+    conversation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    draft_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    outbox_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    parent_request_id: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class InfraDealerCallback(Base):
+    __tablename__ = "infradealer_callbacks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    callback_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    event_type: Mapped[str] = mapped_column(String(40), index=True)
+    request_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(24), default="RECEIVED")
+    processed: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class InfraDealerAccountState(Base):
+    __tablename__ = "infradealer_account_states"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mobile: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    conversation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    profile_status: Mapped[str] = mapped_column(String(24), default="UNKNOWN")
+    account_status: Mapped[str] = mapped_column(String(24), default="NOT_REQUESTED")
+    infradealer_user_id: Mapped[str] = mapped_column(String(64), default="")
+    registration_id: Mapped[str] = mapped_column(String(64), default="")
+    pending_draft_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    parent_request_id: Mapped[str] = mapped_column(String(64), default="")
+    last_request_id: Mapped[str] = mapped_column(String(64), default="")
+    meta_json: Mapped[str] = mapped_column(Text, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

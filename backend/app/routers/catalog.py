@@ -1,10 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from pathlib import Path
 
 from ..config import settings
 from ..database import get_db
-from ..models import BlockedNumber, Message, Otp, Product, Submission, User
+from ..identity import photo_payload
+from ..models import AiMedia, BlockedNumber, Message, Otp, Product, Submission, User
 from ..parser import CATEGORIES, CONDITIONS
 from datetime import timedelta
 
@@ -60,6 +63,7 @@ def product_out(p: Product) -> dict:
         "spam_flags": p.spam_flags,
         "views": p.views,
         "description": p.description,
+        "photos": photo_payload(p),
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
     }
@@ -164,6 +168,26 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(p)
     return product_out(p)
+
+
+@router.get("/products/{product_id}/photos/{media_id}")
+def product_photo(product_id: int, media_id: int, db: Session = Depends(get_db)):
+    p = db.query(Product).filter(Product.id == product_id, Product.status == "published").first()
+    if not p:
+        raise HTTPException(404, "Product nahi mila")
+    allowed = {item["id"] for item in photo_payload(p)}
+    if media_id not in allowed:
+        raise HTTPException(404, "Photo nahi mili")
+    row = db.query(AiMedia).filter(AiMedia.id == media_id).first()
+    if not row or not row.local_path:
+        raise HTTPException(404, "Photo nahi mili")
+    path = Path(row.local_path).resolve()
+    root = Path(settings.ai_media_dir).resolve()
+    if root != path and root not in path.parents:
+        raise HTTPException(404, "Photo path invalid")
+    if not path.is_file():
+        raise HTTPException(404, "Photo file missing")
+    return FileResponse(path, media_type=row.mime or "image/jpeg")
 
 
 @router.get("/messages/by-ref/{ref}")

@@ -1,28 +1,46 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from pathlib import Path
+import json
 
+from ..ai.runner import conversation_public
+from ..ai.schema import loads
+from ..auth import current_user
+from ..config import settings
 from ..database import get_db
+from ..contacts import list_contacts, sync_contacts_from_chats
 from ..models import (
+    AiConversation,
+    AiEvent,
+    AiListingDraft,
+    AiMedia,
     BlockedNumber,
     Broadcast,
     BroadcastRecipient,
     Chat,
+    Contact,
     Message,
     Otp,
     Product,
     Submission,
     User,
 )
-from ..services import get_or_create_settings, normalize_mobile, settings_public, valid_mobile
+from ..services import get_or_create_settings, next_ref, normalize_ai_api_base, normalize_ai_model, normalize_mobile, resolve_ai_config, settings_public, valid_mobile
+from ..ai.i18n import normalize_policy
+from ..identity import listing_category, parse_listing_price, seller_fields, unique_photo_ids
 
 router = APIRouter(prefix="/api/admin")
 
 
-def require_admin(x_admin_token: str | None = Header(default=None)):
-    from ..config import settings
-    if settings.admin_token and x_admin_token != settings.admin_token:
-        raise HTTPException(401, "Admin token galat hai.")
+def require_admin(request: Request):
+    if not current_user(request):
+        raise HTTPException(401, "Login required")
+
+
+def _contacts_rows(db: Session) -> list[dict]:
+    return list_contacts(db)
 
 
 @router.get("/stats")
@@ -30,12 +48,15 @@ def stats(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     return {
         "messages": db.query(Message).count(),
         "chats": db.query(Chat).count(),
+        "contacts": db.query(Contact).count(),
         "submissions": db.query(Submission).filter(Submission.status != "deleted").count(),
         "otps": db.query(Otp).count(),
         "products": db.query(Product).filter(Product.status != "deleted").count(),
         "users": db.query(User).count(),
         "blocked": db.query(BlockedNumber).count(),
         "broadcasts": db.query(Broadcast).count(),
+        "ai_drafts": db.query(AiListingDraft).filter(AiListingDraft.status.in_(["CONFIRMED", "READY_FOR_REVIEW", "POSTED", "NEEDS_INFO", "REJECTED"])).count(),
+        "ai_pending": db.query(AiListingDraft).filter(AiListingDraft.status.in_(["CONFIRMED", "READY_FOR_REVIEW"])).count(),
     }
 
 
@@ -150,11 +171,26 @@ def users(db: Session = Depends(get_db), _: None = Depends(require_admin)):
             "id": u.id,
             "name": u.name,
             "mobile": u.mobile,
+            "role": (u.role or "user"),
             "source": u.source,
             "created_at": u.created_at.isoformat() if u.created_at else None,
             "cards": cards,
         })
     return out
+
+
+@router.get("/contacts")
+def contacts(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    sync_contacts_from_chats(db)
+    db.commit()
+    return list_contacts(db)
+
+
+@router.post("/contacts/sync")
+def contacts_sync(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    count = sync_contacts_from_chats(db)
+    db.commit()
+    return {"ok": True, "synced": count, "total": db.query(Contact).count()}
 
 
 @router.get("/blocked")
@@ -270,6 +306,58 @@ def save_settings(body: SettingsIn, db: Session = Depends(get_db), _: None = Dep
     return settings_public(row)
 
 
+class AiSettingsIn(BaseModel):
+    ai_enabled: bool = True
+    ai_api_key: str = ""
+    ai_api_base: str = "https://api.openai.com/v1"
+    ai_model: str = "gpt-4o-mini"
+    ai_reply_language: str = "auto"
+
+
+@router.put("/settings/ai")
+def save_ai_settings(body: AiSettingsIn, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    row = get_or_create_settings(db)
+    row.ai_enabled = bool(body.ai_enabled)
+    row.ai_api_base = normalize_ai_api_base(body.ai_api_base or "https://api.openai.com/v1")
+    row.ai_model = normalize_ai_model(body.ai_model or "gpt-4o-mini", row.ai_api_base)[:80]
+    row.ai_reply_language = normalize_policy(body.ai_reply_language)
+    incoming = (body.ai_api_key or "").strip()
+    if incoming:
+        row.ai_api_key = incoming[:1024]
+    db.commit()
+    db.refresh(row)
+    return settings_public(row)
+
+
+@router.post("/settings/ai/test")
+def test_ai_settings(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    cfg = resolve_ai_config(db)
+    if not cfg["enabled"]:
+        raise HTTPException(400, "AI setup off hai. Pehle enable karke save karo.")
+    if not cfg["api_key"]:
+        raise HTTPException(400, "API key save nahi hai.")
+    import httpx
+    url = cfg["api_base"] + "/chat/completions"
+    try:
+        with httpx.Client(timeout=20) as client:
+            resp = client.post(
+                url,
+                headers={"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"},
+                json={
+                    "model": cfg["model"],
+                    "messages": [{"role": "user", "content": "Reply with OK"}],
+                    "max_tokens": 8,
+                },
+            )
+    except Exception as exc:
+        raise HTTPException(400, f"AI API connect nahi hua: {exc}") from exc
+    if resp.status_code >= 400:
+        data = resp.json() if resp.content else {}
+        err = (data.get("error") or {}).get("message") if isinstance(data, dict) else resp.text
+        raise HTTPException(400, err or f"AI API HTTP {resp.status_code}")
+    return {"ok": True, "model": cfg["model"], "base": cfg["api_base"]}
+
+
 @router.post("/settings/regenerate-token")
 def regen(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     from ..services import gen_verify_token
@@ -318,14 +406,198 @@ def export_csv(kind: str, db: Session = Depends(get_db), _: None = Depends(requi
             for p in db.query(Product).all()
         ]
     elif kind == "users":
-        rows = [["User", "Mobile", "Source"]] + [[u.name, u.mobile, u.source] for u in db.query(User).all()]
+        rows = [["User", "Mobile", "Category", "Source"]] + [[u.name, u.mobile, getattr(u, "role", None) or "user", u.source] for u in db.query(User).all()]
+    elif kind == "contacts":
+        crows = _contacts_rows(db)
+        rows = [["Name", "Mobile", "City", "Messages", "Last Message"]] + [
+            [c["name"], c["mobile"], c["city"], c.get("messages", 0), c["last_at"]] for c in crows
+        ]
     elif kind == "blocked":
         rows = [["Number"]] + [[b.mobile] for b in db.query(BlockedNumber).all()]
     elif kind == "bc":
         rows = [["Time", "Message", "Delivered", "Total"]] + [
             [b.created_at, b.message, b.delivered, b.total] for b in db.query(Broadcast).all()
         ]
+    elif kind == "ai":
+        rows = [["Time", "Mobile", "Intent", "Title", "Status"]] + [
+            [d.created_at, d.mobile, d.intent, d.title, d.status]
+            for d in db.query(AiListingDraft).all()
+        ]
     else:
         raise HTTPException(400, "Unknown export")
     csv = "\n".join(",".join(guard(c) for c in r) for r in rows)
     return PlainTextResponse("\ufeff" + csv, media_type="text/csv")
+
+
+def _draft_bundle(db: Session, draft: AiListingDraft) -> dict:
+    conv = db.query(AiConversation).filter(AiConversation.id == draft.conversation_id).first()
+    media = db.query(AiMedia).filter(AiMedia.draft_id == draft.id).order_by(AiMedia.id.asc()).all()
+    if conv:
+        return conversation_public(conv, media, draft)
+    return {"draft_id": draft.id, "status": draft.status}
+
+
+@router.get("/ai/drafts")
+def ai_drafts(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    rows = (
+        db.query(AiListingDraft)
+        .filter(AiListingDraft.status.in_(["CONFIRMED", "READY_FOR_REVIEW", "POSTED", "NEEDS_INFO", "REJECTED"]))
+        .order_by(AiListingDraft.id.desc())
+        .all()
+    )
+    convs = {c.id: c for c in db.query(AiConversation).all()}
+    out = []
+    for d in rows:
+        try:
+            confirmed = json.loads(d.confirmed_json or "{}")
+        except json.JSONDecodeError:
+            confirmed = {}
+        if not isinstance(confirmed, dict):
+            confirmed = {}
+        out.append({
+            "id": d.id,
+            "mobile": (confirmed.get("phone") or d.mobile),
+            "intent": d.intent,
+            "title": (confirmed.get("vehicle") or d.title),
+            "status": d.status,
+            "user_id": d.user_id,
+            "posted_product_id": d.posted_product_id,
+            "state": (convs.get(d.conversation_id).state if convs.get(d.conversation_id) else ""),
+            "name": (confirmed.get("name") or (convs.get(d.conversation_id).customer_name if convs.get(d.conversation_id) else "")),
+            "confirmed": confirmed,
+            "created_at": d.created_at.isoformat() if d.created_at else None,
+            "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+        })
+    return out
+
+
+@router.get("/ai/drafts/{draft_id}")
+def ai_draft(draft_id: int, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    draft = db.query(AiListingDraft).filter(AiListingDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(404, "Draft nahi mili")
+    data = _draft_bundle(db, draft)
+    events = (
+        db.query(AiEvent)
+        .filter(AiEvent.mobile == draft.mobile)
+        .order_by(AiEvent.id.desc())
+        .limit(40)
+        .all()
+    )
+    data["events"] = [
+        {
+            "id": e.id,
+            "type": e.event_type,
+            "detail": e.detail,
+            "wamid": e.wamid,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in events
+    ]
+    return data
+
+
+class AiStatusIn(BaseModel):
+    status: str
+    note: str = ""
+
+
+@router.post("/ai/drafts/{draft_id}/status")
+def ai_draft_status(draft_id: int, body: AiStatusIn, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    draft = db.query(AiListingDraft).filter(AiListingDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(404, "Draft nahi mili")
+    status = (body.status or "").upper()
+    allowed = {"CONFIRMED", "READY_FOR_REVIEW", "NEEDS_INFO", "REJECTED"}
+    if status not in allowed:
+        raise HTTPException(400, "Ye status AI draft ke liye allowed nahi. Live post /post se hota hai.")
+    draft.status = status
+    conv = db.query(AiConversation).filter(AiConversation.id == draft.conversation_id).first()
+    if conv:
+        if status == "REJECTED":
+            conv.state = "COMPLETED"
+        elif status == "NEEDS_INFO":
+            conv.state = "DATA_COLLECTING"
+        elif status == "READY_FOR_REVIEW":
+            conv.state = "READY_FOR_REVIEW"
+    db.add(AiEvent(wamid="", mobile=draft.mobile, event_type="admin_status", detail=status))
+    db.commit()
+    return {"ok": True, "status": draft.status}
+
+
+@router.post("/ai/drafts/{draft_id}/post")
+def ai_draft_post(draft_id: int, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    """Human-only: create a live marketplace Product from reviewed AI data."""
+    draft = db.query(AiListingDraft).filter(AiListingDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(404, "Draft nahi mili")
+    if draft.posted_product_id:
+        raise HTTPException(400, "Ye draft already post ho chuki hai.")
+    conv = db.query(AiConversation).filter(AiConversation.id == draft.conversation_id).first()
+    payload = loads(conv.payload_json) if conv else {}
+    try:
+        snap = json.loads(draft.confirmed_json or "{}")
+    except json.JSONDecodeError:
+        snap = {}
+    if not isinstance(snap, dict) or not snap:
+        snap = payload.get("confirmed_json") if isinstance(payload.get("confirmed_json"), dict) else {}
+    if not snap:
+        raise HTTPException(400, "Customer ne Haan/Yes confirm nahi kiya. Final JSON nahi mili.")
+    customer = json.loads(draft.customer_json or "{}") if draft.customer_json else {}
+    photos = [int(x) for x in (snap.get("photos") or []) if isinstance(x, int) or str(x).isdigit()]
+    if not photos:
+        photos = [
+            m.id
+            for m in db.query(AiMedia)
+            .filter(AiMedia.draft_id == draft.id, AiMedia.kind == "image")
+            .order_by(AiMedia.id.asc())
+            .all()
+            if m.local_path
+        ]
+    title = snap.get("vehicle") or draft.title or payload.get("brand") or "InfraDealer listing"
+    raw_price = str(snap.get("rate") or payload.get("expected_price") or customer.get("rate") or "0")
+    price = parse_listing_price(raw_price)
+    user = db.query(User).filter(User.id == draft.user_id).first() if draft.user_id else None
+    if not user:
+        user = db.query(User).filter(User.mobile == draft.mobile).first()
+    seller_name = (snap.get("name") or "")[:120] or seller_fields(db, conv, draft, payload)[0]
+    seller_mobile = snap.get("phone") or seller_fields(db, conv, draft, payload)[1] or draft.mobile
+    prod = Product(
+        ref=next_ref(db, "AI-"),
+        title=str(title)[:200],
+        category=listing_category(payload, str(snap.get("category") or payload.get("category") or "Other"), str(title)),
+        price=price,
+        condition=str(snap.get("condition") or payload.get("condition") or "Used")[:40],
+        city=str(snap.get("location") or payload.get("location") or "")[:80],
+        seller_name=seller_name[:120],
+        mobile=seller_mobile,
+        user_id=user.id if user else None,
+        consent=True,
+        status="published",
+        description=str(payload.get("description") or "")[:4000],
+        photo_ids=json.dumps([int(x) for x in photos if str(x).isdigit() or isinstance(x, int)]),
+    )
+    db.add(prod)
+    db.flush()
+    draft.status = "POSTED"
+    draft.posted_product_id = prod.id
+    if conv and conv.draft_id == draft.id:
+        conv.state = "COMPLETED"
+    db.add(AiEvent(wamid="", mobile=draft.mobile, event_type="admin_post", detail=str(prod.id)))
+    db.commit()
+    return {"ok": True, "product_id": prod.id, "ref": prod.ref, "status": "POSTED"}
+
+
+@router.get("/ai/media/{media_id}")
+def ai_media(media_id: int, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    row = db.query(AiMedia).filter(AiMedia.id == media_id).first()
+    if not row or not row.local_path:
+        raise HTTPException(404, "Media nahi mili")
+    path = Path(row.local_path).resolve()
+    root = Path(settings.ai_media_dir).resolve()
+    if root != path and root not in path.parents:
+        raise HTTPException(404, "Media path invalid")
+    if not path.is_file():
+        raise HTTPException(404, "Media file missing")
+    return FileResponse(path, media_type=row.mime or "application/octet-stream")
+

@@ -12,6 +12,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt psycopg2-binary==2.9.10 gunicorn==23.0.0
 
 COPY app ./app
+RUN mkdir -p /app/data/media
 
 EXPOSE 8000
 CMD ["gunicorn", "app.main:app", "-k", "uvicorn.workers.UvicornWorker", "-b", "0.0.0.0:8000", "--workers", "2", "--timeout", "120"]

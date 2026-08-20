@@ -9,6 +9,11 @@ CITIES = [
     "rajkot", "bhubaneswar", "goa", "hubli", "mysore", "madurai", "thrissur",
     "ghaziabad", "faridabad", "sonipat", "panipat", "mohali", "zirakpur", "ranchi",
     "raipur", "jodhpur", "udaipur", "guwahati", "jammu", "srinagar", "shimla",
+    "ujjain", "dewas", "khargone", "khandwa", "dhar", "barwani", "mandsaur",
+    "ratlam", "neemuch", "burhanpur", "hoshangabad", "narmadapuram", "itarsi",
+    "betul", "chhindwara", "sagar", "vidisha", "sehore", "harda", "jabalpur",
+    "gwalior", "satna", "rewa", "kota", "ajmer", "bikaner", "hisar", "karnal",
+    "jalandhar", "bathinda", "patiala", "sirsa", "alwar", "bhiwadi", "unnao",
 ]
 
 CAT_MAP = [

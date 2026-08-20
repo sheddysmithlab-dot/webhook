@@ -1,17 +1,28 @@
 import json
+import logging
+from datetime import datetime
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ..database import get_db
-from ..models import BlockedNumber, Broadcast, BroadcastRecipient, Chat, Message
+from ..ai.runner import parse_meta_message, process_inbound
+from ..config import settings
+from ..database import SessionLocal, get_db
+from ..contacts import upsert_chat_contact
+from ..models import AiMedia, BlockedNumber, Broadcast, BroadcastRecipient, Chat, Message
 from ..parser import parse_message
 from ..infradealer import push_listing as infra_push_listing
 from ..services import (
     get_or_create_settings,
+    meta_ts_ms,
     next_ref,
     normalize_mobile,
+    resolve_ai_config,
+    send_whatsapp_delete,
     send_whatsapp_text,
     store_chat,
     utcnow,
@@ -20,10 +31,15 @@ from ..services import (
 )
 
 router = APIRouter()
+log = logging.getLogger("infradealer")
 
 
 def ingest_inbound(db, from_mobile: str, body: str, wamid: str = "", name: str = "", to_mobile: str = "", ts_ms: int = 0):
     from_mobile = normalize_mobile(from_mobile)
+    wamid = wamid or ""
+    existing_msg = db.query(Message).filter(Message.wamid == wamid).first() if wamid else None
+    if existing_msg:
+        return existing_msg, False
     blocked = db.query(BlockedNumber).filter(BlockedNumber.mobile == from_mobile).first() is not None
     parsed = parse_message(body)
     ref = None if blocked else next_ref(db, "ID-")
@@ -63,7 +79,27 @@ def ingest_inbound(db, from_mobile: str, body: str, wamid: str = "", name: str =
             unread=True,
             timestamp_ms=ts_ms or int(utcnow().timestamp() * 1000),
         )
-    return msg
+        upsert_chat_contact(
+            db,
+            from_mobile,
+            name=name,
+            city=(parsed.get("city") or "").strip(),
+            wa_id=from_mobile,
+            at=datetime.fromtimestamp(ts_ms / 1000) if ts_ms else utcnow(),
+        )
+    return msg, True
+
+
+def run_ai_job(mobile: str, text: str, wamid: str, name: str, media: dict | None):
+    db = SessionLocal()
+    try:
+        process_inbound(db, mobile=mobile, text=text, wamid=wamid, name=name, media=media, send=True)
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("ai inbound job failed")
+    finally:
+        db.close()
 
 
 @router.get("/webhook/whatsapp")
@@ -80,7 +116,7 @@ def verify_webhook(
 
 
 @router.post("/webhook/whatsapp")
-async def receive_webhook(request: Request, db: Session = Depends(get_db)):
+async def receive_webhook(request: Request, background: BackgroundTasks, db: Session = Depends(get_db)):
     raw = await request.body()
     meta = get_or_create_settings(db)
     sig = request.headers.get("x-hub-signature-256")
@@ -93,26 +129,46 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
     meta.last_delivery = utcnow()
     entries = payload.get("entry") or []
     stored = 0
+    ai_jobs = []
     for entry in entries:
         for change in entry.get("changes") or []:
             value = change.get("value") or {}
             contacts = {c.get("wa_id"): (c.get("profile") or {}).get("name", "") for c in value.get("contacts") or []}
             phone = (value.get("metadata") or {}).get("display_phone_number") or meta.phone_number_id
             for msg in value.get("messages") or []:
-                body = ((msg.get("text") or {}).get("body")) or ""
-                if not body:
+                parsed_in = parse_meta_message(msg)
+                body = parsed_in["text"]
+                if not body and not parsed_in["media"]:
                     continue
                 frm = msg.get("from") or ""
-                ingest_inbound(
+                is_new = not (msg.get("id") and db.query(Chat).filter(Chat.wamid == msg.get("id"), Chat.direction == "inbound").first())
+                name = contacts.get(frm) or contacts.get(normalize_mobile(frm), "")
+                row, created = ingest_inbound(
                     db,
                     from_mobile=frm,
-                    body=body,
+                    body=body or "[media]",
                     wamid=msg.get("id") or "",
-                    name=contacts.get(frm, ""),
+                    name=name,
                     to_mobile=normalize_mobile(phone),
-                    ts_ms=int(msg.get("timestamp") or 0) * 1000,
+                    ts_ms=meta_ts_ms(msg.get("timestamp")),
                 )
                 stored += 1
+                if created and is_new:
+                    mobile = normalize_mobile(frm)
+                    if resolve_ai_config(db)["enabled"]:
+                        ai_jobs.append({
+                            "mobile": mobile,
+                            "text": body or "[media]",
+                            "wamid": msg.get("id") or "",
+                            "name": name,
+                            "media": parsed_in["media"],
+                        })
+                    else:
+                        try:
+                            ack = f"InfraDealer: message mil gaya ({row.ref or 'saved'})."
+                            send_whatsapp_text(meta, frm, ack)
+                        except Exception as exc:
+                            log.warning("auto-ack failed for %s: %s", frm, exc)
             for st in value.get("statuses") or []:
                 wamid = st.get("id") or ""
                 status = st.get("status") or ""
@@ -121,7 +177,9 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
                     if chat:
                         chat.status = status
     db.commit()
-    return {"ok": True, "stored": stored}
+    for job in ai_jobs:
+        background.add_task(run_ai_job, **job)
+    return {"ok": True, "stored": stored, "ai_queued": len(ai_jobs)}
 
 
 @router.get("/api/chats")
@@ -140,8 +198,21 @@ def list_chats(
     if q:
         needle = q.lower()
         rows = [c for c in rows if needle in f"{c.from_name} {c.from_mobile} {c.body}".lower()]
-    return [
-        {
+    media_ids = {c.media_id for c in rows if c.media_id}
+    wamids = [c.wamid for c in rows if c.wamid and not c.media_id]
+    by_id: dict[int, AiMedia] = {}
+    by_wamid: dict[str, AiMedia] = {}
+    if media_ids:
+        for row in db.query(AiMedia).filter(AiMedia.id.in_(media_ids)).all():
+            by_id[row.id] = row
+    if wamids:
+        for row in db.query(AiMedia).filter(AiMedia.wamid.in_(wamids)).all():
+            if row.wamid and row.wamid not in by_wamid:
+                by_wamid[row.wamid] = row
+    out = []
+    for c in rows:
+        media = by_id.get(c.media_id) if c.media_id else by_wamid.get(c.wamid or "")
+        item = {
             "id": c.id,
             "wamid": c.wamid,
             "conversation_id": c.conversation_id,
@@ -154,9 +225,27 @@ def list_chats(
             "unread": c.unread,
             "is_test": c.is_test,
             "timestamp": c.timestamp_ms,
+            "media_id": media.id if media else None,
+            "media_kind": media.kind if media else "",
+            "media_mime": media.mime if media else "",
+            "media_url": f"/api/chats/media/{media.id}" if media and media.local_path else "",
         }
-        for c in rows
-    ]
+        out.append(item)
+    return out
+
+
+@router.get("/api/chats/media/{media_id}")
+def chat_media(media_id: int, db: Session = Depends(get_db)):
+    row = db.query(AiMedia).filter(AiMedia.id == media_id).first()
+    if not row or not row.local_path:
+        raise HTTPException(404, "Media nahi mili")
+    path = Path(row.local_path).resolve()
+    root = Path(settings.ai_media_dir).resolve()
+    if root != path and root not in path.parents:
+        raise HTTPException(404, "Media path invalid")
+    if not path.is_file():
+        raise HTTPException(404, "Media file missing")
+    return FileResponse(path, media_type=row.mime or "application/octet-stream")
 
 
 @router.post("/api/chats/{chat_id}/read")
@@ -167,6 +256,68 @@ def mark_read(chat_id: int, db: Session = Depends(get_db)):
     c.unread = False
     db.commit()
     return {"ok": True}
+
+
+@router.delete("/api/chats/{chat_id}")
+def delete_chat(chat_id: int, db: Session = Depends(get_db)):
+    chat = db.query(Chat).filter(Chat.id == chat_id).first()
+    if not chat:
+        raise HTTPException(404, "Message nahi mila")
+    linked = []
+    if chat.wamid:
+        linked = db.query(Message).filter(Message.wamid == chat.wamid).all()
+    for row in linked:
+        db.delete(row)
+    db.delete(chat)
+    db.commit()
+    return {"ok": True, "deleted_chat_id": chat_id, "deleted_messages": len(linked)}
+
+
+@router.post("/api/chats/{chat_id}/delete-for-everyone")
+def delete_for_everyone(chat_id: int, db: Session = Depends(get_db)):
+    chat = db.query(Chat).filter(Chat.id == chat_id).first()
+    if not chat:
+        raise HTTPException(404, "Message nahi mila")
+    if chat.direction != "outbound":
+        raise HTTPException(400, "Delete for everyone sirf sent message par chalega.")
+    if not (chat.wamid or "").strip():
+        raise HTTPException(400, "Is message ka WhatsApp ID missing hai.")
+    meta = get_or_create_settings(db)
+    try:
+        result = send_whatsapp_delete(meta, chat.wamid)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    chat.body = "[deleted for everyone]"
+    chat.status = "deleted"
+    db.commit()
+    return {"ok": True, "deleted_chat_id": chat.id, "result": result}
+
+
+@router.delete("/api/chats/thread/{mobile}")
+def clear_thread(mobile: str, db: Session = Depends(get_db)):
+    mobile = normalize_mobile(mobile)
+    if not valid_mobile(mobile):
+        raise HTTPException(400, "Valid number chahiye.")
+    conv_id = f"CONV_{mobile}"
+    chats = db.query(Chat).filter(
+        or_(
+            Chat.conversation_id == conv_id,
+            Chat.from_mobile == mobile,
+            Chat.to_mobile == mobile,
+        )
+    ).all()
+    msgs = db.query(Message).filter(
+        or_(
+            Message.from_mobile == mobile,
+            Message.parsed_mobile == mobile,
+        )
+    ).all()
+    for row in chats:
+        db.delete(row)
+    for row in msgs:
+        db.delete(row)
+    db.commit()
+    return {"ok": True, "deleted_chats": len(chats), "deleted_messages": len(msgs)}
 
 
 @router.post("/api/chats/to-admin")
@@ -200,6 +351,40 @@ def chats_to_admin(db: Session = Depends(get_db)):
         known.add(key)
     db.commit()
     return {"pushed": pushed, "total": len(chats)}
+
+
+class SendChatIn(BaseModel):
+    to: str
+    text: str
+
+
+@router.post("/api/chats/send")
+def send_chat(body: SendChatIn, db: Session = Depends(get_db)):
+    to = normalize_mobile(body.to)
+    text = (body.text or "").strip()
+    if not valid_mobile(to):
+        raise HTTPException(400, "Valid number chahiye.")
+    if not text:
+        raise HTTPException(400, "Message khaali hai.")
+    meta = get_or_create_settings(db)
+    try:
+        result = send_whatsapp_text(meta, to, text)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    store_chat(
+        db,
+        wamid=result["wamid"],
+        conversation_id=f"CONV_{to}",
+        from_mobile=meta.phone_number_id or "infradealer",
+        from_name="InfraDealer",
+        to_mobile=to,
+        direction="outbound",
+        body=text,
+        status="sent",
+        unread=False,
+    )
+    db.commit()
+    return {"ok": True, **result}
 
 
 class TestMessageIn(BaseModel):
@@ -326,8 +511,10 @@ def manual_inbound(body: InboundIn, db: Session = Depends(get_db)):
         raise HTTPException(400, "Valid sender number chahiye.")
     if not (body.text or "").strip():
         raise HTTPException(400, "Message khaali hai.")
-    msg = ingest_inbound(db, body.from_mobile, body.text.strip(), name=body.name)
+    msg, _created = ingest_inbound(db, body.from_mobile, body.text.strip(), name=body.name)
     db.commit()
+    if resolve_ai_config(db)["enabled"]:
+        run_ai_job(normalize_mobile(body.from_mobile), body.text.strip(), msg.wamid, body.name, None)
     return {"ok": True, "ref": msg.ref, "id": msg.id}
 
 
