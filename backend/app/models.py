@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -212,6 +212,7 @@ class AiConversation(Base):
 
 class AiListingDraft(Base):
     __tablename__ = "ai_listing_drafts"
+    __table_args__ = (UniqueConstraint("mobile", "card_id", name="uq_ai_listing_drafts_mobile_card"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     conversation_id: Mapped[int] = mapped_column(ForeignKey("ai_conversations.id"), index=True)

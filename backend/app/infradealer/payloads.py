@@ -253,6 +253,7 @@ def build_listing_payload(
         "media": media,
         "conversation_id": conv.conversation_id,
         "draft_id": draft.id if draft else None,
+        "card_id": getattr(draft, "card_id", None) if draft else None,
     }
     return body
 

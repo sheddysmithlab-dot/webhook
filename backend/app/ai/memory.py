@@ -49,14 +49,21 @@ _PHOTOS_DONE = re.compile(
 )
 
 
+_SEEDED = False
+
+
 def seed_memory(db: Session) -> None:
-    existing = {((r.kind or "") + "|" + (r.cue or "")) for r in db.query(AiAgentMemory).all()}
+    global _SEEDED
+    if _SEEDED:
+        return
+    existing = {((r.kind or "") + "|" + (r.cue or "")) for r in db.query(AiAgentMemory).limit(200).all()}
     for kind, cue, meaning in SEED:
         key = f"{kind}|{cue}"
         if key in existing:
             continue
         db.add(AiAgentMemory(kind=kind, cue=cue, meaning=meaning, source="seed", hits=1))
     db.flush()
+    _SEEDED = True
 
 
 def load_reps(db: Session) -> list[tuple[str, str]]:

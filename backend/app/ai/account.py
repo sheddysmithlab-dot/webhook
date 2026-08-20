@@ -30,6 +30,26 @@ _NEW_CHAT = re.compile(
     r"नई चैट|नया चैट|चैट स्टार्ट",
     re.I,
 )
+_CLEAR_CHAT = re.compile(
+    r"\b("
+    r"delete(\s+all)?(\s+previous)?(\s+conversation|\s+chat|\s+history)?"
+    r"|clear(\s+all)?(\s+previous)?(\s+conversation|\s+chat|\s+history)?"
+    r"|reset(\s+chat|\s+conversation)?"
+    r"|previous\s+(conversation|chat|baat|history)"
+    r"|(purani|pichhli|pehle\s+wali)\s+(baat|chat|conversation|history)"
+    r"|(conversation|chat)\s*(delete|clear|hata|mita)"
+    r"|hata\s*do|mita\s*do|saaf\s*kar(\s*do)?"
+    r"|mat\s+bhejna|ab\s+yah\s+mat"
+    r"|डिलीट|हटा\s*दो|मिटा\s*दो|पुरानी\s*(बात|चैट)"
+    r")\b",
+    re.I,
+)
+_LISTING_HINT = re.compile(
+    r"\b(bech|sell|buy|kharid|chahiye|tata|jcb|eicher|truck|tipper|price|rate|kimat|"
+    r"lakh|model|year|photo|gadi|gaadi|listing|card-\d+)\b|"
+    r"[6-9]\d{9}",
+    re.I,
+)
 
 
 def says_has_account(text: str) -> bool:
@@ -40,9 +60,49 @@ def wants_new_chat(text: str) -> bool:
     return bool(_NEW_CHAT.search(text or ""))
 
 
+def wants_clear_conversation(text: str) -> bool:
+    """User wants AI chat/card memory wiped — not a listing 'haan'."""
+    return bool(_CLEAR_CHAT.search(text or ""))
+
+
 def account_busy(payload: dict) -> bool:
     step = payload.get("account_step") or ""
     return bool(step) and step != "done" and not payload.get("account_onboarded")
+
+
+def should_intercept_account(payload: dict, text: str) -> bool:
+    """Only steal the turn for account when the user is clearly answering account questions.
+
+    Prevents: user asks price/vehicle but bot replies about account / OTP.
+    """
+    if not account_busy(payload):
+        return False
+    step = (payload.get("account_step") or "").strip()
+    msg = (text or "").strip()
+    if not msg:
+        return False
+    # Listing / card work always wins over a stuck account prompt
+    if _LISTING_HINT.search(msg) and step in {"ask_exists", "password", "role"}:
+        return False
+    if step == "ask_exists":
+        return (
+            is_yes(msg)
+            or is_no(msg)
+            or says_has_account(msg)
+            or bool(re.search(r"\b(nahi|nahin|new|create|bana nahi|account)\b", msg, re.I))
+        )
+    if step == "otp":
+        digits = re.sub(r"\D", "", msg)
+        return len(digits) == 6 or says_has_account(msg)
+    if step == "password":
+        if _PASS_SKIP.search(msg):
+            return True
+        if _LISTING_HINT.search(msg):
+            return False
+        return 4 <= len(msg) <= 64 and len(msg.split()) <= 4
+    if step == "role":
+        return extract_role(msg) is not None
+    return False
 
 
 def _website_line(lang: str) -> str:

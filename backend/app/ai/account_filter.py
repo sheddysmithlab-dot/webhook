@@ -22,6 +22,10 @@ class AccountVerdict:
     buy_link: str = ""
     label: str = ""
 
+    @property
+    def eligibility(self) -> str:
+        return "ELIGIBLE" if self.can_post else "NOT_ELIGIBLE"
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -172,6 +176,7 @@ def apply_verdict_to_payload(payload: dict, verdict: AccountVerdict) -> dict:
     payload["account_can_post"] = verdict.can_post
     payload["account_reason"] = verdict.reason
     payload["account_buy_link"] = verdict.buy_link
+    payload["account_eligibility"] = verdict.eligibility
     return payload
 
 

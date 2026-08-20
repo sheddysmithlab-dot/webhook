@@ -31,6 +31,7 @@ def migrate_schema() -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'user'",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(128) DEFAULT ''",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS account_ready BOOLEAN DEFAULT FALSE",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_listing_drafts_mobile_card ON ai_listing_drafts (mobile, card_id)",
     ]
     sqlite = [
         "ALTER TABLE meta_settings ADD COLUMN ai_enabled BOOLEAN DEFAULT 1",
@@ -47,6 +48,7 @@ def migrate_schema() -> None:
         "ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'user'",
         "ALTER TABLE users ADD COLUMN password_hash VARCHAR(128) DEFAULT ''",
         "ALTER TABLE users ADD COLUMN account_ready BOOLEAN DEFAULT 0",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_listing_drafts_mobile_card ON ai_listing_drafts (mobile, card_id)",
     ]
     stmts = sqlite if settings.database_url.startswith("sqlite") else pg
     with engine.begin() as conn:
@@ -55,6 +57,17 @@ def migrate_schema() -> None:
                 conn.execute(text(stmt))
             except Exception:
                 continue
+    # Backfill public Card IDs for older drafts (lazy + startup safety)
+    try:
+        db = SessionLocal()
+        try:
+            from .ai.cards import backfill_missing_card_ids
+
+            backfill_missing_card_ids(db)
+        finally:
+            db.close()
+    except Exception:
+        pass
 
 
 def get_db():

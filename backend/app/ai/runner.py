@@ -1,10 +1,20 @@
 import json
 import logging
+import re
+import time
 
 from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..models import AiConversation, AiEvent, AiMedia, BlockedNumber, Chat
+from ..redis_cache import (
+    get_active_card,
+    is_latest_wamid,
+    mobile_lock,
+    set_active_card,
+    set_latest_wamid,
+    set_processing,
+)
 from ..services import (
     download_whatsapp_media,
     get_or_create_settings,
@@ -18,6 +28,24 @@ from .tools import _draft_for, _payload, _write_payload
 from ..identity import usable_person_name
 
 log = logging.getLogger("infradealer.ai")
+
+
+def _is_latest_inbound(db: Session, conversation_id: str, wamid: str, mobile: str = "") -> bool:
+    """True if this wamid is still the newest inbound (Redis first, then DB)."""
+    if not wamid:
+        return True
+    if mobile and not is_latest_wamid(mobile, wamid):
+        return False
+    newest = (
+        db.query(Chat)
+        .filter(Chat.conversation_id == conversation_id, Chat.direction == "inbound")
+        .order_by(Chat.id.desc())
+        .first()
+    )
+    if not newest or not newest.wamid:
+        return True
+    return newest.wamid == wamid
+
 
 def parse_meta_message(msg: dict) -> dict:
     typ = msg.get("type") or "text"
@@ -46,7 +74,9 @@ def parse_meta_message(msg: dict) -> dict:
         text = ((inter.get("button_reply") or {}).get("title")) or ((inter.get("list_reply") or {}).get("title")) or text
     elif typ in {"reaction", "sticker", "ephemeral", "unsupported", "system"}:
         return {"type": typ, "text": "", "media": None}
-    return {"type": typ, "text": (text or "").strip(), "media": media}
+    # Meta sometimes prefixes button/quick replies as "Reply Name"
+    text = re.sub(r"(?i)^\s*reply\s+", "", (text or "").strip())
+    return {"type": typ, "text": text, "media": media}
 
 
 def already_processed(db: Session, wamid: str) -> bool:
@@ -85,6 +115,9 @@ def get_or_create_conversation(db: Session, mobile: str, name: str = "") -> AiCo
 def attach_media(db: Session, conv: AiConversation, wamid: str, media: dict | None) -> str:
     if not media or not media.get("id"):
         return ""
+    from .cards import MAX_PHOTOS, card_photo_count
+
+    kind = (media.get("kind") or "image").lower()
     dup = db.query(AiMedia).filter(AiMedia.meta_media_id == media["id"]).first()
     if dup:
         if wamid:
@@ -92,6 +125,18 @@ def attach_media(db: Session, conv: AiConversation, wamid: str, media: dict | No
             if chat and not chat.media_id:
                 chat.media_id = dup.id
         return f"{dup.kind} id={dup.id} duplicate_skipped"
+
+    payload = _payload(conv)
+    awaiting_choice = conv.state == "AWAITING_VEHICLE_CHOICE" or payload.get("awaiting_vehicle_choice")
+    target_draft_id = conv.draft_id
+    if not awaiting_choice and kind in {"image", "photo"}:
+        if not target_draft_id:
+            draft = _draft_for(db, conv)
+            target_draft_id = draft.id
+            conv.draft_id = draft.id
+        if card_photo_count(db, target_draft_id) >= MAX_PHOTOS:
+            return "photo_rejected_max"
+
     meta = get_or_create_settings(db)
     path, mime = download_whatsapp_media(
         meta,
@@ -101,7 +146,7 @@ def attach_media(db: Session, conv: AiConversation, wamid: str, media: dict | No
     )
     row = AiMedia(
         conversation_id=conv.id,
-        draft_id=conv.draft_id,
+        draft_id=target_draft_id if not awaiting_choice else None,
         wamid=wamid or "",
         meta_media_id=media.get("id") or "",
         kind=media.get("kind") or "image",
@@ -116,7 +161,6 @@ def attach_media(db: Session, conv: AiConversation, wamid: str, media: dict | No
         if chat:
             chat.media_id = row.id
     payload = _payload(conv)
-    awaiting_choice = conv.state == "AWAITING_VEHICLE_CHOICE" or payload.get("awaiting_vehicle_choice")
     if awaiting_choice:
         pending = list(payload.get("pending_media_ids") or [])
         pending.append(row.id)
@@ -124,13 +168,18 @@ def attach_media(db: Session, conv: AiConversation, wamid: str, media: dict | No
         row.draft_id = None
     else:
         ids = list(payload.get("media_ids") or [])
+        if kind in {"image", "photo"} and len([i for i in ids if i]) >= MAX_PHOTOS:
+            db.delete(row)
+            db.flush()
+            return "photo_rejected_max"
         ids.append(row.id)
-        payload["media_ids"] = ids
-        if conv.draft_id:
-            row.draft_id = conv.draft_id
-        else:
-            draft = _draft_for(db, conv)
-            row.draft_id = draft.id
+        payload["media_ids"] = ids[:MAX_PHOTOS]
+        if not row.draft_id:
+            if conv.draft_id:
+                row.draft_id = conv.draft_id
+            else:
+                draft = _draft_for(db, conv)
+                row.draft_id = draft.id
     _write_payload(conv, payload)
     return f"{row.kind} id={row.id} caption={row.caption!r} saved={bool(path)}" + ("" if path else " DOWNLOAD_FAILED")
 
@@ -145,42 +194,97 @@ def process_inbound(
     media: dict | None = None,
     send: bool = True,
 ) -> str | None:
+    t0 = time.perf_counter()
+    t_lock = t_ai = t_wa = 0.0
+    path = "none"
+    stale = False
+
     if db.query(BlockedNumber).filter(BlockedNumber.mobile == mobile).first():
         return None
     if already_processed(db, wamid):
         return None
-    conv = get_or_create_conversation(db, mobile, name)
-    conv.last_wamid = wamid or conv.last_wamid
-    conv.updated_at = utcnow()
-    db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="inbound", detail=(text or "")[:1000]))
-    media_note = attach_media(db, conv, wamid, media)
-    try:
-        reply = respond(db, conv, text, media_note)
-    except Exception as exc:
-        log.exception("ai respond failed %s: %s", mobile, exc)
-        db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="error", detail=str(exc)[:1000]))
-        reply = "Namaste Sir, thodi technical dikkat hai. Kripya ek pal — aap gadi bechna chahte hain ya lena?"
-    db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="ai_reply", detail=(reply or "")[:1000]))
-    if send and reply:
-        meta = get_or_create_settings(db)
+
+    # Mark newest message early (webhook may also set this)
+    if wamid:
+        set_latest_wamid(mobile, wamid)
+
+    with mobile_lock(mobile) as held:
+        t_lock = (time.perf_counter() - t0) * 1000
+        if not held:
+            log.info("ai.lock_busy mobile=***%s", mobile[-4:] if mobile else "")
+            return None
+        if already_processed(db, wamid):
+            return None
+
+        set_processing(mobile, "ai")
+        conv = get_or_create_conversation(db, mobile, name)
+        conv.last_wamid = wamid or conv.last_wamid
+        conv.updated_at = utcnow()
+        # Do not store full message body in logs/events beyond truncate — already capped
+        db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="inbound", detail=(text or "")[:200]))
+        media_note = attach_media(db, conv, wamid, media)
+
+        t_ai0 = time.perf_counter()
         try:
-            result = send_whatsapp_text(meta, mobile, reply)
-            store_chat(
-                db,
-                wamid=result.get("wamid") or f"ai.{conv.id}.{int(utcnow().timestamp())}",
-                conversation_id=conv.conversation_id,
-                from_mobile=meta.phone_number_id or "infradealer",
-                from_name="InfraDealer AI",
-                to_mobile=mobile,
-                direction="outbound",
-                body=reply,
-                status="sent",
-                unread=False,
-            )
+            reply = respond(db, conv, text, media_note)
+            path = "llm" if (reply and len(reply) > 40 and "CARD-" not in (text or "")) else "router"
+            # Hint: fast path often shorter / templated — keep label soft
+            pl = _payload(conv)
+            if pl.get("active_card_id"):
+                set_active_card(mobile, pl["active_card_id"])
+            elif get_active_card(mobile) and not pl.get("active_card_id"):
+                pass
         except Exception as exc:
-            log.warning("ai whatsapp send failed %s: %s", mobile, exc)
-            db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="error", detail=str(exc)[:1000]))
-    return reply
+            log.exception("ai respond failed mobile=***%s", mobile[-4:] if mobile else "")
+            db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="error", detail=str(exc)[:300]))
+            reply = "Namaste Sir, thodi technical dikkat hai. Kripya ek pal — aap gadi bechna chahte hain ya lena?"
+            path = "error"
+        t_ai = (time.perf_counter() - t_ai0) * 1000
+
+        db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="ai_reply", detail=(reply or "")[:200]))
+
+        if send and reply and not _is_latest_inbound(db, conv.conversation_id, wamid, mobile=mobile):
+            stale = True
+            log.info("skip stale AI reply mobile=***%s", mobile[-4:] if mobile else "")
+            db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="ai_stale_skip", detail="stale"))
+            set_processing(mobile, "stale")
+            total = (time.perf_counter() - t0) * 1000
+            log.info(
+                "ai.timing lock=%.0fms ai=%.0fms wa=0ms total=%.0fms path=%s stale=1",
+                t_lock, t_ai, total, path,
+            )
+            return reply
+
+        if send and reply:
+            set_processing(mobile, "wa")
+            t_wa0 = time.perf_counter()
+            meta = get_or_create_settings(db)
+            try:
+                result = send_whatsapp_text(meta, mobile, reply)
+                store_chat(
+                    db,
+                    wamid=result.get("wamid") or f"ai.{conv.id}.{int(utcnow().timestamp())}",
+                    conversation_id=conv.conversation_id,
+                    from_mobile=meta.phone_number_id or "infradealer",
+                    from_name="InfraDealer AI",
+                    to_mobile=mobile,
+                    direction="outbound",
+                    body=reply,
+                    status="sent",
+                    unread=False,
+                )
+            except Exception as exc:
+                log.warning("ai whatsapp send failed mobile=***%s: %s", mobile[-4:] if mobile else "", exc)
+                db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="error", detail=str(exc)[:300]))
+            t_wa = (time.perf_counter() - t_wa0) * 1000
+
+        set_processing(mobile, "done")
+        total = (time.perf_counter() - t0) * 1000
+        log.info(
+            "ai.timing lock=%.0fms ai=%.0fms wa=%.0fms total=%.0fms path=%s stale=%s",
+            t_lock, t_ai, t_wa, total, path, int(stale),
+        )
+        return reply
 
 
 def conversation_public(conv: AiConversation, media: list[AiMedia], draft) -> dict:
@@ -199,6 +303,7 @@ def conversation_public(conv: AiConversation, media: list[AiMedia], draft) -> di
         "created_at": conv.created_at.isoformat() if conv.created_at else None,
         "draft": None if not draft else {
             "id": draft.id,
+            "card_id": getattr(draft, "card_id", None),
             "status": draft.status,
             "title": draft.title,
             "intent": draft.intent,

@@ -21,6 +21,19 @@ services:
     networks:
       - internal
 
+  redis:
+    image: redis:7-alpine
+    container_name: webhook-infradealer-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - internal
+
   api:
     build:
       context: ./backend
@@ -31,10 +44,13 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-infradealer}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-infradealer}
       AI_MEDIA_DIR: /app/data/media
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     volumes:
       - ai_media:/app/data/media
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     expose:
       - "8000"

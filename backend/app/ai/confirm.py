@@ -28,6 +28,9 @@ def is_yes(text: str) -> bool:
     msg = (text or "").strip()
     if not msg or _NO.search(msg):
         return False
+    # Never treat delete/clear as listing confirmation
+    if re.search(r"\b(delete|clear|reset|hata|mita|conversation|previous)\b", msg, re.I):
+        return False
     if _YES.match(msg):
         return True
     if len(msg.split()) <= 6 and _YES_LOOSE.search(msg) and not re.search(r"\d", msg):
@@ -95,17 +98,26 @@ def snapshot(db: Session, conv: AiConversation, payload: dict) -> dict:
         "photos": photos,
         "photo_count": len(photos),
     }
-    return {k: v for k, v in data.items() if v not in (None, "", [], 0) or k in {"vehicle", "category", "year", "rate", "location", "phone", "photos"}}
+    if not data["card"] and conv.draft_id:
+        draft = db.query(AiListingDraft).filter(AiListingDraft.id == conv.draft_id).first()
+        if draft and draft.card_id:
+            data["card"] = draft.card_id
+    return {k: v for k, v in data.items() if v not in (None, "", [], 0) or k in {"card", "vehicle", "category", "year", "rate", "location", "phone", "photos"}}
 
 
 def summary_text(data: dict, lang: str) -> str:
-    lines = [
-        f"Vehicle : {data.get('vehicle') or '—'}",
-        f"Category : {data.get('category') or '—'}",
-        f"Year : {data.get('year') or '—'}",
-        f"Rate : {data.get('rate') or '—'}",
-        f"Location : {data.get('location') or '—'}",
-    ]
+    lines = []
+    if data.get("card"):
+        lines.append(f"Card : {data['card']}")
+    lines.extend(
+        [
+            f"Vehicle : {data.get('vehicle') or '—'}",
+            f"Category : {data.get('category') or '—'}",
+            f"Year : {data.get('year') or '—'}",
+            f"Rate : {data.get('rate') or '—'}",
+            f"Location : {data.get('location') or '—'}",
+        ]
+    )
     if data.get("running"):
         lines.append(f"Running : {data['running']}")
     if data.get("owners"):
@@ -206,6 +218,9 @@ def handle_confirmation(db: Session, conv: AiConversation, text: str, fields: di
             return send_summary(db, conv, lang)
         return None
     if awaiting:
+        from .account import wants_clear_conversation
+        if wants_clear_conversation(text):
+            return None
         if fields and not is_yes(text):
             data = snapshot(db, conv, payload)
             prev = payload.get("summary_json") if isinstance(payload.get("summary_json"), dict) else {}
@@ -231,6 +246,9 @@ def handle_confirmation(db: Session, conv: AiConversation, text: str, fields: di
             payload["awaiting_confirm"] = True
             _write_payload(conv, payload)
             return t(lang, "confirm_fix")
+        # Unrelated text while awaiting confirm — short nudge, NOT full card again
+        if (text or "").strip() and not fields:
+            return t(lang, "confirm_ready")
         return None
     if collection_ready(payload):
         if (payload.get("intent") or "").upper() == "SELL" and not payload.get("optional_asked"):
@@ -358,13 +376,19 @@ def _apply_pending_fields(db: Session, conv: AiConversation, fields: dict) -> No
 
 
 def start_new_listing(db: Session, conv: AiConversation, pending: dict, pending_media: list[int]) -> None:
+    from .cards import ensure_card_id, persist_active_card_session
     from .schema import empty_payload
+
+    # Preserve previous card session before opening a new Card ID
+    persist_active_card_session(db, conv)
 
     old = _payload(conv)
     keep_keys = (
         "language", "wa_name", "whatsapp_number", "customer_name", "contact_phone",
         "profile_id", "profile_status", "ai_introduced",
         "account_onboarded", "account_step", "account_role", "account_password_set",
+        "account_type", "account_label", "account_can_post", "account_reason",
+        "account_buy_link", "account_eligibility",
     )
     payload = empty_payload()
     for key in keep_keys:
@@ -385,7 +409,7 @@ def start_new_listing(db: Session, conv: AiConversation, pending: dict, pending_
     draft.intent = conv.intent or ""
     draft.confirmed_json = "{}"
     draft.customer_json = "{}"
-    from .cards import ensure_card_id
+    draft.inferred_json = "{}"
 
     ensure_card_id(db, draft)
     payload = _payload(conv)
@@ -395,6 +419,63 @@ def start_new_listing(db: Session, conv: AiConversation, pending: dict, pending_
         db.query(AiMedia).filter(AiMedia.id.in_(pending_media)).update({"draft_id": draft.id}, synchronize_session=False)
     _apply_pending_fields(db, conv, pending)
     _log(db, conv, "vehicle_new", {"draft_id": draft.id, "card_id": draft.card_id, "pending": pending})
+
+
+def reset_ai_conversation(db: Session, conv: AiConversation) -> str:
+    """Wipe live AI chat/card memory for this WhatsApp user — keep account identity.
+
+    Does NOT delete posted listings / admin records. Detaches active draft from chat.
+    """
+    from .cards import persist_active_card_session
+    from .schema import empty_payload
+
+    try:
+        persist_active_card_session(db, conv)
+    except Exception:
+        pass
+
+    old = _payload(conv)
+    card = old.get("active_card_id") or ""
+    if conv.draft_id:
+        draft = db.query(AiListingDraft).filter(AiListingDraft.id == conv.draft_id).first()
+        if draft and (draft.status or "").upper() in {
+            "COLLECTING", "PENDING_REVIEW", "CONFIRMED", "AWAITING_CONFIRMATION", "NEEDS_INFO", "READY_FOR_REVIEW",
+        }:
+            # Pause mid-flow draft so it won't keep pushing confirm cards
+            if (draft.status or "").upper() not in {"POSTED", "APPROVED", "LIVE", "REJECTED"}:
+                draft.status = "COLLECTING"
+            card = draft.card_id or card
+
+    keep_keys = (
+        "language", "wa_name", "whatsapp_number", "customer_name", "contact_phone",
+        "profile_id", "profile_status", "ai_introduced",
+        "account_onboarded", "account_role", "account_password_set",
+        "account_type", "account_label", "account_can_post", "account_reason",
+        "account_buy_link", "account_eligibility", "otp_verified", "verification_status",
+    )
+    payload = empty_payload()
+    for key in keep_keys:
+        if old.get(key) not in (None, ""):
+            payload[key] = old[key]
+    payload["account_step"] = "done" if payload.get("account_onboarded") else ""
+    payload["awaiting_confirm"] = False
+    payload["customer_confirmed"] = False
+    payload["ai_introduced"] = True  # don't re-intro spam after clear
+    payload["chat_cleared"] = True
+    payload["active_card_id"] = None
+    conv.draft_id = None
+    conv.state = "NEW_CHAT"
+    conv.intent = ""
+    conv.error_message = ""
+    _write_payload(conv, payload)
+    try:
+        from ..redis_cache import set_active_card
+
+        set_active_card(conv.mobile, "")
+    except Exception:
+        pass
+    _log(db, conv, "chat_cleared", {"card": card})
+    return card or ""
 
 
 def sync_posted_product(db: Session, conv: AiConversation) -> None:

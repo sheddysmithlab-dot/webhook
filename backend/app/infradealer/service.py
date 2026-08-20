@@ -827,6 +827,7 @@ class InfraDealerIntegrationService:
                     schedule_card_cleanup(draft)
                     card = draft.card_id or card
             if card:
+                text = t(lang, "posted_card", card=card, url=url or "") if url else t(lang, "posted_card_nolink", card=card)
                 text = f"{text}\n\n{t(lang, 'card_cleanup_notice', card=card)}"
             self._notify_customer(conv, text, preview_url=bool(url))
 
@@ -865,6 +866,10 @@ class InfraDealerIntegrationService:
                     schedule_card_cleanup(draft)
                     card = draft.card_id or card
             if card:
+                if reason:
+                    text = t(lang, "rejected_card_reason", card=card, reason=reason)
+                else:
+                    text = t(lang, "rejected_card", card=card)
                 text = f"{text}\n\n{t(lang, 'card_cleanup_notice', card=card)}"
             self._notify_customer(conv, text)
 

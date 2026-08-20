@@ -15,6 +15,9 @@ check_meta.py
 
 vps-credentials.local.txt
 deploy/*.local.txt
+deploy/auth.env.local
+backend/data/
+data/
 *.tgz
 *.tar.gz
 

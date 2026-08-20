@@ -6,25 +6,23 @@ import httpx
 
 from ..models import AiConversation, AiListingDraft, Chat
 from ..services import resolve_ai_config
-from .account import account_busy, handle_account, wants_new_chat
+from .account import account_busy, handle_account, should_intercept_account, wants_clear_conversation, wants_new_chat
 from .confirm import handle_confirmation, handle_vehicle_slot, is_no, is_yes, collection_ready, sync_posted_product
 from .extract import extract_from_text
 from .i18n import _GREET, _WEAK, language_instruction, pick_language, t
 from .memory import (
     customer_annoyed,
     harvest_turn,
-    harvest_with_llm,
     is_repeat_outbound,
     load_reps,
     photos_complete,
-    prompt_block,
     question_kind,
     recent_outbound_bodies,
     seed_memory,
     too_similar,
 )
 from .prompt import SYSTEM_PROMPT
-from .schema import missing_fields, review_gaps, normalize_vehicle_category
+from .schema import missing_fields, normalize_vehicle_category
 from .tools import TOOL_DEFS, _payload, _write_payload, execute_tool
 from ..identity import looks_like_price, usable_person_name
 
@@ -34,6 +32,29 @@ FIELD_KEYS = (
     "intent", "brand", "model", "year", "expected_price", "state",
     "budget", "category", "customer_name", "optional_bundle",
 )
+
+_CASUAL = re.compile(
+    r"^\s*("
+    r"hi+|hii+|hello|hey+|namaste|namaskar|"
+    r"kya\s*haal[\w\s]{0,24}|kaise\s*ho[\w\s]{0,20}|kaisa\s*hai[\w\s]{0,20}|"
+    r"sab\s*(badiya|theek|achha|ok)[\w\s]{0,16}|"
+    r"theek\s*hai|all\s*good|good\s*morning|good\s*evening|"
+    r"yaar|bhai|bro|sunao|bolo|reply\s*(to\s*)?do|kuch\s*bolo|"
+    r"ok+|okay|hmm+|h+m+"
+    r")[\s!?.]*$",
+    re.I,
+)
+
+
+def is_casual_chat(text: str) -> bool:
+    msg = (text or "").strip()
+    if not msg or len(msg) > 60:
+        return False
+    if wants_clear_conversation(msg) or wants_new_chat(msg):
+        return False
+    if re.search(r"\b(bech|sell|buy|kharid|price|rate|lakh|photo|card-|delete)\b", msg, re.I):
+        return False
+    return bool(_CASUAL.match(msg))
 
 
 def _conv_lang(db, conv: AiConversation, text: str = "") -> str:
@@ -306,53 +327,44 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
         return None
     lang = _conv_lang(db, conv, text)
     payload = _payload(conv)
-    learned = prompt_block(db)
-    recents = recent_outbound_bodies(db, conv.conversation_id, 4)
+    # Compact state only — full payload slows the model and confuses answers
+    slim = {
+        k: payload.get(k)
+        for k in (
+            "intent", "active_card_id", "category", "brand", "model", "year",
+            "expected_price", "budget", "state", "city", "location",
+            "awaiting_confirm", "customer_confirmed", "account_onboarded",
+            "account_step", "ai_introduced", "media_ids", "photos_complete",
+            "listing_status",
+        )
+        if payload.get(k) not in (None, "", [], {}, False)
+    }
+    if slim.get("media_ids"):
+        slim["photo_count"] = len(slim.pop("media_ids") or [])
+    recents = recent_outbound_bodies(db, conv.conversation_id, 2)
     user_block = (
+        "ANSWER ONLY THE LATEST CUSTOMER MESSAGE below. Do not answer an older question. "
+        "If they ask account → answer account. If they ask vehicle/price → answer that. Never mix.\n"
         "CURRENT_STATE: "
         + json.dumps({
             "state": conv.state,
-            "mobile": conv.mobile,
-            "profile_status": conv.profile_status,
-            "profile_id": conv.profile_id,
             "reply_language": lang,
-            "draft_status": _draft_status(db, conv),
-            "review_gaps": review_gaps(payload),
             "missing_fields": missing_fields(payload),
-            "photos_complete": bool(payload.get("photos_complete")),
-            "data": payload,
+            "data": slim,
         }, ensure_ascii=False)
         + "\nMEDIA: "
         + (media_note or "none")
         + "\nCUSTOMER_MESSAGE_START\n"
-        + (text or "")[:1500]
+        + (text or "")[:800]
         + "\nCUSTOMER_MESSAGE_END\n"
-        + "You MUST send a real WhatsApp reply. Never empty. Tamiz: Sir/Ma'am, aap, ji. Never bhai/slang. "
-        + "Talk normally. If the message is outside listing training, still answer with your own judgment, then continue. "
-        + "CUSTOMER TYPING is messy: spelling/typos are normal. Infer the meaning. Never ask them to retype due to spelling. indor=Indore, kimat=price, madal=model, fotu=photo. "
-        + "Do not repeat your last messages or the same question type. If that field was already asked, skip it. "
-        + "LAST_ASSISTANT:\n"
-        + "\n---\n".join((recents or ["(none)"])[:4])
-        + "\n"
-        + "Do not introduce yourself again if CURRENT_STATE.data.ai_introduced is true — backend already did that once. "
-        + "After CONFIRMED/POSTED the customer may still talk (hi, or he, aur hai, gadi, batau) — keep chatting. "
-        + "If they hint another vehicle, collect the NEW one. If they hint a change, update the same one. "
-        + "Rate is money only, never a model code like 1613. Location is a city, never words like Hor/he/hai. "
-        + "Understand mixed Hindi+English. Repeat what you got, then ONE polite question if listing is still open. "
-        + "Do not re-ask fields already in CURRENT_STATE.data. Prefer inferring messy spelling over saying you did not understand. "
-        + "MANDATORY for listing (never skip): category (truck/dumper/tipper/crane/poclain/loader/backhoe/jcb/excavator/grader/crusher/other), company/brand, model name, manufacturing year, price, STATE. "
-        + "OPTIONAL fields: ask ALL in ONE message once, never again. "
-        + "After Haan/Yes, one-time account: InfraDealer account hai?, OTP, password, broker ya user. "
-        + "If CURRENT_STATE.state is AWAITING_CONFIRMATION and they correct anything in natural language "
-        + "(Location मध्य प्रदेश / Madhya pradesh / rate 40 lakh) WITHOUT saying nahi, call save_vehicle_data "
-        + "and resend the updated summary card. Look at previous messages if they say 'location karo'. Never stay silent. "
-        + "Never invent OTP. Never show password back. Never publish. Reply in {lang}."
+        + "Rules: 1 short WhatsApp reply. Sir/Ma'am only — never greet with random WA profile names. "
+        "Do not re-ask fields already in CURRENT_STATE.data. Do not start account/OTP unless "
+        "customer_confirmed is true and account_onboarded is false AND they just confirmed. "
+        "Never invent OTP/password. Reply in {lang}."
     )
     sys = SYSTEM_PROMPT + "\n\n" + language_instruction(lang)
-    if learned:
-        sys += "\n\n" + learned
     messages = [{"role": "system", "content": sys}]
-    messages.extend(_history(db, conv)[-10:])
+    messages.extend(_history(db, conv)[-6:])
     messages.append({"role": "user", "content": user_block})
     url = cfg["api_base"].rstrip("/") + "/chat/completions"
     headers = {
@@ -365,21 +377,21 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
         "messages": messages,
         "tools": TOOL_DEFS,
         "tool_choice": "auto",
-        "temperature": 0.7,
-        "max_tokens": 500,
+        "temperature": 0.25,
+        "max_tokens": 220,
         "thinking": {"type": "disabled"},
         "enable_thinking": False,
     }
     posted = _draft_status(db, conv) == "POSTED"
     try:
-        with httpx.Client(timeout=45) as client:
+        with httpx.Client(timeout=12.0) as client:
             use_tools = True
-            for _ in range(8):
-                payload = dict(body)
+            for _ in range(3):  # fast: max 3 rounds
+                payload_body = dict(body)
                 if not use_tools:
-                    payload.pop("tools", None)
-                    payload.pop("tool_choice", None)
-                resp = client.post(url, headers=headers, json=payload)
+                    payload_body.pop("tools", None)
+                    payload_body.pop("tool_choice", None)
+                resp = client.post(url, headers=headers, json=payload_body)
                 try:
                     data = resp.json() if resp.content else {}
                 except Exception:
@@ -423,6 +435,49 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
     except Exception as exc:
         log.warning("ai api error: %s", exc)
         return None
+    return None
+
+
+def _fast_rule_reply(db, conv: AiConversation, text: str, media_note: str, fields: dict, lang: str) -> str | None:
+    """Skip slow LLM when rules already know the next polite answer."""
+    from .confirm import is_no, is_yes
+
+    payload = _payload(conv)
+    msg = (text or "").strip()
+    # Explicit account question from user (not listing)
+    if re.search(r"\b(account|otp|password|broker|token)\b", msg, re.I) and not (
+        fields.get("brand") or fields.get("model") or fields.get("expected_price")
+    ):
+        return None
+    # Simple yes/no / short field answers → Python only
+    last = _ask_key(conv.error_message)
+    short = len(msg.split()) <= 8
+    if short and (
+        is_yes(msg)
+        or is_no(msg)
+        or looks_like_price(msg)
+        or bool(re.fullmatch(r"(?:19|20)\d{2}|\d{2}", msg))
+        or (last in {"year", "expected_price", "budget", "state", "location", "category", "brand", "model"} and msg)
+        or fields
+        or media_note
+    ):
+        if payload.get("awaiting_confirm") or conv.state == "AWAITING_CONFIRMATION":
+            return None  # confirmation handler owns this
+        if fields or media_note or last:
+            if payload.get("intent") and missing_fields(payload):
+                return fallback_reply(db, conv, text, media_note)
+            if media_note and payload.get("intent") == "SELL":
+                return fallback_reply(db, conv, text, media_note)
+            if fields and payload.get("intent"):
+                return fallback_reply(db, conv, text, media_note)
+    if fields or media_note:
+        if payload.get("intent") and missing_fields(payload):
+            return fallback_reply(db, conv, text, media_note)
+        if media_note and payload.get("intent") == "SELL":
+            return fallback_reply(db, conv, text, media_note)
+    if collection_ready(payload) and not payload.get("awaiting_confirm") and not payload.get("customer_confirmed"):
+        from .confirm import send_summary
+        return send_summary(db, conv, lang)
     return None
 
 
@@ -548,7 +603,13 @@ def attach_intro(db, conv: AiConversation, lang: str, reply: str) -> str:
 
 
 def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
-    from .cards import parse_card_mention, switch_active_card, ensure_card_id
+    from .cards import (
+        card_clarification_prompt,
+        ensure_card_id,
+        needs_card_clarification,
+        parse_card_mention,
+        switch_active_card,
+    )
     from .account_filter import sync_conversation_account
 
     try:
@@ -556,15 +617,23 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
     except Exception:
         pass
 
+    lang0 = _conv_lang(db, conv, text)
+    if media_note and "photo_rejected_max" in media_note:
+        return t(lang0, "photo_at_max")
+
     mentioned = parse_card_mention(text or "")
+    payload_pre = _payload(conv)
+    if payload_pre.get("awaiting_card_choice") and mentioned:
+        draft = switch_active_card(db, conv, mentioned)
+        if draft:
+            return t(lang0, "card_switched", card=draft.card_id)
     if mentioned:
         draft = switch_active_card(db, conv, mentioned)
         if draft:
-            payload = _payload(conv)
-            payload["active_card_id"] = draft.card_id
-            _write_payload(conv, payload)
-            lang0 = _conv_lang(db, conv, text)
             return t(lang0, "card_switched", card=draft.card_id)
+
+    if needs_card_clarification(db, conv, text or ""):
+        return card_clarification_prompt(db, conv, lang0)
 
     if conv.draft_id:
         try:
@@ -586,13 +655,44 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
     fields = extract_turn(text, extra_reps=extra, media_note=media_note)
     recents = recent_outbound_bodies(db, conv.conversation_id, 6)
     payload0 = _payload(conv)
+
+    # 1) Clear / delete conversation — do this BEFORE confirm loop can re-dump the card
+    if wants_clear_conversation(text) or (
+        wants_new_chat(text) and re.search(r"\b(delete|clear|reset|hata|mita)\b", text or "", re.I)
+    ):
+        from .confirm import reset_ai_conversation
+
+        reset_ai_conversation(db, conv)
+        harvest_turn(db, text, {}, "")
+        return t(lang, "chat_cleared")
+
     if wants_new_chat(text):
         from .confirm import start_new_listing
 
         start_new_listing(db, conv, {}, [])
         harvest_turn(db, text, {}, "")
         return attach_intro(db, conv, lang, t(lang, "vehicle_new_ok") + "\n" + t(lang, "intent"))
-    if account_busy(payload0):
+
+    # 2) Casual greetings — never dump CARD summary
+    if is_casual_chat(text) and not fields and not media_note:
+        harvest_turn(db, text, {}, "")
+        if payload0.get("awaiting_confirm") or conv.state == "AWAITING_CONFIRMATION":
+            card = payload0.get("active_card_id") or "CARD"
+            return t(lang, "casual_while_confirm", card=card)
+        if payload0.get("chat_cleared"):
+            payload0["chat_cleared"] = False
+            _write_payload(conv, payload0)
+            return t(lang, "chat_cleared_followup")
+        return t(lang, "casual_hi")
+
+    # After clear, ignore stray "haan/han" that would re-open confirm
+    if payload0.get("chat_cleared") and is_yes(text) and not fields:
+        payload0["chat_cleared"] = False
+        _write_payload(conv, payload0)
+        harvest_turn(db, text, {}, "")
+        return t(lang, "chat_cleared_followup")
+
+    if account_busy(payload0) and should_intercept_account(payload0, text):
         acc = handle_account(db, conv, text, lang)
         if acc:
             harvest_turn(db, "[account]" if payload0.get("account_step") == "password" else text, {}, _ask_key(conv.error_message))
@@ -600,8 +700,12 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
             if not (cleaned or "").strip():
                 cleaned = _sanitize_reply(acc, posted=False, lang=lang)
             return attach_intro(db, conv, lang, cleaned)
-        harvest_turn(db, text, {}, _ask_key(conv.error_message))
-        return attach_intro(db, conv, lang, t(lang, "otp_ask") if payload0.get("account_step") == "otp" else t(lang, "account_ask"))
+        # Not a clear account answer — fall through to listing chat
+    elif account_busy(payload0) and payload0.get("account_step") == "ask_exists":
+        # Stuck account prompt while user talks listing — pause account ask
+        payload0["account_step"] = ""
+        _write_payload(conv, payload0)
+        payload0 = _payload(conv)
 
     slot = handle_vehicle_slot(db, conv, text, fields, media_note, lang)
     if slot:
@@ -663,39 +767,41 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
     if locked:
         reply = _sanitize_reply(locked, posted=posted, lang=lang)
     else:
-        reply = llm_reply(db, conv, text, media_note)
-        if reply:
-            reply = _sanitize_reply(reply, posted=posted, lang=lang)
+        fast = _fast_rule_reply(db, conv, text, media_note, fields, lang)
+        if fast:
+            reply = _sanitize_reply(fast, posted=posted, lang=lang)
         else:
-            reply = _sanitize_reply(fallback_reply(db, conv, text, media_note), posted=posted, lang=lang)
+            reply = llm_reply(db, conv, text, media_note)
+            if reply:
+                reply = _sanitize_reply(reply, posted=posted, lang=lang)
+            else:
+                reply = _sanitize_reply(fallback_reply(db, conv, text, media_note), posted=posted, lang=lang)
 
     if customer_annoyed(text) and reply:
         sorry = t(lang, "sorry_repeat")
         if sorry.lower() not in reply.lower():
             reply = sorry + " " + reply
 
-    reply = avoid_repeat(db, conv, lang, reply, recents)
+    # Soft anti-repeat: never blank the only answer for this turn
+    cleaned = avoid_repeat(db, conv, lang, reply, recents)
+    if cleaned:
+        reply = cleaned
     if reply:
         reply = attach_intro(db, conv, lang, reply)
+        # Strip accidental profile-name-only / "Reply Name" style junk
+        reply = re.sub(r"(?im)^\s*reply\s+[a-z][a-z\s.]{1,40}\s*$", "", reply).strip() or reply
         if is_repeat_outbound(reply, recents) and not (
             conv.state == "AWAITING_CONFIRMATION" or _payload(conv).get("awaiting_confirm")
         ):
-            reply = ""
+            # Prefer next missing field over silence / stale copy
+            alt = fallback_reply(db, conv, text, media_note)
+            if alt and not too_similar(alt, reply):
+                reply = alt
     if not (reply or "").strip():
         payload = _payload(conv)
         if conv.state == "AWAITING_CONFIRMATION" or payload.get("awaiting_confirm"):
-            from .confirm import send_summary, snapshot
-            prev = payload.get("summary_json") if isinstance(payload.get("summary_json"), dict) else {}
-            data = snapshot(db, conv, payload)
-            if data != prev:
-                reply = send_summary(db, conv, lang)
-            else:
-                reply = t(lang, "confirm_ready")
+            # Never re-dump the full card for unrelated/empty turns — that felt "dumb"
+            reply = t(lang, "confirm_ready")
         else:
-            reply = t(lang, "saving")
-    try:
-        if _payload(conv).get("account_step") != "password":
-            harvest_with_llm(db, text)
-    except Exception:
-        log.debug("harvest skipped", exc_info=True)
+            reply = fallback_reply(db, conv, text, media_note) or t(lang, "saving")
     return reply
