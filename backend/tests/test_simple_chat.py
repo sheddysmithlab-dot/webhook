@@ -27,6 +27,13 @@ def test_sanitize_and_media():
     assert "[blocked]" in _sanitize("sk-abc123secret")
     assert "photo" in _user_content("[photo]", "image id=1").lower()
     assert "voice" in _user_content("[voice note]", "audio").lower()
+    from app.ai.simple_chat import _local_fast_reply
+
+    hi = _local_fast_reply("Hello", "")
+    assert hi and "Namaste" in hi
+    photo = _local_fast_reply("[photo]", "image")
+    assert photo and "Photo" in photo
+    assert "listing" not in photo.lower() or "Listing form" in photo
     print("OK sanitize/media")
 
 

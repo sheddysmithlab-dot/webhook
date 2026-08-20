@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 import httpx
 from sqlalchemy.orm import Session
@@ -18,17 +19,31 @@ from .prompt import SIMPLE_SYSTEM_PROMPT
 log = logging.getLogger("infradealer.ai.simple")
 
 _FALLBACK = (
-    "Ji, abhi thodi technical dikkat aa rahi hai. "
-    "Kripya ek pal baad phir se message bhej dijiye."
+    "Ji, abhi network thoda slow hai. "
+    "Ek chhota message bhej dijiye — main turant jawab dunga."
+)
+
+_GREET = re.compile(
+    r"^\s*(hi+|hii+|hello|hey+|namaste|namaskar|hola|"
+    r"kaise\s*ho|kya\s*haal|sab\s*theek|good\s*morning|good\s*evening)"
+    r"[\s!?.]*$",
+    re.I,
+)
+
+_LISTING_BIAS = re.compile(
+    r"(?i)(to proceed with listing|listing|CARD-\d+|bechni hai ya|otp|"
+    r"kripya.*(brand|model|year|photo|state)|"
+    r"provide a few more details|numbered|"
+    r"^\s*\d+\.\s*(what|which|how|truck|model|cabin|registration))",
 )
 
 
-def _history(db: Session, conversation_id: str, limit: int = 12) -> list[dict]:
+def _history(db: Session, conversation_id: str, limit: int = 8) -> list[dict]:
     rows = (
         db.query(Chat)
         .filter(Chat.conversation_id == conversation_id)
         .order_by(Chat.id.desc())
-        .limit(limit)
+        .limit(limit * 2)  # fetch extra so we can filter listing-biased turns
         .all()
     )
     out: list[dict] = []
@@ -37,12 +52,18 @@ def _history(db: Session, conversation_id: str, limit: int = 12) -> list[dict]:
         body = (row.body or "").strip()
         if not body:
             continue
-        # Never feed profile-name junk / Reply prefix into context
         body = re.sub(r"(?i)^\s*reply\s+", "", body).strip()
         if not body:
             continue
-        out.append({"role": role, "content": body[:500]})
-    return out
+        # Drop old listing-form replies so they cannot steer the new clean chat
+        if role == "assistant" and _LISTING_BIAS.search(body):
+            continue
+        if role == "assistant" and "technical dikkat" in body.lower():
+            continue
+        if role == "assistant" and "network thoda slow" in body.lower():
+            continue
+        out.append({"role": role, "content": body[:400]})
+    return out[-limit:]
 
 
 def _sanitize(text: str) -> str:
@@ -53,11 +74,17 @@ def _sanitize(text: str) -> str:
         "[blocked]",
         raw,
     )
-    # Strip Meta "Reply Name" style lines / prefixes
     raw = re.sub(r"(?im)^\s*reply\s+[^\n]*$", "", raw)
     raw = re.sub(r"(?i)^\s*reply\s+", "", raw).strip()
-    if len(raw) > 900:
-        raw = raw[:890].rsplit(" ", 1)[0] + "…"
+    # Soft-block listing questionnaire style if model slips
+    if _LISTING_BIAS.search(raw) and re.search(r"(?m)^\s*\d+\.\s+", raw):
+        return (
+            "Photo / baat samajh gaya. "
+            "Aap freely bataiye — main normal chat me help karunga. "
+            "Listing form abhi start nahi kar raha."
+        )
+    if len(raw) > 700:
+        raw = raw[:690].rsplit(" ", 1)[0] + "…"
     return raw
 
 
@@ -68,15 +95,35 @@ def _user_content(text: str, media_note: str = "") -> str:
         return (msg + "\n[media download failed]").strip() or "[media]"
     if note.startswith("image") or note.startswith("photo") or "[photo]" in msg.lower():
         if not msg or msg in {"[photo]", "[image]"}:
-            return "[User sent a photo]"
-        return f"{msg}\n[User also sent a photo]"
+            return "[User sent a photo — acknowledge casually; do NOT start a listing form]"
+        return f"{msg}\n[User also sent a photo — do NOT start a listing form]"
     if note.startswith("audio") or msg == "[voice note]":
-        return "[User sent a voice note — ask them to type if needed]"
+        return "[User sent a voice note — politely ask them to type a short message]"
     if note.startswith("video") or msg == "[video]":
-        return "[User sent a video]"
+        return "[User sent a video — acknowledge casually; no listing form]"
     if note.startswith("document") or msg == "[document]":
-        return "[User sent a document]"
+        return "[User sent a document — acknowledge casually]"
     return msg or "[empty message]"
+
+
+def _local_fast_reply(text: str, media_note: str = "") -> str | None:
+    """Skip Z.AI for trivial turns — avoids timeout/429 and listing invent."""
+    msg = (text or "").strip()
+    note = (media_note or "").strip().lower()
+    is_photo = (
+        note.startswith("image")
+        or note.startswith("photo")
+        or msg.lower() in {"[photo]", "[image]"}
+    )
+    if is_photo and (not msg or msg.lower() in {"[photo]", "[image]"}):
+        return (
+            "Photo mil gaya 👍 "
+            "Bataiye aap kis baare me baat karna chahte hain — "
+            "main normal chat me help karunga."
+        )
+    if _GREET.match(msg):
+        return "Namaste! Main theek hoon. Aap kaise hain? Bataiye, aaj kis baare me baat karni hai?"
+    return None
 
 
 def simple_respond(
@@ -86,6 +133,13 @@ def simple_respond(
     media_note: str = "",
 ) -> str:
     """Normal WhatsApp conversation via Z.AI only. No listing/card/account flows."""
+    conv.state = "CHAT"
+    conv.error_message = ""
+
+    fast = _local_fast_reply(text, media_note)
+    if fast:
+        return fast
+
     cfg = resolve_ai_config(db)
     if cfg.get("config_error") and not cfg.get("api_key"):
         log.error("simple_chat skipped: %s", cfg["config_error"])
@@ -97,13 +151,8 @@ def simple_respond(
         log.error("simple_chat skipped: non-Z.AI base %s", cfg.get("api_base"))
         return _FALLBACK
 
-    # Soft mark conversation as plain chat — do not run old listing state machine
-    conv.state = "CHAT"
-    conv.error_message = ""
-
-    history = _history(db, conv.conversation_id, limit=12)
+    history = _history(db, conv.conversation_id, limit=8)
     user_msg = _user_content(text, media_note)
-    # Inbound Chat row is stored before this call — drop trailing duplicate user turn
     if history and history[-1].get("role") == "user":
         history = history[:-1]
     messages = [{"role": "system", "content": SIMPLE_SYSTEM_PROMPT}]
@@ -119,32 +168,43 @@ def simple_respond(
     body = {
         "model": cfg["model"],
         "messages": messages,
-        "temperature": 0.6,
-        "max_tokens": 280,
+        "temperature": 0.5,
+        "max_tokens": 180,
         "thinking": {"type": "disabled"},
         "enable_thinking": False,
     }
 
-    try:
-        with httpx.Client(timeout=12.0) as client:
-            resp = client.post(url, headers=headers, json=body)
-        data = resp.json() if resp.content else {}
-        if resp.status_code >= 400:
-            err = ""
-            if isinstance(data, dict):
-                err = str((data.get("error") or {}).get("message") or data)[:240]
-            log.error("simple_chat Z.AI http %s %s", resp.status_code, err or (resp.text or "")[:240])
+    last_err = ""
+    for attempt in range(2):
+        try:
+            with httpx.Client(timeout=25.0) as client:
+                resp = client.post(url, headers=headers, json=body)
+            data = resp.json() if resp.content else {}
+            if resp.status_code == 429:
+                last_err = "429 rate limit"
+                log.warning("simple_chat Z.AI 429 attempt=%s", attempt + 1)
+                time.sleep(1.2 * (attempt + 1))
+                continue
+            if resp.status_code >= 400:
+                err = ""
+                if isinstance(data, dict):
+                    err = str((data.get("error") or {}).get("message") or data)[:240]
+                log.error("simple_chat Z.AI http %s %s", resp.status_code, err or (resp.text or "")[:240])
+                return _FALLBACK
+            choice = (data.get("choices") or [{}])[0] if isinstance(data, dict) else {}
+            msg = choice.get("message") or {}
+            content = (msg.get("content") or "").strip()
+            if not content:
+                log.warning("simple_chat empty content keys=%s", list(msg.keys()) if isinstance(msg, dict) else msg)
+                return _FALLBACK
+            return _sanitize(content) or _FALLBACK
+        except httpx.TimeoutException:
+            last_err = "timeout"
+            log.error("simple_chat Z.AI timeout attempt=%s", attempt + 1)
+            continue
+        except Exception as exc:
+            log.exception("simple_chat Z.AI error: %s", exc)
             return _FALLBACK
-        choice = (data.get("choices") or [{}])[0] if isinstance(data, dict) else {}
-        msg = choice.get("message") or {}
-        content = (msg.get("content") or "").strip()
-        if not content:
-            log.warning("simple_chat empty content keys=%s", list(msg.keys()) if isinstance(msg, dict) else msg)
-            return _FALLBACK
-        return _sanitize(content) or _FALLBACK
-    except httpx.TimeoutException:
-        log.error("simple_chat Z.AI timeout")
-        return _FALLBACK
-    except Exception as exc:
-        log.exception("simple_chat Z.AI error: %s", exc)
-        return _FALLBACK
+
+    log.error("simple_chat giving fallback after retries (%s)", last_err)
+    return _FALLBACK
