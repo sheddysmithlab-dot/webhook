@@ -432,12 +432,24 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
 
         verdict = sync_conversation_account(db, conv)
         payload = _payload(conv)
-        if not verdict.can_post:
+        # Missing account must not block listing push — confirm → push, then OTP/account separately.
+        if not verdict.can_post and verdict.reason != "no_account":
             msg = eligibility_message(conv.language or "hinglish", verdict) or "Account not eligible to post."
             return {"ok": False, "error": msg, "account_blocked": True, "buy_link": verdict.buy_link}
 
         draft = _draft_for(db, conv)
         ensure_card_id(db, draft)
+        if verdict.reason == "no_account":
+            try:
+                from ..infradealer.service import InfraDealerIntegrationService
+
+                svc = InfraDealerIntegrationService(db)
+                if svc.is_configured():
+                    st = svc.get_or_create_account_state(conv.mobile, conversation_id=conv.id)
+                    if st and not st.pending_draft_id:
+                        st.pending_draft_id = draft.id
+            except Exception:
+                log.exception("pending draft stash failed")
         photo = photos_status(db, draft.id)
         if photo["need_more"]:
             return {

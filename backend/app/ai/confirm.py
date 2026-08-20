@@ -236,10 +236,16 @@ def handle_confirmation(db: Session, conv: AiConversation, text: str, fields: di
             prefix = confirm_prefix(db, conv, lang)
             from .account import start_account
             try:
-                return start_account(db, conv, lang, prefix=prefix)
+                with db.begin_nested():
+                    return start_account(db, conv, lang, prefix=prefix)
             except Exception:
                 import logging
                 logging.getLogger("infradealer.ai.confirm").exception("account start after confirm failed")
+                # Nested savepoint already rolled back; keep lock/push from outer txn.
+                payload = _payload(conv)
+                if not payload.get("account_onboarded") and not payload.get("account_step"):
+                    payload["account_step"] = "ask_exists"
+                    _write_payload(conv, payload)
                 return prefix + "\n\n" + t(lang, "account_ask")
         if is_no(text):
             conv.error_message = "ask:confirm_fix"

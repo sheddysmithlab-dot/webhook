@@ -59,6 +59,11 @@ def listing_push_request_id(draft_id: int, *, rejected: bool = False) -> str:
     return f"listing-draft-{int(draft_id)}"
 
 
+def account_mobile(mobile: str | None) -> str:
+    """Always store/lookup InfraDealerAccountState by last 10 digits."""
+    return "".join(ch for ch in str(mobile or "") if ch.isdigit())[-10:]
+
+
 def get_integration_service(db: Session) -> "InfraDealerIntegrationService":
     return InfraDealerIntegrationService(db)
 
@@ -66,6 +71,60 @@ def get_integration_service(db: Session) -> "InfraDealerIntegrationService":
 class InfraDealerIntegrationService:
     def __init__(self, db: Session):
         self.db = db
+
+    def get_or_create_account_state(
+        self,
+        mobile: str | None,
+        *,
+        conversation_id: int | None = None,
+        account_status: str | None = None,
+    ) -> InfraDealerAccountState | None:
+        """Idempotent account-state row. Avoids UniqueViolation when check+apply both insert."""
+        from sqlalchemy.exc import IntegrityError
+
+        phone = account_mobile(mobile)
+        if not phone:
+            return None
+        state = (
+            self.db.query(InfraDealerAccountState)
+            .filter(InfraDealerAccountState.mobile == phone)
+            .first()
+        )
+        if state:
+            if conversation_id and not state.conversation_id:
+                state.conversation_id = conversation_id
+            if account_status:
+                state.account_status = account_status
+            return state
+        for obj in list(self.db.new):
+            if isinstance(obj, InfraDealerAccountState) and obj.mobile == phone:
+                if conversation_id and not obj.conversation_id:
+                    obj.conversation_id = conversation_id
+                if account_status:
+                    obj.account_status = account_status
+                return obj
+        state = InfraDealerAccountState(
+            mobile=phone,
+            conversation_id=conversation_id,
+            account_status=account_status or "NOT_REQUESTED",
+        )
+        try:
+            with self.db.begin_nested():
+                self.db.add(state)
+                self.db.flush()
+        except IntegrityError:
+            state = (
+                self.db.query(InfraDealerAccountState)
+                .filter(InfraDealerAccountState.mobile == phone)
+                .first()
+            )
+            if not state:
+                raise
+            if conversation_id and not state.conversation_id:
+                state.conversation_id = conversation_id
+            if account_status:
+                state.account_status = account_status
+        return state
 
     def get_or_create_config(self) -> InfraDealerIntegration:
         row = self.db.query(InfraDealerIntegration).first()
@@ -360,11 +419,9 @@ class InfraDealerIntegrationService:
     ) -> None:
         state = None
         if item.mobile:
-            mobile = item.mobile[-10:]
-            state = self.db.query(InfraDealerAccountState).filter(InfraDealerAccountState.mobile == mobile).first()
-            if not state:
-                state = InfraDealerAccountState(mobile=mobile, conversation_id=item.conversation_id)
-                self.db.add(state)
+            state = self.get_or_create_account_state(
+                item.mobile, conversation_id=item.conversation_id
+            )
         et = item.event_type.upper()
         if et == "ACCOUNT_CHECK":
             if body.get("account_found") or code in {"ACCOUNT_EXISTS", "ACCOUNT_FOUND"} or (http_status in {200, 201} and (body.get("account") or {}).get("user_id")):
@@ -540,7 +597,7 @@ class InfraDealerIntegrationService:
             return existing
         row = self.get_or_create_config()
         flags = load_event_flags(row.event_flags_json)
-        state = self.db.query(InfraDealerAccountState).filter(InfraDealerAccountState.mobile == conv.mobile).first()
+        state = self.get_or_create_account_state(conv.mobile, conversation_id=conv.id)
         user_id = state.infradealer_user_id if state else ""
         rid = listing_push_request_id(draft.id, rejected=rejected)
         listing_payload = build_listing_payload(self.db, conv, draft, payload, rid, user_id)
@@ -588,44 +645,46 @@ class InfraDealerIntegrationService:
 
         rid = str(uuid.uuid4())
         payload = build_account_check_payload(conv.mobile, rid)
-        item = self.enqueue("ACCOUNT_CHECK", payload, conversation_id=conv.id, mobile=conv.mobile, request_id=rid)
+        item = self.enqueue("ACCOUNT_CHECK", payload, conversation_id=conv.id, mobile=account_mobile(conv.mobile), request_id=rid)
         if item:
-            state = self.db.query(InfraDealerAccountState).filter(InfraDealerAccountState.mobile == conv.mobile).first()
-            if not state:
-                state = InfraDealerAccountState(mobile=conv.mobile, conversation_id=conv.id, account_status="CHECKING")
-                self.db.add(state)
-            else:
+            state = self.get_or_create_account_state(
+                conv.mobile, conversation_id=conv.id, account_status="CHECKING"
+            )
+            if state:
                 state.account_status = "CHECKING"
-            state.last_request_id = rid
+                state.last_request_id = rid
         return item
 
     def create_account(self, conv: AiConversation, name: str) -> InfraDealerOutbox | None:
         from .payloads import build_account_create_payload
 
         rid = str(uuid.uuid4())
-        payload = build_account_create_payload(name, conv.mobile, rid)
-        return self.enqueue("ACCOUNT_CREATE", payload, conversation_id=conv.id, mobile=conv.mobile, request_id=rid)
+        phone = account_mobile(conv.mobile)
+        payload = build_account_create_payload(name, phone, rid)
+        return self.enqueue("ACCOUNT_CREATE", payload, conversation_id=conv.id, mobile=phone, request_id=rid)
 
     def verify_otp_external(self, conv: AiConversation, otp: str, registration_id: str = "") -> InfraDealerOutbox | None:
         from .payloads import build_otp_verify_payload
 
-        state = self.db.query(InfraDealerAccountState).filter(InfraDealerAccountState.mobile == conv.mobile).first()
+        state = self.get_or_create_account_state(conv.mobile, conversation_id=conv.id)
         reg = registration_id or (state.registration_id if state else "")
         if not reg:
             return None
         rid = str(uuid.uuid4())
-        payload = build_otp_verify_payload(reg, conv.mobile, otp, rid)
-        return self.enqueue("OTP_VERIFY", payload, conversation_id=conv.id, mobile=conv.mobile, request_id=rid)
+        phone = account_mobile(conv.mobile)
+        payload = build_otp_verify_payload(reg, phone, otp, rid)
+        return self.enqueue("OTP_VERIFY", payload, conversation_id=conv.id, mobile=phone, request_id=rid)
 
     def request_otp(self, conv: AiConversation) -> InfraDealerOutbox | None:
         from .payloads import build_otp_request_payload
 
-        state = self.db.query(InfraDealerAccountState).filter(InfraDealerAccountState.mobile == conv.mobile).first()
+        state = self.get_or_create_account_state(conv.mobile, conversation_id=conv.id)
         if not state or not state.registration_id:
             return None
         rid = str(uuid.uuid4())
-        payload = build_otp_request_payload(state.registration_id, conv.mobile, rid)
-        return self.enqueue("OTP_REQUEST", payload, conversation_id=conv.id, mobile=conv.mobile, request_id=rid)
+        phone = account_mobile(conv.mobile)
+        payload = build_otp_request_payload(state.registration_id, phone, rid)
+        return self.enqueue("OTP_REQUEST", payload, conversation_id=conv.id, mobile=phone, request_id=rid)
 
     def handle_callback(self, payload: dict, signature: str = "", timestamp: str = "") -> dict:
         event = normalize_callback_event(payload)
@@ -878,10 +937,9 @@ class InfraDealerIntegrationService:
         phone = str(acct.get("phone") or "").replace("+91", "")[-10:]
         if not phone:
             return
-        state = self.db.query(InfraDealerAccountState).filter(InfraDealerAccountState.mobile == phone).first()
+        state = self.get_or_create_account_state(phone)
         if not state:
-            state = InfraDealerAccountState(mobile=phone)
-            self.db.add(state)
+            return
         state.account_status = "ACCOUNT_CREATED"
         state.profile_status = "VERIFIED"
         state.infradealer_user_id = str(acct.get("user_id") or "")

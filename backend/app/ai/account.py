@@ -188,10 +188,11 @@ def start_account(db: Session, conv: AiConversation, lang: str, prefix: str = ""
     svc = _infra(db)
     if svc:
         try:
-            item = svc.check_account(conv)
-            if item:
-                svc.process_outbox_item(item)
-                db.flush()
+            with db.begin_nested():
+                item = svc.check_account(conv)
+                if item:
+                    svc.process_outbox_item(item)
+                    db.flush()
         except Exception:
             log.exception("InfraDealer account check failed for %s", conv.mobile)
         st = _state(db, conv.mobile)
@@ -202,13 +203,14 @@ def start_account(db: Session, conv: AiConversation, lang: str, prefix: str = ""
             payload["account_step"] = "otp"
             _write_payload(conv, payload)
             name = (conv.customer_name or payload.get("customer_name") or payload.get("wa_name") or "Seller")[:120]
-            created = svc.create_account(conv, name)
-            if created:
-                try:
-                    svc.process_outbox_item(created)
-                    db.flush()
-                except Exception:
-                    log.exception("InfraDealer account create failed for %s", conv.mobile)
+            try:
+                with db.begin_nested():
+                    created = svc.create_account(conv, name)
+                    if created:
+                        svc.process_outbox_item(created)
+                        db.flush()
+            except Exception:
+                log.exception("InfraDealer account create failed for %s", conv.mobile)
             st = _state(db, conv.mobile)
             head = prefix or t(lang, "confirm_ok")
             if st and st.account_status == "OTP_PENDING" and st.registration_id:
