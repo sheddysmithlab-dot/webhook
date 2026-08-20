@@ -1,0 +1,56 @@
+name: Deploy Webhook to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: webhook-infradealer-vps-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy to VPS
+        env:
+          HOST: ${{ secrets.VPS_SSH_HOST }}
+          USER: ${{ secrets.VPS_SSH_USER }}
+        run: |
+          set -euo pipefail
+          KEY=~/.ssh/vps_key
+          SSH_OPTS="-i $KEY -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+
+          scp $SSH_OPTS deploy/_remote_deploy.sh "${USER}@${HOST}:/tmp/_webhook_remote_deploy.sh"
+
+          ssh $SSH_OPTS "${USER}@${HOST}" \
+            "sed -i 's/\r$//' /tmp/_webhook_remote_deploy.sh && bash /tmp/_webhook_remote_deploy.sh"
+
+      - name: Verify health
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /tmp/health.json -w "%{http_code}" https://webhook.infradealer.com/api/health || true)
+            echo "attempt=$i http=$code"
+            if [ "$code" = "200" ]; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "Health check failed"
+          cat /tmp/health.json || true
+          exit 1
