@@ -22,10 +22,7 @@ const SETTINGS = [
 ];
 
 const AI_BASES = [
-  { label: "OpenAI", url: "https://api.openai.com/v1" },
-  { label: "Z.AI (GLM)", url: "https://api.z.ai/api/paas/v4" },
-  { label: "Groq", url: "https://api.groq.com/openai/v1" },
-  { label: "OpenRouter", url: "https://openrouter.ai/api/v1" },
+  { label: "Z.AI (GLM only)", url: "https://api.z.ai/api/paas/v4" },
 ];
 
 const AI_LANGS = [
@@ -398,8 +395,8 @@ export default function Webhook() {
     try {
       const saved = await api.saveAiSettings({
         ai_enabled: !!s.ai_enabled,
-        ai_api_base: s.ai_api_base || "https://api.openai.com/v1",
-        ai_model: s.ai_model || "gpt-4o-mini",
+        ai_api_base: s.ai_api_base || "https://api.z.ai/api/paas/v4",
+        ai_model: s.ai_model || "glm-4.5-flash",
         ai_reply_language: s.ai_reply_language || "auto",
         ai_api_key: aiKey,
       });
@@ -702,14 +699,14 @@ export default function Webhook() {
           <input
             value={s.ai_api_base || ""}
             onChange={(e) => field("ai_api_base", e.target.value)}
-            placeholder="https://api.openai.com/v1"
+            placeholder="https://api.z.ai/api/paas/v4"
             autoComplete="off"
           />
           <label>Model</label>
           <input
             value={s.ai_model || ""}
             onChange={(e) => field("ai_model", e.target.value)}
-            placeholder="gpt-4o-mini"
+            placeholder="glm-4.5-flash"
             autoComplete="off"
           />
           <label>API key</label>

@@ -318,12 +318,20 @@ def fallback_reply(db, conv: AiConversation, text: str, media_note: str = "") ->
 
 def llm_configured(db) -> bool:
     cfg = resolve_ai_config(db)
-    return bool(cfg["enabled"] and cfg["api_key"])
+    return bool(cfg["enabled"] and cfg["api_key"] and (cfg.get("provider") == "z.ai"))
 
 
 def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | None:
     cfg = resolve_ai_config(db)
+    if cfg.get("config_error") and not cfg.get("api_key"):
+        log.error("ai.llm skipped: %s", cfg["config_error"])
+        return None
     if not cfg["enabled"] or not cfg["api_key"]:
+        if cfg.get("config_error"):
+            log.error("ai.llm skipped: %s", cfg["config_error"])
+        return None
+    if "z.ai" not in (cfg.get("api_base") or "").lower():
+        log.error("ai.llm skipped: non-Z.AI base %s", cfg.get("api_base"))
         return None
     lang = _conv_lang(db, conv, text)
     payload = _payload(conv)
@@ -343,6 +351,8 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
         slim["photo_count"] = len(slim.pop("media_ids") or [])
     recents = recent_outbound_bodies(db, conv.conversation_id, 2)
     user_block = (
+        "Follow TRAINED CRITERIA only. Backend CURRENT_STATE is source of truth. "
+        "Do not invent eligibility, credits, approval, or missing fields. "
         "ANSWER ONLY THE LATEST CUSTOMER MESSAGE below. Do not answer an older question. "
         "If they ask account → answer account. If they ask vehicle/price → answer that. Never mix.\n"
         "CURRENT_STATE: "
@@ -362,7 +372,12 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
         "customer_confirmed is true and account_onboarded is false AND they just confirmed. "
         "Never invent OTP/password. Reply in {lang}."
     )
+    from .memory import prompt_block
+
     sys = SYSTEM_PROMPT + "\n\n" + language_instruction(lang)
+    learned = prompt_block(db)
+    if learned:
+        sys += "\n\n" + learned
     messages = [{"role": "system", "content": sys}]
     messages.extend(_history(db, conv)[-6:])
     messages.append({"role": "user", "content": user_block})

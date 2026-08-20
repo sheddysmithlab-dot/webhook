@@ -184,8 +184,8 @@ class MetaSettings(Base):
     seq: Mapped[int] = mapped_column(Integer, default=1000)
     ai_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     ai_api_key: Mapped[str] = mapped_column(String(1024), default="")
-    ai_api_base: Mapped[str] = mapped_column(String(300), default="https://api.openai.com/v1")
-    ai_model: Mapped[str] = mapped_column(String(80), default="gpt-4o-mini")
+    ai_api_base: Mapped[str] = mapped_column(String(300), default="https://api.z.ai/api/paas/v4")
+    ai_model: Mapped[str] = mapped_column(String(80), default="glm-4.5-flash")
     ai_reply_language: Mapped[str] = mapped_column(String(16), default="auto")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

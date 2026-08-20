@@ -269,10 +269,10 @@ def harvest_with_llm(db: Session, text: str) -> None:
     cfg = resolve_ai_config(db)
     if not cfg.get("enabled") or not cfg.get("api_key"):
         return
-    url = (cfg.get("api_base") or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
+    url = (cfg.get("api_base") or "https://api.z.ai/api/paas/v4").rstrip("/") + "/chat/completions"
     headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
     body = {
-        "model": cfg.get("model") or "gpt-4o-mini",
+        "model": cfg.get("model") or "glm-4.5-flash",
         "temperature": 0,
         "max_tokens": 200,
         "thinking": {"type": "disabled"},

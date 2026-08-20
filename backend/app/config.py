@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     meta_test_recipient: str = ""
     ai_enabled: bool = True
     ai_api_key: str = ""
-    ai_api_base: str = "https://api.openai.com/v1"
-    ai_model: str = "gpt-4o-mini"
+    ai_api_base: str = "https://api.z.ai/api/paas/v4"
+    ai_model: str = "glm-4.5-flash"
     ai_reply_language: str = "auto"
     ai_media_dir: str = "./data/media"
     infradealer_base_url: str = ""

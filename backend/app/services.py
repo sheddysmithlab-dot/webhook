@@ -16,35 +16,67 @@ from .models import Chat, MetaSettings, Otp
 
 log = logging.getLogger("infradealer")
 
+# Production AI provider: Z.AI / GLM only — never OpenAI.
+ZAI_API_BASE = "https://api.z.ai/api/paas/v4"
+ZAI_MODEL = "glm-4.5-flash"
+AI_CONFIG_ERROR_ZAI = (
+    "AI provider must be Z.AI only. Set meta_settings.ai_api_base="
+    f"{ZAI_API_BASE}, ai_model={ZAI_MODEL}, and ai_api_key "
+    "(or env AI_API_BASE / AI_MODEL / AI_API_KEY). OpenAI is not allowed."
+)
+AI_CONFIG_ERROR_KEY = (
+    "Z.AI AI_API_KEY is missing. Set meta_settings.ai_api_key or env AI_API_KEY."
+)
+
+
+def is_zai_api_base(url: str) -> bool:
+    return "z.ai" in (url or "").lower()
+
+
+def is_openai_api_base(url: str) -> bool:
+    low = (url or "").lower()
+    return "openai.com" in low or "openrouter.ai" in low or "api.groq.com" in low
+
 
 def normalize_ai_api_base(url: str) -> str:
+    """Normalize to Z.AI paas base. Non-Z.AI / OpenAI bases are rejected and remapped."""
     raw = (url or "").strip().rstrip("/")
     if not raw:
-        return "https://api.openai.com/v1"
+        return ZAI_API_BASE
     low = raw.lower()
-    if "z.ai/manage-apikey" in low or "z.ai/model-api" in low or low in {"https://z.ai", "http://z.ai", "https://chat.z.ai"}:
-        return "https://api.z.ai/api/paas/v4"
+    if is_openai_api_base(raw):
+        log.warning("Rejected non-Z.AI API base %s — forcing %s", raw, ZAI_API_BASE)
+        return ZAI_API_BASE
+    if "z.ai/manage-apikey" in low or "z.ai/model-api" in low or low in {
+        "https://z.ai", "http://z.ai", "https://chat.z.ai",
+    }:
+        return ZAI_API_BASE
     if "api.z.ai" in low:
         raw = re.sub(r"/chat/completions/?$", "", raw, flags=re.I).rstrip("/")
         if raw.rstrip("/").endswith("/api"):
-            return "https://api.z.ai/api/paas/v4"
-        return raw
+            return ZAI_API_BASE
+        return raw if is_zai_api_base(raw) else ZAI_API_BASE
+    if not is_zai_api_base(raw):
+        log.warning("Rejected non-Z.AI API base %s — forcing %s", raw, ZAI_API_BASE)
+        return ZAI_API_BASE
     return raw
 
 
 def normalize_ai_model(model: str, api_base: str = "") -> str:
+    """Map to a Z.AI GLM model slug. GPT/OpenAI model names are remapped."""
     raw = (model or "").strip()
-    if "z.ai" in (api_base or "").lower():
-        slug = re.sub(r"[\s_]+", "-", raw.lower()).strip("-")
-        slug = slug.replace("glm-4-5", "glm-4.5").replace("glm4.5", "glm-4.5")
-        if slug in {"glm-4.5flash", "glm-4.5-flash"}:
-            return "glm-4.5-flash"
-        if slug in {"glm-4.5", "glm-4.5-air"}:
-            return "glm-4.5"
-        if slug.startswith("gpt"):
-            return "glm-4.5-flash"
-        return slug or "glm-4.5-flash"
-    return raw or "gpt-4o-mini"
+    slug = re.sub(r"[\s_]+", "-", raw.lower()).strip("-")
+    slug = slug.replace("glm-4-5", "glm-4.5").replace("glm4.5", "glm-4.5")
+    if slug in {"glm-4.5flash", "glm-4.5-flash"}:
+        return "glm-4.5-flash"
+    if slug in {"glm-4.5", "glm-4.5-air"}:
+        return "glm-4.5"
+    if not slug or slug.startswith("gpt") or "openai" in slug:
+        return ZAI_MODEL
+    # Unknown slug still allowed only when talking to Z.AI (caller enforces base)
+    if api_base and not is_zai_api_base(api_base):
+        return ZAI_MODEL
+    return slug or ZAI_MODEL
 
 
 def utcnow() -> datetime:
@@ -115,8 +147,8 @@ def get_or_create_settings(db: Session) -> MetaSettings:
             graph_version="v23.0",
             ai_enabled=settings.ai_enabled,
             ai_api_key=settings.ai_api_key or "",
-            ai_api_base=settings.ai_api_base or "https://api.openai.com/v1",
-            ai_model=settings.ai_model or "gpt-4o-mini",
+            ai_api_base=normalize_ai_api_base(settings.ai_api_base or ZAI_API_BASE),
+            ai_model=normalize_ai_model(settings.ai_model or ZAI_MODEL, ZAI_API_BASE),
             ai_reply_language=getattr(settings, "ai_reply_language", None) or "auto",
         )
         db.add(row)
@@ -140,11 +172,11 @@ def get_or_create_settings(db: Session) -> MetaSettings:
     if settings.meta_test_recipient:
         row.test_recipient = normalize_mobile(settings.meta_test_recipient)
     if not getattr(row, "ai_api_base", None):
-        row.ai_api_base = settings.ai_api_base or "https://api.openai.com/v1"
+        row.ai_api_base = normalize_ai_api_base(settings.ai_api_base or ZAI_API_BASE)
     if not getattr(row, "ai_model", None):
-        row.ai_model = settings.ai_model or "gpt-4o-mini"
-    base = normalize_ai_api_base(getattr(row, "ai_api_base", None) or "")
-    model = normalize_ai_model(getattr(row, "ai_model", None) or "", base)
+        row.ai_model = normalize_ai_model(settings.ai_model or ZAI_MODEL, ZAI_API_BASE)
+    base = normalize_ai_api_base(getattr(row, "ai_api_base", None) or settings.ai_api_base or ZAI_API_BASE)
+    model = normalize_ai_model(getattr(row, "ai_model", None) or settings.ai_model or ZAI_MODEL, base)
     if getattr(row, "ai_api_base", None) != base:
         row.ai_api_base = base
     if getattr(row, "ai_model", None) != model:
@@ -157,17 +189,46 @@ def get_or_create_settings(db: Session) -> MetaSettings:
 
 
 def resolve_ai_config(db: Session) -> dict:
+    """Resolve Z.AI-only LLM config from DB meta_settings, then env. No OpenAI fallback."""
     row = get_or_create_settings(db)
     key = (getattr(row, "ai_api_key", None) or settings.ai_api_key or "").strip()
-    enabled = True if getattr(row, "ai_enabled", None) is None else bool(row.ai_enabled)
-    base = normalize_ai_api_base(getattr(row, "ai_api_base", None) or settings.ai_api_base or "https://api.openai.com/v1")
-    model = normalize_ai_model(getattr(row, "ai_model", None) or settings.ai_model or "", base)
+    want_enabled = True if getattr(row, "ai_enabled", None) is None else bool(row.ai_enabled)
+    raw_base = (getattr(row, "ai_api_base", None) or settings.ai_api_base or "").strip()
+    raw_model = (getattr(row, "ai_model", None) or settings.ai_model or "").strip()
+    if raw_base and is_openai_api_base(raw_base):
+        log.error("ai.config_error: OpenAI/other provider rejected (%s). Forcing Z.AI.", raw_base)
+    # Empty DB+ENV → Z.AI defaults (never OpenAI). Missing key surfaces as config_error.
+    base = normalize_ai_api_base(raw_base or ZAI_API_BASE)
+    model = normalize_ai_model(raw_model or ZAI_MODEL, base)
+    config_error = ""
+    if not is_zai_api_base(base):
+        config_error = AI_CONFIG_ERROR_ZAI
+        log.error("ai.config_error: %s", config_error)
+        return {
+            "enabled": False,
+            "api_key": "",
+            "api_base": ZAI_API_BASE,
+            "model": ZAI_MODEL,
+            "reply_language": normalize_policy(
+                getattr(row, "ai_reply_language", None) or settings.ai_reply_language or "auto"
+            ),
+            "config_error": config_error,
+            "provider": "z.ai",
+        }
+    if want_enabled and not key:
+        config_error = AI_CONFIG_ERROR_KEY
+        log.error("ai.config_error: %s", config_error)
+    enabled = bool(want_enabled and key)
     return {
         "enabled": enabled,
         "api_key": key,
         "api_base": base,
         "model": model,
-        "reply_language": normalize_policy(getattr(row, "ai_reply_language", None) or settings.ai_reply_language or "auto"),
+        "reply_language": normalize_policy(
+            getattr(row, "ai_reply_language", None) or settings.ai_reply_language or "auto"
+        ),
+        "config_error": config_error,
+        "provider": "z.ai",
     }
 
 
@@ -198,11 +259,12 @@ def settings_public(row: MetaSettings) -> dict:
         "last_delivery": row.last_delivery.isoformat() if row.last_delivery else None,
         "error_log": json.loads(row.error_log or "[]"),
         "ai_enabled": bool(getattr(row, "ai_enabled", True)),
-        "ai_api_base": getattr(row, "ai_api_base", None) or "https://api.openai.com/v1",
-        "ai_model": getattr(row, "ai_model", None) or "gpt-4o-mini",
+        "ai_api_base": normalize_ai_api_base(getattr(row, "ai_api_base", None) or ZAI_API_BASE),
+        "ai_model": normalize_ai_model(getattr(row, "ai_model", None) or ZAI_MODEL, ZAI_API_BASE),
         "ai_reply_language": normalize_policy(getattr(row, "ai_reply_language", None) or "auto"),
         "ai_api_key_set": bool((getattr(row, "ai_api_key", None) or "").strip()),
         "ai_api_key_hint": _key_hint(getattr(row, "ai_api_key", None) or ""),
+        "ai_provider": "z.ai",
         "configured": {
             "callback_url": bool(row.callback_url),
             "verify_token": bool(row.verify_token),

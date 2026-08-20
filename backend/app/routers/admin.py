@@ -27,7 +27,20 @@ from ..models import (
     Submission,
     User,
 )
-from ..services import get_or_create_settings, next_ref, normalize_ai_api_base, normalize_ai_model, normalize_mobile, resolve_ai_config, settings_public, valid_mobile
+from ..services import (
+    get_or_create_settings,
+    next_ref,
+    normalize_ai_api_base,
+    normalize_ai_model,
+    normalize_mobile,
+    resolve_ai_config,
+    settings_public,
+    valid_mobile,
+    ZAI_API_BASE,
+    ZAI_MODEL,
+    is_openai_api_base,
+    is_zai_api_base,
+)
 from ..ai.i18n import normalize_policy
 from ..identity import listing_category, parse_listing_price, seller_fields, unique_photo_ids
 
@@ -309,8 +322,8 @@ def save_settings(body: SettingsIn, db: Session = Depends(get_db), _: None = Dep
 class AiSettingsIn(BaseModel):
     ai_enabled: bool = True
     ai_api_key: str = ""
-    ai_api_base: str = "https://api.openai.com/v1"
-    ai_model: str = "gpt-4o-mini"
+    ai_api_base: str = ZAI_API_BASE
+    ai_model: str = ZAI_MODEL
     ai_reply_language: str = "auto"
 
 
@@ -318,8 +331,14 @@ class AiSettingsIn(BaseModel):
 def save_ai_settings(body: AiSettingsIn, db: Session = Depends(get_db), _: None = Depends(require_admin)):
     row = get_or_create_settings(db)
     row.ai_enabled = bool(body.ai_enabled)
-    row.ai_api_base = normalize_ai_api_base(body.ai_api_base or "https://api.openai.com/v1")
-    row.ai_model = normalize_ai_model(body.ai_model or "gpt-4o-mini", row.ai_api_base)[:80]
+    incoming_base = (body.ai_api_base or "").strip() or ZAI_API_BASE
+    if is_openai_api_base(incoming_base):
+        raise HTTPException(
+            400,
+            f"Only Z.AI is allowed. Use {ZAI_API_BASE} and model {ZAI_MODEL}. OpenAI/Groq/OpenRouter are disabled.",
+        )
+    row.ai_api_base = normalize_ai_api_base(incoming_base)
+    row.ai_model = normalize_ai_model(body.ai_model or ZAI_MODEL, row.ai_api_base)[:80]
     row.ai_reply_language = normalize_policy(body.ai_reply_language)
     incoming = (body.ai_api_key or "").strip()
     if incoming:
@@ -332,12 +351,16 @@ def save_ai_settings(body: AiSettingsIn, db: Session = Depends(get_db), _: None 
 @router.post("/settings/ai/test")
 def test_ai_settings(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     cfg = resolve_ai_config(db)
+    if cfg.get("config_error") and not cfg.get("api_key"):
+        raise HTTPException(400, cfg["config_error"])
     if not cfg["enabled"]:
-        raise HTTPException(400, "AI setup off hai. Pehle enable karke save karo.")
+        raise HTTPException(400, cfg.get("config_error") or "AI setup off hai. Pehle enable karke Z.AI key save karo.")
     if not cfg["api_key"]:
-        raise HTTPException(400, "API key save nahi hai.")
+        raise HTTPException(400, "Z.AI API key save nahi hai.")
+    if not is_zai_api_base(cfg["api_base"]):
+        raise HTTPException(400, f"Only Z.AI allowed. Got base={cfg['api_base']}")
     import httpx
-    url = cfg["api_base"] + "/chat/completions"
+    url = cfg["api_base"].rstrip("/") + "/chat/completions"
     try:
         with httpx.Client(timeout=20) as client:
             resp = client.post(
@@ -347,15 +370,17 @@ def test_ai_settings(db: Session = Depends(get_db), _: None = Depends(require_ad
                     "model": cfg["model"],
                     "messages": [{"role": "user", "content": "Reply with OK"}],
                     "max_tokens": 8,
+                    "thinking": {"type": "disabled"},
+                    "enable_thinking": False,
                 },
             )
     except Exception as exc:
-        raise HTTPException(400, f"AI API connect nahi hua: {exc}") from exc
+        raise HTTPException(400, f"Z.AI API connect nahi hua: {exc}") from exc
     if resp.status_code >= 400:
         data = resp.json() if resp.content else {}
         err = (data.get("error") or {}).get("message") if isinstance(data, dict) else resp.text
-        raise HTTPException(400, err or f"AI API HTTP {resp.status_code}")
-    return {"ok": True, "model": cfg["model"], "base": cfg["api_base"]}
+        raise HTTPException(400, err or f"Z.AI API HTTP {resp.status_code}")
+    return {"ok": True, "provider": "z.ai", "model": cfg["model"], "base": cfg["api_base"]}
 
 
 @router.post("/settings/regenerate-token")
