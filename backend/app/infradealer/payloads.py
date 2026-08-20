@@ -2,7 +2,7 @@
 
 Maps WhatsApp-collected fields onto the InfraDealer Post Your Ad card:
 title, category, make_model, owner_name, year, km, km_unit, price,
-description, state, city, area, seller_name, seller_contact, photos (max 10).
+description, state, city, area, seller_name, seller_contact, photos (max 5).
 """
 
 from __future__ import annotations
@@ -163,7 +163,7 @@ def build_listing_payload(
             confirmed = json.loads(confirmed)
         except json.JSONDecodeError:
             confirmed = {}
-    media_ids = unique_photo_ids(db, conv, payload)[:10]
+    media_ids = unique_photo_ids(db, conv, payload)[:5]
     media = [
         {
             "media_id": str(mid),

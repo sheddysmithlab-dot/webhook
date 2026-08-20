@@ -142,11 +142,11 @@ def unique_photo_ids(db: Session, conv: AiConversation | None, payload: dict | N
         seen_meta.add(key)
         ordered.append(row.id)
     if ordered:
-        return ordered
+        return ordered[:5]
     if conv and conv.draft_id:
         rows = [row for row in rows if row.draft_id == conv.draft_id]
     elif wanted:
-        return ordered
+        return ordered[:5]
     else:
         return []
     for row in rows:
@@ -157,7 +157,9 @@ def unique_photo_ids(db: Session, conv: AiConversation | None, payload: dict | N
             continue
         seen_meta.add(key)
         ordered.append(row.id)
-    return ordered
+        if len(ordered) >= 5:
+            break
+    return ordered[:5]
 
 
 def seller_fields(db: Session, conv: AiConversation | None, draft: AiListingDraft | None, payload: dict) -> tuple[str, str]:

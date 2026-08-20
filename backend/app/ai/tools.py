@@ -163,9 +163,12 @@ def _write_payload(conv: AiConversation, payload: dict) -> dict:
 
 
 def _draft_for(db: Session, conv: AiConversation) -> AiListingDraft:
+    from .cards import ensure_card_id
+
     if conv.draft_id:
         row = db.query(AiListingDraft).filter(AiListingDraft.id == conv.draft_id).first()
-        if row:
+        if row and (row.status or "").upper() not in {"CLEARED", "DELETED"}:
+            ensure_card_id(db, row)
             return row
     row = AiListingDraft(
         conversation_id=conv.id,
@@ -178,7 +181,11 @@ def _draft_for(db: Session, conv: AiConversation) -> AiListingDraft:
     )
     db.add(row)
     db.flush()
+    ensure_card_id(db, row)
     conv.draft_id = row.id
+    payload = _payload(conv)
+    payload["active_card_id"] = row.card_id
+    _write_payload(conv, payload)
     return row
 
 
@@ -420,7 +427,26 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
     if name == "submit_for_review":
         if not payload.get("customer_confirmed"):
             return {"ok": False, "error": "Wait for Haan/Yes on the final summary first.", "need_confirm": True}
+        from .account_filter import sync_conversation_account, eligibility_message
+        from .cards import photos_status, ensure_card_id
+
+        verdict = sync_conversation_account(db, conv)
+        payload = _payload(conv)
+        if not verdict.can_post:
+            msg = eligibility_message(conv.language or "hinglish", verdict) or "Account not eligible to post."
+            return {"ok": False, "error": msg, "account_blocked": True, "buy_link": verdict.buy_link}
+
         draft = _draft_for(db, conv)
+        ensure_card_id(db, draft)
+        photo = photos_status(db, draft.id)
+        if photo["need_more"]:
+            return {
+                "ok": False,
+                "error": f"Need at least {photo['min']} photos for {draft.card_id}. Now {photo['count']}.",
+                "need_photos": True,
+                "photo_count": photo["count"],
+                "card_id": draft.card_id,
+            }
         if draft.status in HUMAN_ONLY_STATUS:
             return {"ok": False, "error": "Already posted by admin"}
         try:
@@ -432,6 +458,7 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
                     "ok": True,
                     "already_pushed": True,
                     "draft_id": draft.id,
+                    "card_id": draft.card_id,
                     "status": draft.status or payload.get("listing_status") or "PUSHED",
                 }
         except Exception:
@@ -445,12 +472,20 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
         draft.status = "CONFIRMED"
         payload["listing_status"] = "CONFIRMED"
         payload["data_status"] = "COMPLETE"
+        payload["active_card_id"] = draft.card_id
         conv.state = "CONFIRMED"
         _write_payload(conv, payload)
         ids = [int(x) for x in (payload.get("media_ids") or []) if isinstance(x, int) or str(x).isdigit()]
         if ids:
+            # Cap at max 5 photos for this card
+            ids = ids[:5]
             db.query(AiMedia).filter(AiMedia.id.in_(ids)).update({"draft_id": draft.id}, synchronize_session=False)
-        _log(db, conv, "tool", {"tool": "submit_for_review", "status": draft.status, "draft_id": draft.id})
+        _log(
+            db,
+            conv,
+            "tool",
+            {"tool": "submit_for_review", "status": draft.status, "draft_id": draft.id, "card_id": draft.card_id},
+        )
         try:
             from ..infradealer.service import InfraDealerIntegrationService
 
@@ -461,6 +496,6 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
                     svc.process_outbox_item(item)
         except Exception:
             log.exception("listing.push failed")
-        return {"ok": True, "draft_id": draft.id, "status": draft.status, "gaps": []}
+        return {"ok": True, "draft_id": draft.id, "card_id": draft.card_id, "status": draft.status, "gaps": []}
 
     return {"ok": False, "error": "Unknown or forbidden tool"}

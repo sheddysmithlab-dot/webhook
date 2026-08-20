@@ -73,6 +73,7 @@ def snapshot(db: Session, conv: AiConversation, payload: dict) -> dict:
     if payload.get("state") and payload.get("city") and payload.get("city") != payload.get("state"):
         loc = f"{payload.get('state')} / {payload.get('city')}"
     data = {
+        "card": payload.get("active_card_id") or "",
         "vehicle": vehicle,
         "category": normalize_vehicle_category(payload.get("category") or payload.get("type") or "") or payload.get("category") or "",
         "year": payload.get("year") or "",
@@ -384,10 +385,16 @@ def start_new_listing(db: Session, conv: AiConversation, pending: dict, pending_
     draft.intent = conv.intent or ""
     draft.confirmed_json = "{}"
     draft.customer_json = "{}"
+    from .cards import ensure_card_id
+
+    ensure_card_id(db, draft)
+    payload = _payload(conv)
+    payload["active_card_id"] = draft.card_id
+    _write_payload(conv, payload)
     if pending_media:
         db.query(AiMedia).filter(AiMedia.id.in_(pending_media)).update({"draft_id": draft.id}, synchronize_session=False)
     _apply_pending_fields(db, conv, pending)
-    _log(db, conv, "vehicle_new", {"draft_id": draft.id, "pending": pending})
+    _log(db, conv, "vehicle_new", {"draft_id": draft.id, "card_id": draft.card_id, "pending": pending})
 
 
 def sync_posted_product(db: Session, conv: AiConversation) -> None:

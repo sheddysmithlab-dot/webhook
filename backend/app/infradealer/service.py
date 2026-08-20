@@ -818,6 +818,16 @@ class InfraDealerIntegrationService:
             from ..ai.i18n import t
 
             text = t(lang, "posted_with_link", url=url) if url else t(lang, "posted")
+            card = getattr(self.db.get(AiListingDraft, req.draft_id), "card_id", None) if req and req.draft_id else pl.get("active_card_id")
+            if req and req.draft_id:
+                draft = self.db.get(AiListingDraft, req.draft_id)
+                if draft:
+                    from ..ai.cards import schedule_card_cleanup
+
+                    schedule_card_cleanup(draft)
+                    card = draft.card_id or card
+            if card:
+                text = f"{text}\n\n{t(lang, 'card_cleanup_notice', card=card)}"
             self._notify_customer(conv, text, preview_url=bool(url))
 
     def _on_listing_rejected(self, request_id: str, listing_id: str, payload: dict) -> None:
@@ -846,6 +856,16 @@ class InfraDealerIntegrationService:
             from ..ai.i18n import t
 
             text = t(lang, "rejected_with_reason", reason=reason) if reason else t(lang, "rejected")
+            card = pl.get("active_card_id")
+            if req and req.draft_id:
+                draft = self.db.get(AiListingDraft, req.draft_id)
+                if draft:
+                    from ..ai.cards import schedule_card_cleanup
+
+                    schedule_card_cleanup(draft)
+                    card = draft.card_id or card
+            if card:
+                text = f"{text}\n\n{t(lang, 'card_cleanup_notice', card=card)}"
             self._notify_customer(conv, text)
 
     def _on_account_created(self, payload: dict) -> None:

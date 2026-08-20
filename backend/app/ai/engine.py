@@ -189,19 +189,22 @@ def _next_question(payload: dict, lang: str) -> str | None:
     return None
 
 
-def _photo_prompt(payload: dict, media_note: str, lang: str) -> str | None:
+def _photo_prompt(payload: dict, media_note: str, lang: str, photo_count: int | None = None) -> str | None:
     if payload.get("photos_complete"):
         return None
-    n = len(payload.get("media_ids") or [])
+    n = photo_count if photo_count is not None else len(payload.get("media_ids") or [])
     if "DOWNLOAD_FAILED" in (media_note or ""):
         return t(lang, "photo_fail")
-    if n == 0:
+    if n <= 0:
         return _with_ack(lang, "photos", payload)
+    if n < 2:
+        return t(lang, "photo_need_min", count=n)
+    if n >= 5:
+        payload["photos_complete"] = True
+        return t(lang, "photos_enough")
     if payload.get("photos_prompted"):
         return None
-    if n >= 1:
-        return t(lang, "photo_more")
-    return None
+    return t(lang, "photo_more")
 
 
 def fallback_reply(db, conv: AiConversation, text: str, media_note: str = "") -> str:
@@ -249,17 +252,22 @@ def fallback_reply(db, conv: AiConversation, text: str, media_note: str = "") ->
         return t(lang, "intent")
 
     if payload.get("intent") == "SELL" and media_note:
-        extra = _photo_prompt(payload, media_note, lang)
+        from .cards import photos_status
+
+        st = photos_status(db, conv.draft_id)
+        extra = _photo_prompt(payload, media_note, lang, photo_count=st["count"])
+        if extra == t(lang, "photos_enough"):
+            payload["photos_complete"] = True
+            _write_payload(conv, payload)
         still = [m for m in missing_fields(payload) if m not in {"photos", "customer_name"}]
         if extra and still:
-            if extra == t(lang, "photo_more"):
+            if "photo_more" in (extra or "") or extra == t(lang, "photo_more") or extra == t(lang, "photo_need_min", count=st["count"]):
                 payload["photos_prompted"] = True
                 _write_payload(conv, payload)
             return extra
-        if extra and "photos" in (payload.get("missing_fields") or []):
-            if extra == t(lang, "photo_more"):
-                payload["photos_prompted"] = True
-                _write_payload(conv, payload)
+        if extra and st["need_more"]:
+            payload["photos_prompted"] = True
+            _write_payload(conv, payload)
             return extra
 
     q_key = _next_ask_key(payload)
@@ -540,6 +548,38 @@ def attach_intro(db, conv: AiConversation, lang: str, reply: str) -> str:
 
 
 def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
+    from .cards import parse_card_mention, switch_active_card, ensure_card_id
+    from .account_filter import sync_conversation_account
+
+    try:
+        sync_conversation_account(db, conv)
+    except Exception:
+        pass
+
+    mentioned = parse_card_mention(text or "")
+    if mentioned:
+        draft = switch_active_card(db, conv, mentioned)
+        if draft:
+            payload = _payload(conv)
+            payload["active_card_id"] = draft.card_id
+            _write_payload(conv, payload)
+            lang0 = _conv_lang(db, conv, text)
+            return t(lang0, "card_switched", card=draft.card_id)
+
+    if conv.draft_id:
+        try:
+            from ..models import AiListingDraft
+
+            draft = db.query(AiListingDraft).filter(AiListingDraft.id == conv.draft_id).first()
+            if draft:
+                ensure_card_id(db, draft)
+                pl = _payload(conv)
+                if pl.get("active_card_id") != draft.card_id:
+                    pl["active_card_id"] = draft.card_id
+                    _write_payload(conv, pl)
+        except Exception:
+            pass
+
     seed_memory(db)
     lang = _conv_lang(db, conv, text)
     extra = load_reps(db)

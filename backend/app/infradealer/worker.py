@@ -52,6 +52,8 @@ def process_outbox(db: Session, limit: int = 20) -> int:
 
 
 def run_integration_tasks(db: Session, *, outbox_limit: int = 20, poll_limit: int = 15) -> dict:
+    from ..ai.cards import process_due_card_cleanups
+
     svc = InfraDealerIntegrationService(db)
     processed = process_outbox(db, limit=outbox_limit)
     polled = 0
@@ -60,4 +62,9 @@ def run_integration_tasks(db: Session, *, outbox_limit: int = 20, poll_limit: in
         db.commit()
     except Exception:
         log.exception("listing status poll failed")
-    return {"outbox_processed": processed, "listings_polled": polled}
+    cleared = 0
+    try:
+        cleared = process_due_card_cleanups(db)
+    except Exception:
+        log.exception("card cleanup failed")
+    return {"outbox_processed": processed, "listings_polled": polled, "cards_cleared": cleared}

@@ -217,6 +217,7 @@ class AiListingDraft(Base):
     conversation_id: Mapped[int] = mapped_column(ForeignKey("ai_conversations.id"), index=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     mobile: Mapped[str] = mapped_column(String(10), index=True)
+    card_id: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
     intent: Mapped[str] = mapped_column(String(12), default="")
     status: Mapped[str] = mapped_column(String(32), default="PENDING_REVIEW", index=True)
     customer_json: Mapped[str] = mapped_column(Text, default="{}")
@@ -224,6 +225,7 @@ class AiListingDraft(Base):
     confirmed_json: Mapped[str] = mapped_column(Text, default="{}")
     title: Mapped[str] = mapped_column(String(200), default="")
     posted_product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True)
+    cleanup_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
