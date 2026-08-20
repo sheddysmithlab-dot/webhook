@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     ai_api_base: str = "https://api.z.ai/api/paas/v4"
     ai_model: str = "glm-4.5-flash"
     ai_reply_language: str = "auto"
+    # True = clean Z.AI normal chat only (no listing/card/account AI workflows)
+    ai_simple_chat: bool = True
     ai_media_dir: str = "./data/media"
     infradealer_base_url: str = ""
     infradealer_api_key: str = ""

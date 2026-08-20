@@ -22,12 +22,21 @@ from ..services import (
     store_chat,
     utcnow,
 )
-from .engine import respond
 from .schema import loads
+from .simple_chat import simple_respond
 from .tools import _draft_for, _payload, _write_payload
 from ..identity import usable_person_name
 
 log = logging.getLogger("infradealer.ai")
+
+
+def _ai_respond(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str:
+    """Hot path: simple Z.AI chat by default. Old listing engine only if AI_SIMPLE_CHAT=false."""
+    if getattr(settings, "ai_simple_chat", True):
+        return simple_respond(db, conv, text, media_note)
+    from .engine import respond
+
+    return respond(db, conv, text, media_note)
 
 
 def _is_latest_inbound(db: Session, conversation_id: str, wamid: str, mobile: str = "") -> bool:
@@ -222,22 +231,42 @@ def process_inbound(
         conv.updated_at = utcnow()
         # Do not store full message body in logs/events beyond truncate — already capped
         db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="inbound", detail=(text or "")[:200]))
-        media_note = attach_media(db, conv, wamid, media)
+
+        simple = getattr(settings, "ai_simple_chat", True)
+        if simple:
+            # Do not create drafts / Card photo pipelines in clean chat mode
+            media_note = ""
+            if media and media.get("kind"):
+                kind = (media.get("kind") or "image").lower()
+                media_note = kind
+                if kind == "image":
+                    text = text or "[photo]"
+                elif kind == "audio":
+                    text = text or "[voice note]"
+                elif kind == "video":
+                    text = text or "[video]"
+                elif kind == "document":
+                    text = text or "[document]"
+        else:
+            media_note = attach_media(db, conv, wamid, media)
 
         t_ai0 = time.perf_counter()
         try:
-            reply = respond(db, conv, text, media_note)
-            path = "llm" if (reply and len(reply) > 40 and "CARD-" not in (text or "")) else "router"
-            # Hint: fast path often shorter / templated — keep label soft
-            pl = _payload(conv)
-            if pl.get("active_card_id"):
-                set_active_card(mobile, pl["active_card_id"])
-            elif get_active_card(mobile) and not pl.get("active_card_id"):
-                pass
+            reply = _ai_respond(db, conv, text, media_note)
+            path = "simple_zai" if simple else (
+                "llm" if (reply and len(reply) > 40 and "CARD-" not in (text or "")) else "router"
+            )
+            if not simple:
+                pl = _payload(conv)
+                if pl.get("active_card_id"):
+                    set_active_card(mobile, pl["active_card_id"])
         except Exception as exc:
             log.exception("ai respond failed mobile=***%s", mobile[-4:] if mobile else "")
             db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="error", detail=str(exc)[:300]))
-            reply = "Namaste Sir, thodi technical dikkat hai. Kripya ek pal — aap gadi bechna chahte hain ya lena?"
+            reply = (
+                "Ji, abhi thodi technical dikkat aa rahi hai. "
+                "Kripya ek pal baad phir se message bhej dijiye."
+            )
             path = "error"
         t_ai = (time.perf_counter() - t_ai0) * 1000
 
