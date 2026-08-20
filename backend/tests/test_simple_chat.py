@@ -68,9 +68,10 @@ def test_simple_respond_calls_zai_only():
         client.post.return_value = fake_resp
         client_cls.return_value = client
 
-        reply = simple_respond(db, conv, "Kaise ho?", "")
+        reply = simple_respond(db, conv, "Mujhe JCB ke baare me baat karni hai", "")
         assert "theek" in reply.lower() or "Namaste" in reply
         assert conv.state == "CHAT"
+        assert client.post.called
         args, kwargs = client.post.call_args
         assert "api.z.ai" in args[0]
         body = kwargs["json"]
