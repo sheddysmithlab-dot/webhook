@@ -6,7 +6,7 @@ import httpx
 
 from ..models import AiConversation, AiListingDraft, Chat
 from ..services import resolve_ai_config
-from .account import account_busy, handle_account, should_intercept_account, wants_clear_conversation, wants_new_chat
+from .account import account_busy, handle_account, should_intercept_account, wants_clear_conversation, wants_delete_listing, wants_last_post, wants_listing_link, wants_new_chat
 from .confirm import handle_confirmation, handle_vehicle_slot, is_no, is_yes, collection_ready, sync_posted_product
 from .extract import extract_from_text
 from .i18n import _GREET, _WEAK, language_instruction, pick_language, t
@@ -671,10 +671,23 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
     recents = recent_outbound_bodies(db, conv.conversation_id, 6)
     payload0 = _payload(conv)
 
-    # 1) Clear / delete conversation — do this BEFORE confirm loop can re-dump the card
-    if wants_clear_conversation(text) or (
-        wants_new_chat(text) and re.search(r"\b(delete|clear|reset|hata|mita)\b", text or "", re.I)
-    ):
+    # 1) Website listing delete / link / last post — never wipe chat for these
+    if wants_delete_listing(text) or wants_listing_link(text) or wants_last_post(text):
+        from .data_push import handle_post_listing_query
+
+        post = handle_post_listing_query(db, conv, text, lang)
+        if post:
+            harvest_turn(db, text, {}, "")
+            return post
+
+    # 1b) Clear / delete conversation — do this BEFORE confirm loop can re-dump the card
+    if wants_clear_conversation(text):
+        from .confirm import reset_ai_conversation
+
+        reset_ai_conversation(db, conv)
+        harvest_turn(db, text, {}, "")
+        return t(lang, "chat_cleared")
+    if wants_new_chat(text) and re.search(r"\b(delete|clear|reset|hata|mita)\b", text or "", re.I) and not wants_delete_listing(text):
         from .confirm import reset_ai_conversation
 
         reset_ai_conversation(db, conv)
@@ -698,6 +711,10 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
             payload0["chat_cleared"] = False
             _write_payload(conv, payload0)
             return t(lang, "chat_cleared_followup")
+        from .data_push import has_recent_listing
+
+        if has_recent_listing(db, conv):
+            return t(lang, "casual_hi_after_listing")
         return t(lang, "casual_hi")
 
     # After clear, ignore stray "haan/han" that would re-open confirm

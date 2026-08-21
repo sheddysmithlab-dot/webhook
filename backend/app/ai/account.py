@@ -26,22 +26,44 @@ _HAS_ACCOUNT = re.compile(
     re.I,
 )
 _NEW_CHAT = re.compile(
-    r"new chat|naya chat|nayi chat|start karo|chat start|reset|naya listing|"
+    r"new chat|naya chat|nayi chat|start karo|chat start|reset chat|naya listing|"
     r"नई चैट|नया चैट|चैट स्टार्ट",
     re.I,
 )
+# Only wipe chat memory when user clearly means conversation — NOT website listing delete.
 _CLEAR_CHAT = re.compile(
     r"\b("
-    r"delete(\s+all)?(\s+previous)?(\s+conversation|\s+chat|\s+history)?"
-    r"|clear(\s+all)?(\s+previous)?(\s+conversation|\s+chat|\s+history)?"
-    r"|reset(\s+chat|\s+conversation)?"
-    r"|previous\s+(conversation|chat|baat|history)"
-    r"|(purani|pichhli|pehle\s+wali)\s+(baat|chat|conversation|history)"
-    r"|(conversation|chat)\s*(delete|clear|hata|mita)"
-    r"|hata\s*do|mita\s*do|saaf\s*kar(\s*do)?"
-    r"|mat\s+bhejna|ab\s+yah\s+mat"
-    r"|डिलीट|हटा\s*दो|मिटा\s*दो|पुरानी\s*(बात|चैट)"
+    r"delete(\s+all)?(\s+previous)?\s+(conversation|chat|history|baat)"
+    r"|clear(\s+all)?(\s+previous)?\s+(conversation|chat|history|baat)"
+    r"|reset(\s+chat|\s+conversation)"
+    r"|previous\s+(conversation|chat|baat|history)\s*(delete|clear|hata|mita)?"
+    r"|(purani|pichhli|pehle\s+wali)\s+(baat|chat|conversation|history)\s*(delete|clear|hata|mita)?"
+    r"|(conversation|chat|history)\s*(delete|clear|hata|mita)"
+    r"|delete\s+conversation|clear\s+chat|chat\s+saaf|"
+    r"डिलीट\s*(चैट|बात)|हटा\s*दो\s*(चैट|बात)|मिटा\s*दो\s*(चैट|बात)|पुरानी\s*(बात|चैट)\s*(हटा|मिटा|डिलीट)"
     r")\b",
+    re.I,
+)
+_DELETE_LISTING = re.compile(
+    r"(listing|post|ad|ads|website|site|infra|card).{0,48}(delete|hata|remove|mita|nikal)|"
+    r"(delete|hata|remove|mita|nikal).{0,48}(listing|post|ad|website|site|card)|"
+    r"(website|site)\s*se\s*(delete|hata|mita|nikal)|"
+    r"listing\s*(hata|mita|delete)\s*(do|dena|karo|kar)?",
+    re.I,
+)
+_ASK_LINK = re.compile(
+    r"\b(link|url|permalink)\b|"
+    r"(direct\s+link|live\s+link|listing\s+link|open\s+ho\s*ja)|"
+    r"link\s*(do|bhejo|chahiye|dedo|de\s*do|bhej\s*do)",
+    re.I,
+)
+_ASK_LAST_POST = re.compile(
+    r"(last|pichhli|pichli|pehle|previous|akhir).{0,24}(post|listing|dali|bechi|card)|"
+    r"(kya|kyaa)\s+(post|dali|becha)|"
+    r"mene\s+(last\s+)?post|"
+    r"meri\s+(last\s+)?listing|"
+    r"listing\s*(status|kahan|kya)|"
+    r"jo\s+(maine|mene)\s+(dali|post)",
     re.I,
 )
 _LISTING_HINT = re.compile(
@@ -61,8 +83,24 @@ def wants_new_chat(text: str) -> bool:
 
 
 def wants_clear_conversation(text: str) -> bool:
-    """User wants AI chat/card memory wiped — not a listing 'haan'."""
-    return bool(_CLEAR_CHAT.search(text or ""))
+    """User wants AI chat/card memory wiped — not website listing delete."""
+    msg = text or ""
+    if wants_delete_listing(msg):
+        return False
+    return bool(_CLEAR_CHAT.search(msg))
+
+
+def wants_delete_listing(text: str) -> bool:
+    """User wants posted listing removed from InfraDealer website — not chat clear."""
+    return bool(_DELETE_LISTING.search(text or ""))
+
+
+def wants_listing_link(text: str) -> bool:
+    return bool(_ASK_LINK.search(text or ""))
+
+
+def wants_last_post(text: str) -> bool:
+    return bool(_ASK_LAST_POST.search(text or ""))
 
 
 def account_busy(payload: dict) -> bool:

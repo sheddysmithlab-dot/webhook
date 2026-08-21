@@ -368,6 +368,9 @@ def reset_ai_conversation(db: Session, conv: AiConversation) -> str:
         "account_onboarded", "account_role", "account_password_set",
         "account_type", "account_label", "account_can_post", "account_reason",
         "account_buy_link", "account_eligibility", "otp_verified", "verification_status",
+        # Keep last push refs so "link do" / "last post" still work after chat clear
+        "listing_url", "infradealer_listing_id", "listing_status", "push_stage",
+        "summary_json", "confirmed_json", "rejection_reason",
     )
     payload = empty_payload()
     for key in keep_keys:

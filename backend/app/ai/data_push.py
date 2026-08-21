@@ -364,3 +364,144 @@ def apply_admin_decision(
         except Exception:
             pass
     return reject_message(lang, reason=reject_reason, card=card or "")
+
+
+_LIVE = {"POSTED", "APPROVED", "LIVE", "PUBLISHED"}
+_PENDING = {"PENDING_REVIEW", "CONFIRMED", "PUSHED_TO_INFRADEALER", "READY_FOR_REVIEW"}
+
+
+def resolve_last_listing(db: Session, conv: AiConversation) -> dict[str, Any]:
+    """Best-effort last listing card info for link / status / history replies."""
+    pl = _payload(conv)
+    summary = pl.get("summary_json") if isinstance(pl.get("summary_json"), dict) else {}
+    confirmed = pl.get("confirmed_json") if isinstance(pl.get("confirmed_json"), dict) else {}
+    info: dict[str, Any] = {
+        "listing_id": str(pl.get("infradealer_listing_id") or summary.get("listing_id") or ""),
+        "listing_url": str(pl.get("listing_url") or ""),
+        "status": str(pl.get("listing_status") or "").upper(),
+        "card": str(pl.get("active_card_id") or summary.get("card") or ""),
+        "vehicle": str(summary.get("vehicle") or confirmed.get("vehicle") or "").strip(),
+        "year": str(summary.get("year") or confirmed.get("year") or pl.get("year") or ""),
+        "rate": str(summary.get("rate") or confirmed.get("rate") or pl.get("expected_price") or ""),
+        "location": str(summary.get("location") or confirmed.get("location") or pl.get("state") or ""),
+    }
+    if not info["vehicle"]:
+        info["vehicle"] = " ".join(
+            str(x) for x in [pl.get("brand"), pl.get("model")] if x
+        ).strip()
+
+    drafts = (
+        db.query(AiListingDraft)
+        .filter(AiListingDraft.mobile == conv.mobile)
+        .order_by(AiListingDraft.id.desc())
+        .limit(8)
+        .all()
+    )
+    for draft in drafts:
+        st = (draft.status or "").upper()
+        if st not in _LIVE | _PENDING | {"REJECTED", "ACCOUNT_REQUIRED"}:
+            continue
+        if not info["card"] and draft.card_id:
+            info["card"] = draft.card_id
+        if not info["status"]:
+            info["status"] = st
+        if not info["vehicle"] and draft.title:
+            info["vehicle"] = draft.title
+        try:
+            blob = json.loads(draft.confirmed_json or draft.customer_json or "{}")
+        except Exception:
+            blob = {}
+        if isinstance(blob, dict):
+            if not info["vehicle"] and blob.get("vehicle"):
+                info["vehicle"] = str(blob["vehicle"])
+            if not info["year"] and blob.get("year"):
+                info["year"] = str(blob["year"])
+            if not info["rate"] and blob.get("rate"):
+                info["rate"] = str(blob["rate"])
+            if not info["location"] and blob.get("location"):
+                info["location"] = str(blob["location"])
+        break
+
+    try:
+        from ..models import InfraDealerAccountState
+
+        phone = normalize_mobile(conv.mobile)
+        state = (
+            db.query(InfraDealerAccountState)
+            .filter(InfraDealerAccountState.mobile == phone)
+            .first()
+            if phone
+            else None
+        )
+        if state and state.meta_json:
+            meta = json.loads(state.meta_json or "{}")
+            if not info["listing_id"] and meta.get("listing_id"):
+                info["listing_id"] = str(meta["listing_id"])
+            if not info["status"] and meta.get("listing_status"):
+                info["status"] = str(meta["listing_status"]).upper()
+    except Exception:
+        pass
+
+    lid = str(info.get("listing_id") or "")
+    if lid and (not info["listing_url"] or "/listing/" in info["listing_url"]):
+        info["listing_url"] = listing_open_url(lid, mobile=conv.mobile)
+    return info
+
+
+def has_recent_listing(db: Session, conv: AiConversation) -> bool:
+    info = resolve_last_listing(db, conv)
+    if info.get("listing_url") or info.get("listing_id"):
+        return True
+    st = str(info.get("status") or "").upper()
+    return st in _LIVE | _PENDING | {"REJECTED"}
+
+
+def handle_post_listing_query(db: Session, conv: AiConversation, text: str, lang: str) -> str | None:
+    """Answer link / last-post / website-delete without restarting buy/sell intent loop."""
+    from .account import wants_delete_listing, wants_last_post, wants_listing_link
+
+    msg = (text or "").strip()
+    if not msg:
+        return None
+    want_link = wants_listing_link(msg)
+    want_last = wants_last_post(msg)
+    want_del = wants_delete_listing(msg)
+    if not (want_link or want_last or want_del):
+        return None
+
+    info = resolve_last_listing(db, conv)
+    url = str(info.get("listing_url") or "")
+    status = str(info.get("status") or "").upper()
+    card = str(info.get("card") or "")
+    vehicle = str(info.get("vehicle") or "")
+    bits = [x for x in [vehicle, info.get("year"), info.get("rate"), info.get("location")] if x]
+    label = " · ".join(str(b) for b in bits[:4]) or (card or "listing")
+
+    if want_del:
+        if url:
+            return t(lang, "listing_delete_help", label=label, url=url)
+        return t(lang, "listing_delete_no_link")
+
+    if want_link:
+        if url and status in _LIVE:
+            return t(lang, "listing_link_live", url=url)
+        if url and status in _PENDING:
+            return t(lang, "listing_link_pending", url=url)
+        if status in _PENDING or status == "CONFIRMED":
+            return t(lang, "listing_awaiting_approve")
+        if status == "REJECTED":
+            reason = str(_payload(conv).get("rejection_reason") or "")
+            return t(lang, "rejected_with_reason", reason=reason) if reason else t(lang, "rejected")
+        return t(lang, "listing_link_missing")
+
+    # last post / history
+    if url and status in _LIVE:
+        return t(lang, "listing_last_live", label=label, url=url)
+    if status in _PENDING or status == "CONFIRMED":
+        return t(lang, "listing_last_pending", label=label)
+    if status == "REJECTED":
+        reason = str(_payload(conv).get("rejection_reason") or "")
+        return t(lang, "listing_last_rejected", label=label, reason=reason or "—")
+    if label and label != "listing":
+        return t(lang, "listing_last_known", label=label)
+    return t(lang, "listing_none")

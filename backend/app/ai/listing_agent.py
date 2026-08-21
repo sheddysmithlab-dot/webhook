@@ -21,6 +21,9 @@ from .account import (
     handle_account,
     should_intercept_account,
     wants_clear_conversation,
+    wants_delete_listing,
+    wants_last_post,
+    wants_listing_link,
     wants_new_chat,
 )
 from .account_filter import sync_conversation_account
@@ -50,6 +53,7 @@ from .confirm import (
     start_new_listing,
 )
 from .data_filteration import filter_memory, is_collection_ready
+from .data_push import handle_post_listing_query, has_recent_listing
 from .extract import extract_from_text
 from .i18n import pick_language, t
 from .schema import missing_fields
@@ -289,20 +293,35 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
             pl["active_card_id"] = draft.card_id
             _write_payload(conv, pl)
 
-    # Clear / new chat
-    if wants_clear_conversation(msg) or (
-        wants_new_chat(msg) and re.search(r"\b(delete|clear|reset|hata|mita)\b", msg, re.I)
-    ):
+    # Clear / new chat — never treat website listing delete as chat wipe
+    if wants_delete_listing(msg):
+        post = handle_post_listing_query(db, conv, msg, lang)
+        if post:
+            return _sanitize(post, lang)
+    if wants_clear_conversation(msg):
         reset_ai_conversation(db, conv)
         return t(lang, "chat_cleared")
+    if wants_new_chat(msg) and re.search(r"\b(delete|clear|reset|hata|mita)\b", msg, re.I):
+        # Explicit new-chat + wipe words, but not listing-delete (handled above)
+        if not wants_delete_listing(msg):
+            reset_ai_conversation(db, conv)
+            return t(lang, "chat_cleared")
     if wants_new_chat(msg):
         start_new_listing(db, conv, {}, [])
         return t(lang, "vehicle_new_ok") + "\n" + t(lang, "intent")
+
+    # Link / last post / status — answer without restarting buy-sell loop
+    if wants_listing_link(msg) or wants_last_post(msg):
+        post = handle_post_listing_query(db, conv, msg, lang)
+        if post:
+            return _sanitize(post, lang)
 
     pl0 = _payload(conv)
     if _GREET.match(msg) and not media_note and not extract_from_text(msg):
         if pl0.get("awaiting_confirm"):
             return t(lang, "casual_while_confirm", card=pl0.get("active_card_id") or "CARD")
+        if has_recent_listing(db, conv):
+            return t(lang, "casual_hi_after_listing")
         return t(lang, "casual_hi")
 
     # Account only when answering account (never hijack listing)
