@@ -177,10 +177,12 @@ if __name__ == "__main__":
         test_card_ids_and_isolation,
         test_chat_card_switch_reply,
         test_summary_includes_card,
+        test_whatsapp_user_collect_and_remote_details,
     )
 
     test_card_ids_and_isolation()
     test_ambiguous_card_clarification()
     test_chat_card_switch_reply()
     test_summary_includes_card()
+    test_whatsapp_user_collect_and_remote_details()
     print("ALL FINAL OPT CHECKS PASSED")

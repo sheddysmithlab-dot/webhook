@@ -430,7 +430,7 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
         from .account_filter import sync_conversation_account, eligibility_message
         from .cards import photos_status, ensure_card_id
 
-        verdict = sync_conversation_account(db, conv)
+        verdict = sync_conversation_account(db, conv, refresh=True)
         payload = _payload(conv)
         # Missing account must not block listing push — confirm → push, then OTP/account separately.
         if not verdict.can_post and verdict.reason != "no_account":

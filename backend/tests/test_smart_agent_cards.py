@@ -13,7 +13,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
-from app.models import AiConversation, AiListingDraft, AiMedia, InfraDealerAccountState, User
+from app.models import AiConversation, AiListingDraft, AiMedia, Chat, Contact, InfraDealerAccountState, User
 from app.ai.cards import (
     card_photo_count,
     clear_card_chat_data,
@@ -26,7 +26,13 @@ from app.ai.cards import (
     schedule_card_cleanup,
     switch_active_card,
 )
-from app.ai.account_filter import verify_account
+from app.ai.account_filter import (
+    apply_remote_account,
+    collect_whatsapp_user,
+    read_account_details,
+    sync_conversation_account,
+    verify_account,
+)
 from app.ai.confirm import summary_text, snapshot
 from app.ai.engine import respond
 from app.ai.tools import _draft_for, _payload, _write_payload
@@ -174,6 +180,63 @@ def test_account_filter_types():
     print("OK account filter ELIGIBLE/NOT_ELIGIBLE")
 
 
+def test_whatsapp_user_collect_and_remote_details():
+    db = _session()
+    conv = AiConversation(
+        mobile="9876543210",
+        conversation_id="CONV_9876543210",
+        state="NEW",
+        payload_json="{}",
+    )
+    db.add(conv)
+    db.add(Chat(
+        conversation_id="CONV_9876543210",
+        from_mobile="919876543210",
+        from_name="Ramesh Kumar",
+        direction="inbound",
+        body="Namaste",
+    ))
+    db.add(Contact(mobile="9876543210", wa_id="919876543210", name="Ramesh Kumar"))
+    db.flush()
+
+    wa = collect_whatsapp_user(db, conv, persist=True)
+    assert wa.mobile == "9876543210"
+    assert wa.wa_name == "Ramesh Kumar"
+    assert _payload(conv).get("wa_name") == "Ramesh Kumar"
+    assert conv.customer_name == "Ramesh Kumar"
+
+    st = InfraDealerAccountState(mobile="9876543210", account_status="CHECKING")
+    db.add(st)
+    db.flush()
+    apply_remote_account(
+        st,
+        {
+            "account_found": True,
+            "code": "ACCOUNT_FOUND",
+            "account": {
+                "user_id": "USR99",
+                "name": "Ramesh Kumar",
+                "phone": "+919876543210",
+                "status": "verified",
+                "account_type": "token",
+                "credits": 0,
+            },
+        },
+    )
+    details = read_account_details(db, "9876543210")
+    assert details.infradealer_user_id == "USR99"
+    assert details.webhook_connected is True
+    assert details.remote.get("account_type") == "token"
+    v = verify_account(db, "9876543210")
+    assert v.account_type == "token" and v.can_post is False and v.eligibility == "NOT_ELIGIBLE"
+
+    v2 = sync_conversation_account(db, conv)
+    assert _payload(conv).get("account_eligibility") == "NOT_ELIGIBLE"
+    assert _payload(conv).get("infradealer_user_id") == "USR99"
+    assert v2.wa_user and v2.wa_user.wa_name == "Ramesh Kumar"
+    print("OK whatsapp collect + webhook account details")
+
+
 def test_chat_card_switch_reply():
     db = _session()
     conv = AiConversation(mobile="9988776655", conversation_id="CONV_D", state="SELL_DATA_COLLECTION", language="hinglish")
@@ -255,6 +318,7 @@ if __name__ == "__main__":
     test_ambiguous_card_clarification()
     test_photos_min_max()
     test_account_filter_types()
+    test_whatsapp_user_collect_and_remote_details()
     test_chat_card_switch_reply()
     test_summary_includes_card()
     test_cleanup_isolates_other_card()

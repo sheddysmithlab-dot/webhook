@@ -23,6 +23,7 @@ from .account import (
     wants_clear_conversation,
     wants_new_chat,
 )
+from .account_filter import sync_conversation_account
 from .agent_criteria import AGENT_CRITERIA
 from .cards import (
     MAX_PHOTOS,
@@ -275,6 +276,10 @@ def _call_zai(db: Session, conv: AiConversation, text: str, lang: str, media_not
 
 def handle_message(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str:
     """Main entry — fresh listing agent."""
+    try:
+        sync_conversation_account(db, conv)
+    except Exception:
+        log.exception("account filter sync failed for %s", conv.mobile)
     lang = _lang(db, conv, text)
     msg = (text or "").strip()
 

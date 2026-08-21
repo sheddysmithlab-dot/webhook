@@ -434,6 +434,13 @@ class InfraDealerIntegrationService:
                 if state:
                     state.profile_status = "NOT_FOUND"
                     state.account_status = "NOT_FOUND"
+            if state:
+                try:
+                    from ..ai.account_filter import apply_remote_account
+
+                    apply_remote_account(state, body if isinstance(body, dict) else {})
+                except Exception:
+                    log.exception("account detail persist failed for %s", state.mobile)
         elif et == "ACCOUNT_CREATE":
             if state:
                 state.account_status = "REQUESTED"
@@ -447,6 +454,12 @@ class InfraDealerIntegrationService:
                     state.profile_status = "VERIFIED"
                     acct = body.get("account") or {}
                     state.infradealer_user_id = str(acct.get("user_id") or "")
+                    try:
+                        from ..ai.account_filter import apply_remote_account
+
+                        apply_remote_account(state, body if isinstance(body, dict) else {})
+                    except Exception:
+                        log.exception("account detail persist failed for %s", state.mobile)
                     self._retry_pending_listing(state)
         elif et == "OTP_VERIFY":
             if code == "OTP_INVALID":
@@ -461,6 +474,12 @@ class InfraDealerIntegrationService:
                     state.profile_status = "VERIFIED"
                     acct = body.get("account") or {}
                     state.infradealer_user_id = str(acct.get("user_id") or state.infradealer_user_id or "")
+                    try:
+                        from ..ai.account_filter import apply_remote_account
+
+                        apply_remote_account(state, body if isinstance(body, dict) else {})
+                    except Exception:
+                        log.exception("account detail persist failed for %s", state.mobile)
                 self._retry_pending_listing(state)
         elif et == "MEDIA_PUSH":
             remote = str((body.get("media") or {}).get("media_id") or body.get("media_id") or "")

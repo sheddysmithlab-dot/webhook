@@ -182,17 +182,18 @@ def _ensure_user(db: Session, conv: AiConversation, payload: dict) -> User:
 
 
 def start_account(db: Session, conv: AiConversation, lang: str, prefix: str = "") -> str:
+    from .account_filter import collect_whatsapp_user, connect_webhook_account
+
     payload = _payload(conv)
     if payload.get("account_onboarded"):
         return prefix or t(lang, "confirm_ok")
+    collect_whatsapp_user(db, conv, persist=True)
     svc = _infra(db)
     if svc:
         try:
             with db.begin_nested():
-                item = svc.check_account(conv)
-                if item:
-                    svc.process_outbox_item(item)
-                    db.flush()
+                connect_webhook_account(db, conv, refresh=True)
+                db.flush()
         except Exception:
             log.exception("InfraDealer account check failed for %s", conv.mobile)
         st = _state(db, conv.mobile)
@@ -252,15 +253,13 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
     if step == "ask_exists":
         if is_yes(msg) or says_has_account(msg) or re.search(r"\b(bana hua|banaya|already|account hai|haan account)\b", low):
             payload["account_has_infra"] = True
-            svc = _infra(db)
-            if svc:
-                try:
-                    item = svc.check_account(conv)
-                    if item:
-                        svc.process_outbox_item(item)
-                        db.flush()
-                except Exception:
-                    log.exception("account re-check failed for %s", conv.mobile)
+            from .account_filter import connect_webhook_account
+
+            try:
+                connect_webhook_account(db, conv, refresh=True)
+                db.flush()
+            except Exception:
+                log.exception("account re-check failed for %s", conv.mobile)
             if _infra_exists(_state(db, conv.mobile)):
                 return _finish_existing(db, conv, lang, t(lang, "account_already"))
             found = execute_tool(db, conv, "find_profile_by_mobile", {})
@@ -302,15 +301,13 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
 
     if step == "otp":
         if says_has_account(msg):
-            svc = _infra(db)
-            if svc:
-                try:
-                    item = svc.check_account(conv)
-                    if item:
-                        svc.process_outbox_item(item)
-                        db.flush()
-                except Exception:
-                    log.exception("account re-check failed for %s", conv.mobile)
+            from .account_filter import connect_webhook_account
+
+            try:
+                connect_webhook_account(db, conv, refresh=True)
+                db.flush()
+            except Exception:
+                log.exception("account re-check failed for %s", conv.mobile)
             if _infra_exists(_state(db, conv.mobile)):
                 return _finish_existing(db, conv, lang, t(lang, "account_already"))
             return t(lang, "account_otp")
