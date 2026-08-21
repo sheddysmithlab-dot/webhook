@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -292,7 +293,15 @@ def graph_url(meta: MetaSettings, path: str) -> str:
     return f"https://graph.facebook.com/{meta.graph_version}/{path.lstrip('/')}"
 
 
-def send_whatsapp_text(meta: MetaSettings, to: str, body: str, preview_url: bool = False) -> dict:
+def send_whatsapp_text(
+    meta: MetaSettings,
+    to: str,
+    body: str,
+    preview_url: bool = False,
+    *,
+    timeout: float = 20,
+    retries: int = 0,
+) -> dict:
     to = to_whatsapp_id(to)
     if not meta.phone_number_id or not meta.system_user_token:
         raise RuntimeError("Phone Number ID aur System User Token save karo.")
@@ -307,16 +316,32 @@ def send_whatsapp_text(meta: MetaSettings, to: str, body: str, preview_url: bool
     }
     url = graph_url(meta, f"{meta.phone_number_id}/messages")
     headers = {"Authorization": f"Bearer {meta.system_user_token}"}
-    with httpx.Client(timeout=20) as client:
-        resp = client.post(url, json=payload, headers=headers)
-        data = resp.json() if resp.content else {}
-        if resp.status_code >= 400:
-            raise RuntimeError(data.get("error", {}).get("message") or f"Graph API HTTP {resp.status_code}")
-        wamid = ""
-        messages = data.get("messages") or []
-        if messages:
-            wamid = messages[0].get("id") or ""
-        return {"wamid": wamid, "http_status": resp.status_code, "payload": payload, "response": data}
+    attempts = max(1, int(retries) + 1)
+    last_err: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            with httpx.Client(timeout=float(timeout)) as client:
+                resp = client.post(url, json=payload, headers=headers)
+                data = resp.json() if resp.content else {}
+                if resp.status_code >= 400:
+                    raise RuntimeError(data.get("error", {}).get("message") or f"Graph API HTTP {resp.status_code}")
+                wamid = ""
+                messages = data.get("messages") or []
+                if messages:
+                    wamid = messages[0].get("id") or ""
+                return {"wamid": wamid, "http_status": resp.status_code, "payload": payload, "response": data}
+        except Exception as exc:
+            last_err = exc
+            if attempt + 1 < attempts:
+                time.sleep(0.35)
+                continue
+            raise
+    raise last_err or RuntimeError("WhatsApp send failed")
+
+
+def send_whatsapp_fast(meta: MetaSettings, to: str, body: str, preview_url: bool = False) -> dict:
+    """Admin approve/reject path — deliver within ~5s (short timeout + 1 retry)."""
+    return send_whatsapp_text(meta, to, body, preview_url=preview_url, timeout=5.0, retries=1)
 
 
 def send_whatsapp_delete(meta: MetaSettings, message_id: str) -> dict:

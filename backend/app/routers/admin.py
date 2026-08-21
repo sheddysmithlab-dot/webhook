@@ -541,36 +541,18 @@ def ai_draft_status(draft_id: int, body: AiStatusIn, db: Session = Depends(get_d
     if conv:
         if status == "REJECTED":
             conv.state = "COMPLETED"
-            from ..ai.cards import ensure_card_id, schedule_card_cleanup
-            from ..ai.i18n import t
-            from ..services import get_or_create_settings, send_whatsapp_text, store_chat, utcnow
+            from ..ai.cards import ensure_card_id
+            from ..ai.data_push import notify_user_admin_decision
 
             ensure_card_id(db, draft)
-            schedule_card_cleanup(draft)
-            lang = conv.language or "hinglish"
             reason = (body.note or "").strip()
-            if reason:
-                text = t(lang, "rejected_card_reason", card=draft.card_id, reason=reason)
-            else:
-                text = t(lang, "rejected_card", card=draft.card_id)
-            text = f"{text}\n\n{t(lang, 'card_cleanup_notice', card=draft.card_id)}"
-            try:
-                meta = get_or_create_settings(db)
-                result = send_whatsapp_text(meta, draft.mobile, text)
-                store_chat(
-                    db,
-                    wamid=result.get("wamid") or f"ai.admin.reject.{draft.id}.{int(utcnow().timestamp())}",
-                    conversation_id=conv.conversation_id,
-                    from_mobile=meta.phone_number_id or "infradealer",
-                    from_name="InfraDealer AI",
-                    to_mobile=draft.mobile,
-                    direction="outbound",
-                    body=text,
-                    status="sent",
-                    unread=False,
-                )
-            except Exception:
-                pass
+            notify_user_admin_decision(
+                db,
+                conv,
+                approved=False,
+                reason=reason,
+                draft=draft,
+            )
         elif status == "NEEDS_INFO":
             conv.state = "DATA_COLLECTING"
         elif status == "READY_FOR_REVIEW":
@@ -638,34 +620,23 @@ def ai_draft_post(draft_id: int, db: Session = Depends(get_db), _: None = Depend
     draft.posted_product_id = prod.id
     if conv and conv.draft_id == draft.id:
         conv.state = "COMPLETED"
-    from ..ai.cards import ensure_card_id, schedule_card_cleanup
-    from ..ai.i18n import t
-    from ..services import get_or_create_settings, send_whatsapp_text, store_chat, utcnow
+    from ..ai.cards import ensure_card_id
+    from ..ai.data_push import notify_user_admin_decision
 
     ensure_card_id(db, draft)
-    schedule_card_cleanup(draft)
     if conv:
-        lang = conv.language or "hinglish"
-        # Local marketplace product — no InfraDealer public URL guaranteed
-        text = t(lang, "posted_card_nolink", card=draft.card_id)
-        text = f"{text}\n\n{t(lang, 'card_cleanup_notice', card=draft.card_id)}"
-        try:
-            meta = get_or_create_settings(db)
-            result = send_whatsapp_text(meta, draft.mobile, text)
-            store_chat(
-                db,
-                wamid=result.get("wamid") or f"ai.admin.post.{draft.id}.{int(utcnow().timestamp())}",
-                conversation_id=conv.conversation_id,
-                from_mobile=meta.phone_number_id or "infradealer",
-                from_name="InfraDealer AI",
-                to_mobile=draft.mobile,
-                direction="outbound",
-                body=text,
-                status="sent",
-                unread=False,
-            )
-        except Exception:
-            pass
+        notify_user_admin_decision(
+            db,
+            conv,
+            approved=True,
+            draft=draft,
+            payload={
+                "listing": {
+                    "listing_id": str(prod.id),
+                    "url": "",
+                }
+            },
+        )
     db.add(AiEvent(wamid="", mobile=draft.mobile, event_type="admin_post", detail=str(prod.id)))
     db.commit()
     return {"ok": True, "product_id": prod.id, "ref": prod.ref, "status": "POSTED"}

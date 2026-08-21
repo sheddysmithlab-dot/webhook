@@ -229,6 +229,13 @@ def process_inbound(
         conv = get_or_create_conversation(db, mobile, name)
         conv.last_wamid = wamid or conv.last_wamid
         conv.updated_at = utcnow()
+        # Any user reply cancels pending post-approve/reject 10-min chat clear
+        try:
+            from .cards import cancel_card_cleanup
+
+            cancel_card_cleanup(db, conv, mobile)
+        except Exception:
+            pass
         # Do not store full message body in logs/events beyond truncate — already capped
         db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="inbound", detail=(text or "")[:200]))
 

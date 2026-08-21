@@ -134,7 +134,8 @@ def test_multi_card_isolation_and_cleanup():
     schedule_card_cleanup(d1, minutes=0)
     d1.cleanup_at = datetime.utcnow() - timedelta(minutes=1)
     clear_card_chat_data(db, conv, d1)
-    assert d1.status == "CLEARED"
+    assert d1.status == "POSTED"  # listing memory kept
+    assert d1.cleanup_at is None
     assert conv.draft_id == d2.id
     assert _payload(conv).get("brand") == "JCB"
     print("OK multi-card + cleanup isolation")

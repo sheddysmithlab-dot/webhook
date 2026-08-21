@@ -372,34 +372,95 @@ def photos_status(db: Session, draft_id: int | None) -> dict:
     }
 
 
+CLEANUP_MINUTES = 10
+CLEANUP_WARN_BEFORE_MINUTES = 1
+_CLEANUP_STATUSES = {"POSTED", "APPROVED", "LIVE", "REJECTED", "PUBLISHED"}
+
+
+def _draft_meta(draft: AiListingDraft) -> dict:
+    try:
+        data = json.loads(draft.inferred_json or "{}")
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_draft_meta(draft: AiListingDraft, meta: dict) -> None:
+    draft.inferred_json = json.dumps(meta, ensure_ascii=False)
+
+
 def schedule_card_cleanup(draft: AiListingDraft, minutes: int = CLEANUP_MINUTES) -> None:
-    draft.cleanup_at = _now() + timedelta(minutes=minutes)
+    """After admin approve/reject: clear chat in `minutes` if user stays silent.
+
+    At (minutes - 1) send a 1-minute warning WhatsApp message.
+    Listing memory (draft confirmed_json / listing ids) is kept.
+    """
+    mins = max(int(minutes or CLEANUP_MINUTES), 1)
+    draft.cleanup_at = _now() + timedelta(minutes=mins)
+    meta = _draft_meta(draft)
+    meta["cleanup_warn_sent"] = False
+    meta["cleanup_scheduled_at"] = _now().isoformat()
+    meta["cleanup_minutes"] = mins
+    _write_draft_meta(draft, meta)
     try:
         from ..redis_cache import mark_card_cleanup
 
-        mark_card_cleanup(draft.mobile or "", draft.card_id or "", int(minutes * 60))
+        mark_card_cleanup(draft.mobile or "", draft.card_id or "", int(mins * 60))
     except Exception:
         pass
 
 
+def cancel_card_cleanup(db: Session, conv: AiConversation | None = None, mobile: str = "") -> int:
+    """User replied — cancel pending post-decision chat clear for their drafts."""
+    phone = (mobile or (conv.mobile if conv else "") or "").strip()[-10:]
+    if not phone:
+        return 0
+    rows = (
+        db.query(AiListingDraft)
+        .filter(
+            AiListingDraft.mobile == phone,
+            AiListingDraft.cleanup_at.isnot(None),
+            AiListingDraft.status.in_(list(_CLEANUP_STATUSES)),
+        )
+        .all()
+    )
+    cancelled = 0
+    for draft in rows:
+        draft.cleanup_at = None
+        meta = _draft_meta(draft)
+        meta.pop("cleanup_warn_sent", None)
+        meta.pop("cleanup_scheduled_at", None)
+        meta.pop("cleanup_minutes", None)
+        _write_draft_meta(draft, meta)
+        try:
+            from ..redis_cache import clear_card_cleanup_marker
+
+            clear_card_cleanup_marker(draft.mobile or "", draft.card_id or "")
+        except Exception:
+            pass
+        cancelled += 1
+    return cancelled
+
+
 def clear_card_chat_data(db: Session, conv: AiConversation, draft: AiListingDraft) -> None:
-    """Wipe per-card AI chat/detail for a finished card — keep other cards."""
+    """Wipe live AI chat collection for a finished card — keep listing memory."""
     from .schema import empty_payload
     from .tools import _payload, _write_payload
 
     payload = _payload(conv)
-    if conv.draft_id == draft.id:
+    if conv.draft_id == draft.id or (payload.get("active_card_id") and payload.get("active_card_id") == draft.card_id):
         keep = {
             "whatsapp_number": payload.get("whatsapp_number"),
             "customer_name": payload.get("customer_name"),
             "wa_name": payload.get("wa_name"),
+            "wa_id": payload.get("wa_id"),
             "profile_id": payload.get("profile_id"),
             "profile_status": payload.get("profile_status"),
             "otp_verified": payload.get("otp_verified"),
             "account_onboarded": payload.get("account_onboarded"),
             "account_role": payload.get("account_role"),
             "account_step": "done" if payload.get("account_onboarded") else "",
-            "ai_introduced": payload.get("ai_introduced"),
+            "ai_introduced": True,
             "language": payload.get("language"),
             "verification_status": payload.get("verification_status"),
             "account_type": payload.get("account_type"),
@@ -408,24 +469,67 @@ def clear_card_chat_data(db: Session, conv: AiConversation, draft: AiListingDraf
             "account_reason": payload.get("account_reason"),
             "account_buy_link": payload.get("account_buy_link"),
             "account_eligibility": payload.get("account_eligibility"),
+            # Listing memory stays for link / last-post after chat clear
+            "listing_url": payload.get("listing_url"),
+            "infradealer_listing_id": payload.get("infradealer_listing_id"),
+            "listing_status": payload.get("listing_status") or draft.status,
+            "push_stage": payload.get("push_stage"),
+            "summary_json": payload.get("summary_json"),
+            "confirmed_json": payload.get("confirmed_json"),
+            "rejection_reason": payload.get("rejection_reason"),
+            "chat_cleared": True,
         }
         fresh = empty_payload()
         fresh.update({k: v for k, v in keep.items() if v not in (None, "")})
         fresh["active_card_id"] = None
+        fresh["chat_cleared"] = True
         _write_payload(conv, fresh)
         conv.draft_id = None
         conv.state = "NEW_CHAT"
-    draft.status = "CLEARED"
+        conv.intent = ""
+        conv.error_message = ""
+    # Keep draft listing memory (title / confirmed_json / customer_json). Mark chat cleared only.
+    st = (draft.status or "").upper()
+    if st in _CLEANUP_STATUSES:
+        meta = _draft_meta(draft)
+        meta["chat_cleared_at"] = _now().isoformat()
+        meta["cleanup_warn_sent"] = True
+        _write_draft_meta(draft, meta)
+    else:
+        draft.status = "CLEARED"
     draft.cleanup_at = None
-    draft.inferred_json = "{}"
-    # Detach media from cleared draft (files can remain on disk; listing records stay)
-    db.query(AiMedia).filter(AiMedia.draft_id == draft.id).update(
-        {"draft_id": None}, synchronize_session=False
-    )
     try:
         from ..redis_cache import clear_card_cleanup_marker
 
         clear_card_cleanup_marker(draft.mobile or "", draft.card_id or "")
+    except Exception:
+        pass
+
+
+def _notify_cleanup_warning(db: Session, conv: AiConversation, card_id: str) -> None:
+    from .i18n import t
+    from ..services import get_or_create_settings, send_whatsapp_text, store_chat
+
+    mobile = (conv.mobile or "").strip()
+    if not mobile:
+        return
+    lang = (conv.language or "").strip() or "hinglish"
+    text = t(lang, "card_cleanup_warn", card=card_id or "Card")
+    try:
+        meta = get_or_create_settings(db)
+        result = send_whatsapp_text(meta, mobile, text)
+        store_chat(
+            db,
+            wamid=result.get("wamid") or f"ai.cleanup.warn.{conv.id}.{int(_now().timestamp())}",
+            conversation_id=conv.conversation_id or f"CONV_{mobile}",
+            from_mobile=meta.phone_number_id or "infradealer",
+            from_name="InfraDealer AI",
+            to_mobile=mobile,
+            direction="outbound",
+            body=text,
+            status="sent",
+            unread=False,
+        )
     except Exception:
         pass
 
@@ -460,6 +564,46 @@ def _notify_conversation_deleted(db: Session, conv: AiConversation, card_id: str
         pass
 
 
+def process_due_cleanup_warnings(db: Session, limit: int = 50) -> int:
+    """At minute 9 (1 min before clear): warn user that conversation will be deleted."""
+    now = _now()
+    rows = (
+        db.query(AiListingDraft)
+        .filter(
+            AiListingDraft.cleanup_at.isnot(None),
+            AiListingDraft.cleanup_at > now,
+            AiListingDraft.cleanup_at <= now + timedelta(minutes=CLEANUP_WARN_BEFORE_MINUTES),
+            AiListingDraft.status.in_(list(_CLEANUP_STATUSES)),
+        )
+        .order_by(AiListingDraft.cleanup_at.asc())
+        .limit(limit)
+        .all()
+    )
+    done = 0
+    for draft in rows:
+        try:
+            meta = _draft_meta(draft)
+            if meta.get("cleanup_warn_sent"):
+                continue
+            conv = db.get(AiConversation, draft.conversation_id)
+            if not conv:
+                meta["cleanup_warn_sent"] = True
+                _write_draft_meta(draft, meta)
+                done += 1
+                continue
+            card = draft.card_id or ensure_card_id(db, draft)
+            _notify_cleanup_warning(db, conv, card)
+            meta["cleanup_warn_sent"] = True
+            meta["cleanup_warn_at"] = now.isoformat()
+            _write_draft_meta(draft, meta)
+            done += 1
+        except Exception:
+            continue
+    if done:
+        db.commit()
+    return done
+
+
 def process_due_card_cleanups(db: Session, limit: int = 50) -> int:
     now = _now()
     rows = (
@@ -467,7 +611,7 @@ def process_due_card_cleanups(db: Session, limit: int = 50) -> int:
         .filter(
             AiListingDraft.cleanup_at.isnot(None),
             AiListingDraft.cleanup_at <= now,
-            AiListingDraft.status.in_(["POSTED", "APPROVED", "LIVE", "REJECTED"]),
+            AiListingDraft.status.in_(list(_CLEANUP_STATUSES)),
         )
         .order_by(AiListingDraft.cleanup_at.asc())
         .limit(limit)
@@ -482,8 +626,10 @@ def process_due_card_cleanups(db: Session, limit: int = 50) -> int:
                 clear_card_chat_data(db, conv, draft)
                 _notify_conversation_deleted(db, conv, card)
             else:
-                draft.status = "CLEARED"
                 draft.cleanup_at = None
+                meta = _draft_meta(draft)
+                meta["chat_cleared_at"] = now.isoformat()
+                _write_draft_meta(draft, meta)
             done += 1
         except Exception:
             # Retry-safe: leave cleanup_at so worker can try again; never crash the loop

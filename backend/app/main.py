@@ -47,7 +47,8 @@ app.include_router(webhook.router)
 
 def _integration_loop() -> None:
     while True:
-        time.sleep(30)
+        # 5s poll so approve/reject status → WhatsApp stays under ~5 seconds even without callback
+        time.sleep(5)
         db = SessionLocal()
         try:
             run_integration_tasks(db)

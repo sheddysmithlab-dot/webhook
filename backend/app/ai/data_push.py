@@ -138,28 +138,87 @@ def listing_open_url(
     return f"{base}{sep}{qs}"
 
 
-def approve_message(lang: str, *, url: str = "", card: str = "") -> str:
-    if card and url:
-        text = t(lang, "posted_card", card=card, url=url)
-        return f"{text}\n\n{t(lang, 'card_cleanup_notice', card=card)}"
-    if card:
-        text = t(lang, "posted_card_nolink", card=card)
-        return f"{text}\n\n{t(lang, 'card_cleanup_notice', card=card)}"
-    if url:
-        return t(lang, "posted_with_link", url=url)
-    return t(lang, "posted")
+def approve_message(lang: str, *, url: str = "", card: str = "", reason: str = "") -> str:
+    """WhatsApp body after admin APPROVE — always states approved; link when available."""
+    label = card or "listing"
+    if url and reason:
+        text = t(lang, "listing_approved_link_note", card=label, url=url, reason=reason)
+    elif url:
+        text = t(lang, "listing_approved_link", card=label, url=url)
+    elif reason:
+        text = t(lang, "listing_approved_note", card=label, reason=reason)
+    else:
+        text = t(lang, "listing_approved", card=label)
+    return f"{text}\n\n{t(lang, 'card_cleanup_notice', card=label)}"
 
 
 def reject_message(lang: str, *, reason: str = "", card: str = "") -> str:
-    if card and reason:
-        text = t(lang, "rejected_card_reason", card=card, reason=reason)
-        return f"{text}\n\n{t(lang, 'card_cleanup_notice', card=card)}"
-    if card:
-        text = t(lang, "rejected_card", card=card)
-        return f"{text}\n\n{t(lang, 'card_cleanup_notice', card=card)}"
+    """WhatsApp body after admin REJECT — always includes reason when provided."""
+    label = card or "listing"
     if reason:
-        return t(lang, "rejected_with_reason", reason=reason)
-    return t(lang, "rejected")
+        text = t(lang, "listing_rejected_reason", card=label, reason=reason)
+    else:
+        text = t(lang, "listing_rejected", card=label)
+    return f"{text}\n\n{t(lang, 'card_cleanup_notice', card=label)}"
+
+
+def notify_user_admin_decision(
+    db: Session,
+    conv: AiConversation,
+    *,
+    approved: bool,
+    listing_id: str = "",
+    payload: dict | None = None,
+    reason: str = "",
+    draft: AiListingDraft | None = None,
+) -> str:
+    """Build + send WhatsApp approve/reject message immediately (~5s)."""
+    text = apply_admin_decision(
+        db,
+        conv,
+        approved=approved,
+        listing_id=listing_id,
+        payload=payload,
+        reason=reason,
+        draft=draft,
+    )
+    if not text:
+        return ""
+    try:
+        from ..services import get_or_create_settings, send_whatsapp_fast, store_chat, utcnow
+
+        mobile = (conv.mobile or (draft.mobile if draft else "") or "").strip()
+        if not mobile:
+            return text
+        # Flush decision state first so even if WA is slow, DB already has approve/reject
+        try:
+            db.flush()
+        except Exception:
+            pass
+        meta = get_or_create_settings(db)
+        url = str(_payload(conv).get("listing_url") or "")
+        result = send_whatsapp_fast(meta, mobile, text, preview_url=bool(approved and url))
+        store_chat(
+            db,
+            wamid=result.get("wamid")
+            or f"ai.admin.{'ok' if approved else 'rej'}.{conv.id}.{int(utcnow().timestamp())}",
+            conversation_id=conv.conversation_id or f"CONV_{mobile}",
+            from_mobile=meta.phone_number_id or "infradealer",
+            from_name="InfraDealer AI",
+            to_mobile=mobile,
+            direction="outbound",
+            body=text,
+            status="sent",
+            unread=False,
+        )
+        log.info(
+            "admin_decision_wa_sent approved=%s mobile=***%s ms_path=fast",
+            approved,
+            mobile[-4:],
+        )
+    except Exception:
+        log.exception("admin decision WhatsApp notify failed for %s", conv.mobile)
+    return text
 
 
 def push_listing(db: Session, conv: AiConversation) -> PushResult:
@@ -335,6 +394,8 @@ def apply_admin_decision(
             pl["infradealer_listing_id"] = lid
         if url:
             pl["listing_url"] = url
+        if reason:
+            pl["approval_note"] = reason
         _write_payload(conv, pl)
         if draft:
             draft.status = "POSTED"
@@ -344,8 +405,7 @@ def apply_admin_decision(
                 schedule_card_cleanup(draft)
             except Exception:
                 pass
-        return approve_message(lang, url=url, card=card or "")
-
+        return approve_message(lang, url=url, card=card or "", reason=reason)
     reject_reason = reason or listing_reject_reason(payload)
     pl["listing_status"] = "REJECTED"
     pl["listing_review_notified"] = True

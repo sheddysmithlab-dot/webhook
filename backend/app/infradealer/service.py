@@ -855,10 +855,15 @@ class InfraDealerIntegrationService:
         if not conv or not msg or self.is_test_mode():
             return
         try:
-            from ..services import get_or_create_settings, send_whatsapp_text, store_chat
+            from ..services import get_or_create_settings, send_whatsapp_fast, store_chat
 
+            # Flush so listing status is durable before Graph call
+            try:
+                self.db.flush()
+            except Exception:
+                pass
             meta = get_or_create_settings(self.db)
-            result = send_whatsapp_text(meta, conv.mobile, msg, preview_url=preview_url)
+            result = send_whatsapp_fast(meta, conv.mobile, msg, preview_url=preview_url)
             store_chat(
                 self.db,
                 wamid=result.get("wamid") or f"cb.{conv.id}.{int(_now().timestamp())}",
@@ -871,6 +876,7 @@ class InfraDealerIntegrationService:
                 status="sent",
                 unread=False,
             )
+            log.info("customer WhatsApp notify ok mobile=***%s", (conv.mobile or "")[-4:])
         except Exception:
             log.exception("customer WhatsApp notify failed for %s", conv.mobile)
 
