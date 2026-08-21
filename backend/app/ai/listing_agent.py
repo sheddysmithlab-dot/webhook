@@ -1,7 +1,7 @@
 """Fresh InfraDealer WhatsApp listing agent — clean orchestration on Z.AI.
 
-Does NOT use legacy engine.respond. Reuses stable helpers: cards, confirm,
-account_filter, extract parsers, tools, i18n.
+Flow: account_filter → chat_memory → data_filteration → (later) data_push
+Does NOT use legacy engine.respond.
 """
 
 from __future__ import annotations
@@ -35,19 +35,25 @@ from .cards import (
     photos_status,
     switch_active_card,
 )
+from .chat_memory import (
+    ask_missing,
+    collect_message,
+    mark_optional_asked,
+    mark_optional_done,
+    read_memory,
+    send_for_confirmation,
+)
 from .confirm import (
     collection_ready,
     handle_confirmation,
-    is_no,
-    is_yes,
     reset_ai_conversation,
-    send_summary,
     start_new_listing,
 )
+from .data_filteration import filter_memory, is_collection_ready
 from .extract import extract_from_text
 from .i18n import pick_language, t
-from .schema import missing_fields, normalize_vehicle_category
-from .tools import _draft_for, _payload, _write_payload, execute_tool
+from .schema import missing_fields
+from .tools import _draft_for, _payload, _write_payload
 
 log = logging.getLogger("infradealer.ai.listing_agent")
 
@@ -56,7 +62,6 @@ _GREET = re.compile(
     r"^\s*(hi+|hii+|hello|hey+|namaste|namaskar|kaise\s*ho|kya\s*haal)[\s!?.]*$",
     re.I,
 )
-_SKIP_OPT = re.compile(r"\b(skip|baad me|nahi pata|koi nahi|bas yahi)\b", re.I)
 
 
 def _lang(db: Session, conv: AiConversation, text: str) -> str:
@@ -119,32 +124,13 @@ def _sanitize(text: str, lang: str) -> str:
 
 
 def _apply_fields(db: Session, conv: AiConversation, fields: dict) -> None:
-    if not fields:
-        return
-    if fields.get("intent"):
-        execute_tool(db, conv, "save_customer_data", {"intent": fields["intent"]})
-    veh = {k: v for k, v in fields.items() if k not in {"intent", "contact_phone"} and v not in (None, "")}
-    if veh:
-        veh["source"] = "customer"
-        execute_tool(db, conv, "save_vehicle_data", veh)
-    if fields.get("contact_phone"):
-        pl = _payload(conv)
-        pl["contact_phone"] = fields["contact_phone"]
-        _write_payload(conv, pl)
+    from .chat_memory import apply_fields
+
+    apply_fields(db, conv, fields)
 
 
 def _ask_missing(lang: str, payload: dict) -> str | None:
-    miss = [m for m in missing_fields(payload) if m not in {"customer_name", "photos"}]
-    if not miss:
-        return None
-    key = miss[0]
-    q = t(lang, key if key in {
-        "intent", "category", "brand", "model", "year", "expected_price", "budget", "state", "location",
-    } else "more_detail")
-    bits = [str(payload.get(k)) for k in ("brand", "model", "year", "state", "expected_price") if payload.get(k)]
-    if bits and key != "intent":
-        return t(lang, "ack", facts=" ".join(bits[:4])) + q
-    return q
+    return ask_missing(lang, payload)
 
 
 def _photo_line(db: Session, conv: AiConversation, lang: str, media_note: str) -> str | None:
@@ -325,51 +311,8 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
         if acc:
             return _sanitize(acc, lang)
 
-    fields = extract_from_text(msg)
-    # Soft sell intent if dumping vehicle details with photo
-    if not fields.get("intent") and (fields.get("brand") or fields.get("model") or media_note):
-        low = msg.lower()
-        if re.search(r"\b(bech|sell|bikau|dena)\b", low) or media_note:
-            if not re.search(r"\b(kharid|buy|chahiye|lena)\b", low):
-                fields["intent"] = "SELL"
-    _apply_fields(db, conv, fields)
-
-    # Map short answers to last ask
-    last = (conv.error_message or "")
-    ask_key = last.split(":", 1)[1].strip() if last.lower().startswith("ask:") else ""
-    pl = _payload(conv)
-    if ask_key == "year" and not pl.get("year"):
-        y = re.search(r"\b((?:19|20)\d{2}|\d{2})\b", msg)
-        if y:
-            tok = y.group(1)
-            if len(tok) == 2:
-                n = int(tok)
-                tok = f"20{tok}" if n <= 30 else (f"19{tok}" if n >= 90 else tok)
-            execute_tool(db, conv, "save_vehicle_data", {"year": tok, "source": "customer"})
-    if ask_key in {"expected_price", "budget"} and looks_like_price(msg):
-        key = "budget" if ask_key == "budget" else "expected_price"
-        execute_tool(db, conv, "save_vehicle_data", {key: msg[:80], "source": "customer"})
-    if ask_key == "category" and not normalize_vehicle_category(pl.get("category") or ""):
-        cat = normalize_vehicle_category(msg)
-        if cat:
-            execute_tool(db, conv, "save_vehicle_data", {"category": cat, "type": cat, "source": "customer"})
-    if ask_key in {"state", "location"} and len(msg.split()) <= 12:
-        from .extract import extract_state, infer_state_from_city, _fuzzy_city
-
-        st = extract_state(msg.lower())
-        city = _fuzzy_city(msg.split()[0]) if msg.split() else None
-        data = {"source": "customer"}
-        if st:
-            data["state"] = st
-        if city:
-            data["city"] = city.title()
-            data["location"] = data["city"]
-            data.setdefault("state", infer_state_from_city(city) or "")
-        elif not st:
-            data["state"] = msg[:80]
-        execute_tool(db, conv, "save_vehicle_data", {k: v for k, v in data.items() if v})
-
-    pl = _payload(conv)
+    fields = collect_message(db, conv, msg, media_note)
+    pl = read_memory(db, conv)
 
     # Confirm loop
     locked = handle_confirmation(db, conv, msg, fields, lang)
@@ -380,15 +323,15 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     if pl.get("intent") in {"SELL", "BUY"} and not conv.draft_id:
         draft = _draft_for(db, conv)
         ensure_card_id(db, draft)
-        pl = _payload(conv)
+        pl = read_memory(db, conv)
         pl["active_card_id"] = draft.card_id
         _write_payload(conv, pl)
-        pl = _payload(conv)
+        pl = read_memory(db, conv)
 
     # Photos
     if media_note:
         photo = _photo_line(db, conv, lang, media_note)
-        pl = _payload(conv)
+        pl = read_memory(db, conv)
         still = [m for m in missing_fields(pl) if m not in {"photos", "customer_name"}]
         if photo and still:
             conv.error_message = f"ask:{still[0]}"
@@ -399,42 +342,39 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     # Optional bundle once
     if (
         (pl.get("intent") or "").upper() == "SELL"
-        and collection_ready(pl)
+        and is_collection_ready(pl)
         and not pl.get("optional_asked")
         and not pl.get("awaiting_confirm")
     ):
-        pl["optional_asked"] = True
-        conv.error_message = "ask:optional_bundle"
-        _write_payload(conv, pl)
+        mark_optional_asked(db, conv)
         return t(lang, "optional_bundle")
 
     if pl.get("optional_asked") and not pl.get("optional_done"):
-        if fields or _SKIP_OPT.search(msg) or msg:
-            pl["optional_done"] = True
-            _write_payload(conv, pl)
-            pl = _payload(conv)
+        mark_optional_done(db, conv, msg, fields)
+        pl = read_memory(db, conv)
 
-    # Ready for summary?
+    # Ready → data_filteration → confirmation via chat_memory
     st = photos_status(db, conv.draft_id)
+    filtered = filter_memory(db, conv, pl)
     if (
-        collection_ready(pl)
+        filtered.ready
         and not pl.get("awaiting_confirm")
         and not pl.get("customer_confirmed")
-        and (pl.get("intent") or "").upper() == "BUY"
+        and filtered.intent == "BUY"
     ):
-        return send_summary(db, conv, lang)
+        return send_for_confirmation(db, conv, lang)
     if (
-        collection_ready(pl)
+        filtered.ready
         and not pl.get("awaiting_confirm")
         and not pl.get("customer_confirmed")
-        and (pl.get("intent") or "").upper() == "SELL"
+        and filtered.intent == "SELL"
         and pl.get("optional_asked")
         and st["ready"]
     ):
-        return send_summary(db, conv, lang)
+        return send_for_confirmation(db, conv, lang)
     if (
-        collection_ready(pl)
-        and (pl.get("intent") or "").upper() == "SELL"
+        filtered.ready
+        and filtered.intent == "SELL"
         and pl.get("optional_asked")
         and st["need_more"]
     ):
@@ -443,13 +383,13 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     # Fast path
     fast = _fast_path(db, conv, msg, fields, lang, media_note)
     if fast:
-        miss = missing_fields(_payload(conv))
+        miss = missing_fields(read_memory(db, conv))
         if miss:
             conv.error_message = f"ask:{miss[0]}"
         return _sanitize(fast, lang)
 
     # No intent yet
-    pl = _payload(conv)
+    pl = read_memory(db, conv)
     if not pl.get("intent"):
         if pl.get("brand") or pl.get("model"):
             label = " ".join(x for x in [pl.get("brand"), pl.get("model")] if x) or "ye"
@@ -458,7 +398,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
         conv.error_message = "ask:intent"
         return t(lang, "intent")
 
-    ask = _ask_missing(lang, pl)
+    ask = ask_missing(lang, pl)
     if ask:
         miss = missing_fields(pl)
         if miss:
@@ -470,5 +410,5 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     if llm:
         return llm
 
-    ask = _ask_missing(lang, _payload(conv))
+    ask = ask_missing(lang, read_memory(db, conv))
     return ask or _FALLBACK

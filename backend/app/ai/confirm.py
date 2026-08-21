@@ -7,10 +7,15 @@ import re
 
 from sqlalchemy.orm import Session
 
-from ..identity import looks_like_price, seller_fields, unique_photo_ids
 from ..models import AiConversation, AiListingDraft, AiMedia, Product
+from .data_filteration import (
+    build_full_info,
+    is_collection_ready,
+    prepare_confirmation,
+    summary_text as _filtered_summary_text,
+)
 from .i18n import t
-from .schema import _blank, listing_title, missing_fields, normalize_vehicle_category
+from .schema import listing_title, missing_fields
 from .tools import _draft_for, _log, _payload, _write_payload
 
 _YES = re.compile(
@@ -46,122 +51,27 @@ def is_no(text: str) -> bool:
 
 
 def collection_ready(payload: dict) -> bool:
-    intent = (payload.get("intent") or "").upper()
-    if intent == "SELL":
-        price = looks_like_price(str(payload.get("expected_price") or ""))
-        state_ok = not _blank(payload.get("state")) or not _blank(payload.get("location"))
-        return bool(
-            normalize_vehicle_category(payload.get("category") or payload.get("type") or "")
-            and not _blank(payload.get("brand"))
-            and not _blank(payload.get("model"))
-            and not _blank(payload.get("year"))
-            and price
-            and state_ok
-        )
-    if intent == "BUY":
-        want = not _blank(payload.get("brand")) or bool(normalize_vehicle_category(payload.get("category") or payload.get("type") or ""))
-        cat_ok = bool(normalize_vehicle_category(payload.get("category") or payload.get("type") or ""))
-        budget = looks_like_price(str(payload.get("budget") or payload.get("budget_max") or ""))
-        state_ok = not _blank(payload.get("state")) or not _blank(payload.get("location"))
-        return bool(cat_ok and want and budget and state_ok)
-    return False
+    return is_collection_ready(payload)
 
 
 def snapshot(db: Session, conv: AiConversation, payload: dict) -> dict:
-    name, phone = seller_fields(db, conv, None, payload)
-    photos = unique_photo_ids(db, conv, payload)
-    vehicle = " ".join(str(x) for x in [payload.get("brand"), payload.get("model")] if x).strip()
-    rate = payload.get("expected_price") or payload.get("budget") or ""
-    loc = payload.get("state") or payload.get("location") or ""
-    if payload.get("state") and payload.get("city") and payload.get("city") != payload.get("state"):
-        loc = f"{payload.get('state')} / {payload.get('city')}"
-    data = {
-        "card": payload.get("active_card_id") or "",
-        "vehicle": vehicle,
-        "category": normalize_vehicle_category(payload.get("category") or payload.get("type") or "") or payload.get("category") or "",
-        "year": payload.get("year") or "",
-        "rate": rate,
-        "location": loc,
-        "state": payload.get("state") or "",
-        "city": payload.get("city") or payload.get("location") or "",
-        "running": payload.get("running") or payload.get("running_km") or payload.get("operating_hours") or "",
-        "owners": payload.get("owners") or "",
-        "finance_amount": payload.get("finance_amount") or "",
-        "finance_condition": payload.get("finance_condition") or "",
-        "tyre_percent": payload.get("tyre_percent") or "",
-        "work_issues": payload.get("work_issues") or "",
-        "condition": payload.get("condition") or "",
-        "phone": phone or conv.mobile,
-        "name": name,
-        "whatsapp": conv.mobile,
-        "intent": (payload.get("intent") or conv.intent or "").upper(),
-        "photos": photos,
-        "photo_count": len(photos),
-    }
-    if not data["card"] and conv.draft_id:
-        draft = db.query(AiListingDraft).filter(AiListingDraft.id == conv.draft_id).first()
-        if draft and draft.card_id:
-            data["card"] = draft.card_id
-    return {k: v for k, v in data.items() if v not in (None, "", [], 0) or k in {"card", "vehicle", "category", "year", "rate", "location", "phone", "photos"}}
+    data = build_full_info(db, conv, payload)
+    return {k: v for k, v in data.items() if k != "filtered"}
 
 
 def summary_text(data: dict, lang: str) -> str:
-    lines = []
-    if data.get("card"):
-        lines.append(f"Card : {data['card']}")
-    lines.extend(
-        [
-            f"Vehicle : {data.get('vehicle') or '—'}",
-            f"Category : {data.get('category') or '—'}",
-            f"Year : {data.get('year') or '—'}",
-            f"Rate : {data.get('rate') or '—'}",
-            f"Location : {data.get('location') or '—'}",
-        ]
-    )
-    if data.get("running"):
-        lines.append(f"Running : {data['running']}")
-    if data.get("owners"):
-        lines.append(f"Owners : {data['owners']}")
-    if data.get("finance_amount"):
-        lines.append(f"Finance : {data['finance_amount']}")
-    if data.get("finance_condition"):
-        lines.append(f"Finance condition : {data['finance_condition']}")
-    if data.get("tyre_percent"):
-        lines.append(f"Tyre : {data['tyre_percent']}")
-    if data.get("work_issues"):
-        lines.append(f"Work/issues : {data['work_issues']}")
-    if data.get("condition"):
-        lines.append(f"Condition : {data['condition']}")
-    if data.get("phone"):
-        lines.append(f"Phone : {data['phone']}")
-    if data.get("name"):
-        lines.append(f"Name : {data['name']}")
-    n = data.get("photo_count") or len(data.get("photos") or [])
-    if n:
-        lines.append(f"Photos : {n}")
-    return "\n".join(lines) + "\n\n" + t(lang, "confirm_ask")
+    return _filtered_summary_text(data, lang)
 
 
 def send_summary(db: Session, conv: AiConversation, lang: str) -> str:
-    payload = _payload(conv)
-    data = snapshot(db, conv, payload)
-    payload["awaiting_confirm"] = True
-    payload["customer_confirmed"] = False
-    payload["summary_json"] = data
-    conv.state = "AWAITING_CONFIRMATION"
-    conv.error_message = "ask:confirm"
-    _write_payload(conv, payload)
-    draft = db.query(AiListingDraft).filter(AiListingDraft.id == conv.draft_id).first() if conv.draft_id else None
-    if draft and draft.status == "CONFIRMED":
-        draft.status = "COLLECTING"
-        draft.confirmed_json = "{}"
-    return summary_text(data, lang)
+    _data, text = prepare_confirmation(db, conv, lang)
+    return text
 
 
 def push_confirmed_listing(db: Session, conv: AiConversation) -> dict:
-    from .tools import execute_tool
+    from .data_push import push_listing
 
-    return execute_tool(db, conv, "submit_for_review", {})
+    return push_listing(db, conv).as_dict()
 
 
 def confirm_prefix(db: Session, conv: AiConversation, lang: str) -> str:

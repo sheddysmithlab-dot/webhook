@@ -425,89 +425,9 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
         return {"ok": True, "verified": True, "profile_id": user.id, "created": created}
 
     if name == "submit_for_review":
-        if not payload.get("customer_confirmed"):
-            return {"ok": False, "error": "Wait for Haan/Yes on the final summary first.", "need_confirm": True}
-        from .account_filter import sync_conversation_account, eligibility_message
-        from .cards import photos_status, ensure_card_id
+        from .data_push import push_listing
 
-        verdict = sync_conversation_account(db, conv, refresh=True)
-        payload = _payload(conv)
-        # Missing account must not block listing push — confirm → push, then OTP/account separately.
-        if not verdict.can_post and verdict.reason != "no_account":
-            msg = eligibility_message(conv.language or "hinglish", verdict) or "Account not eligible to post."
-            return {"ok": False, "error": msg, "account_blocked": True, "buy_link": verdict.buy_link}
-
-        draft = _draft_for(db, conv)
-        ensure_card_id(db, draft)
-        if verdict.reason == "no_account":
-            try:
-                from ..infradealer.service import InfraDealerIntegrationService
-
-                svc = InfraDealerIntegrationService(db)
-                if svc.is_configured():
-                    st = svc.get_or_create_account_state(conv.mobile, conversation_id=conv.id)
-                    if st and not st.pending_draft_id:
-                        st.pending_draft_id = draft.id
-            except Exception:
-                log.exception("pending draft stash failed")
-        photo = photos_status(db, draft.id)
-        if photo["need_more"]:
-            return {
-                "ok": False,
-                "error": f"Need at least {photo['min']} photos for {draft.card_id}. Now {photo['count']}.",
-                "need_photos": True,
-                "photo_count": photo["count"],
-                "card_id": draft.card_id,
-            }
-        if draft.status in HUMAN_ONLY_STATUS:
-            return {"ok": False, "error": "Already posted by admin"}
-        try:
-            from ..infradealer.service import InfraDealerIntegrationService
-
-            svc = InfraDealerIntegrationService(db)
-            if svc.is_configured() and svc.listing_already_pushed(conv, draft, payload):
-                return {
-                    "ok": True,
-                    "already_pushed": True,
-                    "draft_id": draft.id,
-                    "card_id": draft.card_id,
-                    "status": draft.status or payload.get("listing_status") or "PUSHED",
-                }
-        except Exception:
-            log.exception("listing duplicate check failed")
-        draft.intent = conv.intent
-        draft.user_id = conv.profile_id
-        draft.title = listing_title(payload)
-        if payload.get("confirmed_json"):
-            draft.customer_json = json.dumps(payload.get("confirmed_json"), ensure_ascii=False)
-            draft.confirmed_json = draft.customer_json
-        draft.status = "CONFIRMED"
-        payload["listing_status"] = "CONFIRMED"
-        payload["data_status"] = "COMPLETE"
-        payload["active_card_id"] = draft.card_id
-        conv.state = "CONFIRMED"
-        _write_payload(conv, payload)
-        ids = [int(x) for x in (payload.get("media_ids") or []) if isinstance(x, int) or str(x).isdigit()]
-        if ids:
-            # Cap at max 5 photos for this card
-            ids = ids[:5]
-            db.query(AiMedia).filter(AiMedia.id.in_(ids)).update({"draft_id": draft.id}, synchronize_session=False)
-        _log(
-            db,
-            conv,
-            "tool",
-            {"tool": "submit_for_review", "status": draft.status, "draft_id": draft.id, "card_id": draft.card_id},
-        )
-        try:
-            from ..infradealer.service import InfraDealerIntegrationService
-
-            svc = InfraDealerIntegrationService(db)
-            if svc.is_configured():
-                item = svc.push_listing_for_draft(conv, draft, payload)
-                if item and item.status in {"PENDING", "RETRY"}:
-                    svc.process_outbox_item(item)
-        except Exception:
-            log.exception("listing.push failed")
-        return {"ok": True, "draft_id": draft.id, "card_id": draft.card_id, "status": draft.status, "gaps": []}
+        result = push_listing(db, conv)
+        return result.as_dict()
 
     return {"ok": False, "error": "Unknown or forbidden tool"}

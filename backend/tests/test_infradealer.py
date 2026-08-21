@@ -109,8 +109,8 @@ def test_callback_event_aliases_and_listing_fields():
     assert normalize_callback_event({"code": "LISTING_REJECTED"}) == "listing.rejected"
     assert normalize_callback_event({"listing": {"status": "POSTED"}}) == "listing.posted"
     assert normalize_callback_event({"listing": {"status": "rejected"}}) == "listing.rejected"
-    assert listing_public_url({"listing": {"url": "https://infradealer.com/listing/abc"}}) == "https://infradealer.com/listing/abc"
-    assert listing_public_url({}, "L99").endswith("/listing/L99")
+    assert listing_public_url({"listing": {"url": "https://infradealer.com/listing/abc"}}) == "https://infradealer.com/listings/abc"
+    assert listing_public_url({}, "L99").endswith("/listings/L99")
     assert listing_reject_reason({"reason": "Photos blurry, resend cabin shot"}) == "Photos blurry, resend cabin shot"
 
 

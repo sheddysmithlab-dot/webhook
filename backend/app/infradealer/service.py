@@ -519,14 +519,16 @@ class InfraDealerIntegrationService:
                     state.meta_json = json.dumps(meta)
                 conv = self.db.get(AiConversation, item.conversation_id) if item.conversation_id else None
                 if conv:
+                    from ..ai.data_push import listing_open_url
                     from ..ai.tools import _payload, _write_payload
 
                     pl = _payload(conv)
                     pl["listing_status"] = "PENDING_REVIEW"
                     pl["listing_review_notified"] = False
+                    pl["push_stage"] = "AWAITING_ADMIN"
                     if listing_id:
                         pl["infradealer_listing_id"] = listing_id
-                    url = listing_public_url(body, listing_id)
+                    url = listing_open_url(listing_id, mobile=conv.mobile, payload=body)
                     if url:
                         pl["listing_url"] = url
                     _write_payload(conv, pl)
@@ -547,14 +549,16 @@ class InfraDealerIntegrationService:
                     state.meta_json = json.dumps(meta)
                 conv = self.db.get(AiConversation, item.conversation_id) if item.conversation_id else None
                 if conv:
+                    from ..ai.data_push import listing_open_url
                     from ..ai.tools import _payload, _write_payload
 
                     pl = _payload(conv)
                     pl["listing_status"] = "POSTED"
                     pl["listing_review_notified"] = True
+                    pl["push_stage"] = "LIVE"
                     if listing_id:
                         pl["infradealer_listing_id"] = listing_id
-                    url = listing_public_url(body, listing_id)
+                    url = listing_open_url(listing_id, mobile=conv.mobile, payload=body)
                     if url:
                         pl["listing_url"] = url
                     _write_payload(conv, pl)
@@ -873,82 +877,50 @@ class InfraDealerIntegrationService:
     def _on_listing_posted(self, request_id: str, listing_id: str, payload: dict) -> None:
         customer = payload.get("customer") if isinstance(payload.get("customer"), dict) else {}
         req = self._resolve_request(request_id, listing_id, str(customer.get("phone") or payload.get("phone") or ""))
-        url = listing_public_url(payload, listing_id)
         conv = self._resolve_conversation(req, payload)
-        if req and req.draft_id:
-            draft = self.db.get(AiListingDraft, req.draft_id)
+        draft = self.db.get(AiListingDraft, req.draft_id) if req and req.draft_id else None
+        if not conv:
             if draft:
                 draft.status = "POSTED"
-        if conv:
-            from ..ai.tools import _payload, _write_payload
+            return
+        from ..ai.data_push import apply_admin_decision
 
-            pl = _payload(conv)
-            if pl.get("listing_review_notified") and str(pl.get("listing_status") or "").upper() == "POSTED":
-                return
-            pl["listing_status"] = "POSTED"
-            pl["listing_review_notified"] = True
-            if listing_id:
-                pl["infradealer_listing_id"] = listing_id
-            if url:
-                pl["listing_url"] = url
-            _write_payload(conv, pl)
-            lang = conv.language or "hinglish"
-            from ..ai.i18n import t
+        text = apply_admin_decision(
+            self.db,
+            conv,
+            approved=True,
+            listing_id=listing_id,
+            payload=payload,
+            draft=draft,
+        )
+        if text:
+            from ..ai.tools import _payload
 
-            text = t(lang, "posted_with_link", url=url) if url else t(lang, "posted")
-            card = getattr(self.db.get(AiListingDraft, req.draft_id), "card_id", None) if req and req.draft_id else pl.get("active_card_id")
-            if req and req.draft_id:
-                draft = self.db.get(AiListingDraft, req.draft_id)
-                if draft:
-                    from ..ai.cards import schedule_card_cleanup
-
-                    schedule_card_cleanup(draft)
-                    card = draft.card_id or card
-            if card:
-                text = t(lang, "posted_card", card=card, url=url or "") if url else t(lang, "posted_card_nolink", card=card)
-                text = f"{text}\n\n{t(lang, 'card_cleanup_notice', card=card)}"
+            url = str(_payload(conv).get("listing_url") or "")
             self._notify_customer(conv, text, preview_url=bool(url))
 
     def _on_listing_rejected(self, request_id: str, listing_id: str, payload: dict) -> None:
         customer = payload.get("customer") if isinstance(payload.get("customer"), dict) else {}
         req = self._resolve_request(request_id, listing_id, str(customer.get("phone") or payload.get("phone") or ""))
-        reason = listing_reject_reason(payload)
         conv = self._resolve_conversation(req, payload)
-        if req and req.draft_id:
-            draft = self.db.get(AiListingDraft, req.draft_id)
+        draft = self.db.get(AiListingDraft, req.draft_id) if req and req.draft_id else None
+        if not conv:
             if draft:
                 draft.status = "REJECTED"
-        if conv:
-            from ..ai.tools import _payload, _write_payload
+            return
+        from ..ai.data_push import apply_admin_decision
+        from ..infradealer.events import listing_reject_reason
 
-            pl = _payload(conv)
-            if pl.get("listing_review_notified") and str(pl.get("listing_status") or "").upper() == "REJECTED":
-                return
-            pl["listing_status"] = "REJECTED"
-            pl["listing_review_notified"] = True
-            if listing_id:
-                pl["infradealer_listing_id"] = listing_id
-            if reason:
-                pl["rejection_reason"] = reason
-            _write_payload(conv, pl)
-            lang = conv.language or "hinglish"
-            from ..ai.i18n import t
-
-            text = t(lang, "rejected_with_reason", reason=reason) if reason else t(lang, "rejected")
-            card = pl.get("active_card_id")
-            if req and req.draft_id:
-                draft = self.db.get(AiListingDraft, req.draft_id)
-                if draft:
-                    from ..ai.cards import schedule_card_cleanup
-
-                    schedule_card_cleanup(draft)
-                    card = draft.card_id or card
-            if card:
-                if reason:
-                    text = t(lang, "rejected_card_reason", card=card, reason=reason)
-                else:
-                    text = t(lang, "rejected_card", card=card)
-                text = f"{text}\n\n{t(lang, 'card_cleanup_notice', card=card)}"
+        text = apply_admin_decision(
+            self.db,
+            conv,
+            approved=False,
+            listing_id=listing_id,
+            payload=payload,
+            reason=listing_reject_reason(payload),
+            draft=draft,
+        )
+        if text:
             self._notify_customer(conv, text)
 
     def _on_account_created(self, payload: dict) -> None:

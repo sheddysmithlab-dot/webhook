@@ -3,6 +3,8 @@
 Collects WhatsApp user identity from inbound webhook chats, connects that
 phone to InfraDealer `account.check`, reads account details, and confirms
 listing eligibility (Free / Office / Token / Broker).
+
+Flow: account_filter → chat_memory → data_filteration → data_push
 """
 
 from __future__ import annotations

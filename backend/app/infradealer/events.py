@@ -208,10 +208,13 @@ def listing_public_url(payload: dict | None, listing_id: str = "") -> str:
         for key in ("url", "public_url", "listing_url", "permalink", "link", "share_url", "web_url"):
             val = str(src.get(key) or "").strip()
             if val.startswith("http"):
+                # Prefer /listings/ path used by live InfraDealer cards
+                if "/listing/" in val and "/listings/" not in val:
+                    return val.replace("/listing/", "/listings/", 1)
                 return val
     lid = str(listing_id or listing.get("listing_id") or listing.get("id") or "").strip()
     if lid:
-        return f"https://infradealer.com/listing/{lid}"
+        return f"https://infradealer.com/listings/{lid}"
     return ""
 
 
