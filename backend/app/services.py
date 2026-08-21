@@ -340,8 +340,8 @@ def send_whatsapp_text(
 
 
 def send_whatsapp_fast(meta: MetaSettings, to: str, body: str, preview_url: bool = False) -> dict:
-    """Admin approve/reject path — deliver within ~5s (short timeout + 1 retry)."""
-    return send_whatsapp_text(meta, to, body, preview_url=preview_url, timeout=5.0, retries=1)
+    """Admin approve/reject path — short timeout + 1 retry (Graph can be slow)."""
+    return send_whatsapp_text(meta, to, body, preview_url=preview_url, timeout=12.0, retries=1)
 
 
 def send_whatsapp_delete(meta: MetaSettings, message_id: str) -> dict:

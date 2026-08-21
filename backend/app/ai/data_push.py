@@ -162,6 +162,49 @@ def reject_message(lang: str, *, reason: str = "", card: str = "") -> str:
     return f"{text}\n\n{t(lang, 'card_cleanup_notice', card=label)}"
 
 
+def mark_listing_review_notified(conv: AiConversation, *, error: str = "") -> None:
+    pl = _payload(conv)
+    attempts = int(pl.get("listing_wa_notify_attempts") or 0)
+    from ..services import utcnow
+
+    pl["listing_wa_last_attempt_at"] = utcnow().isoformat()
+    if error:
+        pl["listing_wa_last_error"] = error[:500]
+        pl["listing_review_notified"] = False
+        pl["listing_wa_notify_attempts"] = attempts + 1
+    else:
+        pl["listing_review_notified"] = True
+        pl.pop("listing_wa_last_error", None)
+        pl["listing_wa_notify_attempts"] = attempts + 1
+    _write_payload(conv, pl)
+
+
+def should_retry_decision_notify(conv: AiConversation, *, force: bool = False) -> bool:
+    """Avoid hammering Graph when WhatsApp keeps failing."""
+    if force:
+        return True
+    pl = _payload(conv)
+    if pl.get("listing_review_notified"):
+        return False
+    attempts = int(pl.get("listing_wa_notify_attempts") or 0)
+    if attempts >= 8:
+        return False
+    last = str(pl.get("listing_wa_last_attempt_at") or "")
+    if not last:
+        return True
+    try:
+        from datetime import datetime, timezone
+
+        from ..services import utcnow
+
+        ts = datetime.fromisoformat(last.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (utcnow() - ts).total_seconds() >= 45
+    except Exception:
+        return True
+
+
 def notify_user_admin_decision(
     db: Session,
     conv: AiConversation,
@@ -171,8 +214,9 @@ def notify_user_admin_decision(
     payload: dict | None = None,
     reason: str = "",
     draft: AiListingDraft | None = None,
-) -> str:
-    """Build + send WhatsApp approve/reject message immediately (~5s)."""
+    force: bool = False,
+) -> dict:
+    """Build + send WhatsApp approve/reject. Marks notified only after WA succeeds."""
     text = apply_admin_decision(
         db,
         conv,
@@ -181,16 +225,27 @@ def notify_user_admin_decision(
         payload=payload,
         reason=reason,
         draft=draft,
+        force=force,
     )
+    out = {"text": text or "", "sent": False, "error": ""}
     if not text:
-        return ""
+        # Already notified earlier — treat as done so callers don't retry forever
+        pl = _payload(conv)
+        if pl.get("listing_review_notified"):
+            out["sent"] = True
+        return out
+    if not should_retry_decision_notify(conv, force=force):
+        pl = _payload(conv)
+        out["error"] = str(pl.get("listing_wa_last_error") or "notify retry delayed")
+        return out
     try:
         from ..services import get_or_create_settings, send_whatsapp_fast, store_chat, utcnow
 
         mobile = (conv.mobile or (draft.mobile if draft else "") or "").strip()
         if not mobile:
-            return text
-        # Flush decision state first so even if WA is slow, DB already has approve/reject
+            out["error"] = "mobile missing"
+            mark_listing_review_notified(conv, error=out["error"])
+            return out
         try:
             db.flush()
         except Exception:
@@ -211,14 +266,31 @@ def notify_user_admin_decision(
             status="sent",
             unread=False,
         )
+        mark_listing_review_notified(conv)
+        out["sent"] = True
         log.info(
             "admin_decision_wa_sent approved=%s mobile=***%s ms_path=fast",
             approved,
             mobile[-4:],
         )
-    except Exception:
+    except Exception as exc:
+        out["error"] = str(exc)[:500]
+        mark_listing_review_notified(conv, error=out["error"])
         log.exception("admin decision WhatsApp notify failed for %s", conv.mobile)
-    return text
+        try:
+            from ..models import AiEvent
+
+            db.add(
+                AiEvent(
+                    wamid="",
+                    mobile=conv.mobile or "",
+                    event_type="admin_decision_wa_fail",
+                    detail=out["error"],
+                )
+            )
+        except Exception:
+            pass
+    return out
 
 
 def push_listing(db: Session, conv: AiConversation) -> PushResult:
@@ -371,15 +443,22 @@ def apply_admin_decision(
     payload: dict | None = None,
     reason: str = "",
     draft: AiListingDraft | None = None,
+    force: bool = False,
 ) -> str:
-    """After admin approve/reject callback: update memory + return WhatsApp AI message body."""
+    """Update memory for approve/reject and return WhatsApp body.
+
+    Does NOT mark listing_review_notified — that happens only after WA send succeeds,
+    so failed Graph calls can be retried by poll / resend.
+    """
     from ..infradealer.events import listing_reject_reason
 
     pl = _payload(conv)
-    if approved and pl.get("listing_review_notified") and str(pl.get("listing_status") or "").upper() == "POSTED":
-        return ""
-    if (not approved) and pl.get("listing_review_notified") and str(pl.get("listing_status") or "").upper() == "REJECTED":
-        return ""
+    status = str(pl.get("listing_status") or "").upper()
+    if not force and pl.get("listing_review_notified"):
+        if approved and status == "POSTED":
+            return ""
+        if (not approved) and status == "REJECTED":
+            return ""
 
     lid = listing_id_from_payload(payload, listing_id) or str(pl.get("infradealer_listing_id") or "")
     lang = conv.language or "hinglish"
@@ -388,8 +467,9 @@ def apply_admin_decision(
     if approved:
         url = listing_open_url(lid, mobile=conv.mobile, payload=payload)
         pl["listing_status"] = "POSTED"
-        pl["listing_review_notified"] = True
         pl["push_stage"] = "LIVE"
+        # Keep False until WhatsApp send confirms — prevents silent "stuck" rejects/approves
+        pl["listing_review_notified"] = False
         if lid:
             pl["infradealer_listing_id"] = lid
         if url:
@@ -406,10 +486,10 @@ def apply_admin_decision(
             except Exception:
                 pass
         return approve_message(lang, url=url, card=card or "", reason=reason)
-    reject_reason = reason or listing_reject_reason(payload)
+    reject_reason = reason or listing_reject_reason(payload) or str(pl.get("rejection_reason") or "")
     pl["listing_status"] = "REJECTED"
-    pl["listing_review_notified"] = True
     pl["push_stage"] = "REJECTED"
+    pl["listing_review_notified"] = False
     if lid:
         pl["infradealer_listing_id"] = lid
     if reject_reason:

@@ -86,7 +86,16 @@ export const api = {
   broadcast: (body) => request("/api/broadcast", { method: "POST", body: JSON.stringify(body) }),
   aiDrafts: () => request("/api/admin/ai/drafts"),
   aiDraft: (id) => request(`/api/admin/ai/drafts/${id}`),
-  aiDraftStatus: (id, status) => request(`/api/admin/ai/drafts/${id}/status`, { method: "POST", body: JSON.stringify({ status }) }),
+  aiDraftStatus: (id, status, note = "") =>
+    request(`/api/admin/ai/drafts/${id}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status, note: note || "" }),
+    }),
+  aiDraftResendDecision: (id, note = "") =>
+    request(`/api/admin/ai/drafts/${id}/resend-decision`, {
+      method: "POST",
+      body: JSON.stringify({ note: note || "" }),
+    }),
   aiDraftPost: (id) => request(`/api/admin/ai/drafts/${id}/post`, { method: "POST" }),
   aiMediaUrl: (id) => `/api/admin/ai/media/${id}`,
   exportUrl: (kind) => `/api/admin/export/${kind}`,

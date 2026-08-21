@@ -201,7 +201,31 @@ export default function Admin() {
                 </div>
                 <div className="inline-actions">
                   <button className="btn small" type="button" onClick={async () => { await api.aiDraftStatus(aiOpen.draft.id, "NEEDS_INFO"); setAiOpen(await api.aiDraft(aiOpen.draft.id)); refresh(); }}>Needs info</button>
-                  <button className="btn small" type="button" onClick={async () => { await api.aiDraftStatus(aiOpen.draft.id, "REJECTED"); setAiOpen(await api.aiDraft(aiOpen.draft.id)); refresh(); }}>Reject</button>
+                  <button className="btn small" type="button" onClick={async () => {
+                    const reason = window.prompt("Reject reason (WhatsApp pe user ko jayega):", "") || "";
+                    if (!reason.trim()) {
+                      window.alert("Reject reason zaroori hai.");
+                      return;
+                    }
+                    const res = await api.aiDraftStatus(aiOpen.draft.id, "REJECTED", reason.trim());
+                    if (res && res.notified === false) {
+                      window.alert(`Listing reject ho gayi, lekin WhatsApp nahi gaya.\n${res.notify_error || "Graph/WhatsApp error"}`);
+                    }
+                    setAiOpen(await api.aiDraft(aiOpen.draft.id));
+                    refresh();
+                  }}>Reject</button>
+                  {(aiOpen.draft?.status === "REJECTED" || aiOpen.draft?.status === "POSTED") && (
+                    <button className="btn small" type="button" onClick={async () => {
+                      const note = aiOpen.draft?.status === "REJECTED"
+                        ? (window.prompt("Resend reason (blank = saved reason):", "") || "")
+                        : "";
+                      const res = await api.aiDraftResendDecision(aiOpen.draft.id, note.trim());
+                      if (res?.notified) window.alert("WhatsApp bhej diya.");
+                      else window.alert(`WhatsApp fail:\n${res?.notify_error || "unknown"}`);
+                      setAiOpen(await api.aiDraft(aiOpen.draft.id));
+                      refresh();
+                    }}>Resend WhatsApp</button>
+                  )}
                   <button className="btn primary small" type="button" disabled={aiOpen.draft?.status === "POSTED"} onClick={async () => {
                     if (!window.confirm("Listing page pe card photos ke saath post karni hai?")) return;
                     await api.aiDraftPost(aiOpen.draft.id);

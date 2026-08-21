@@ -527,6 +527,10 @@ class AiStatusIn(BaseModel):
     note: str = ""
 
 
+class AiResendIn(BaseModel):
+    note: str = ""
+
+
 @router.post("/ai/drafts/{draft_id}/status")
 def ai_draft_status(draft_id: int, body: AiStatusIn, db: Session = Depends(get_db), _: None = Depends(require_admin)):
     draft = db.query(AiListingDraft).filter(AiListingDraft.id == draft_id).first()
@@ -538,6 +542,7 @@ def ai_draft_status(draft_id: int, body: AiStatusIn, db: Session = Depends(get_d
         raise HTTPException(400, "Ye status AI draft ke liye allowed nahi. Live post /post se hota hai.")
     draft.status = status
     conv = db.query(AiConversation).filter(AiConversation.id == draft.conversation_id).first()
+    notify = {"sent": False, "error": "", "text": ""}
     if conv:
         if status == "REJECTED":
             conv.state = "COMPLETED"
@@ -546,12 +551,13 @@ def ai_draft_status(draft_id: int, body: AiStatusIn, db: Session = Depends(get_d
 
             ensure_card_id(db, draft)
             reason = (body.note or "").strip()
-            notify_user_admin_decision(
+            notify = notify_user_admin_decision(
                 db,
                 conv,
                 approved=False,
                 reason=reason,
                 draft=draft,
+                force=True,
             )
         elif status == "NEEDS_INFO":
             conv.state = "DATA_COLLECTING"
@@ -559,7 +565,63 @@ def ai_draft_status(draft_id: int, body: AiStatusIn, db: Session = Depends(get_d
             conv.state = "READY_FOR_REVIEW"
     db.add(AiEvent(wamid="", mobile=draft.mobile, event_type="admin_status", detail=status))
     db.commit()
-    return {"ok": True, "status": draft.status}
+    return {
+        "ok": True,
+        "status": draft.status,
+        "notified": bool(notify.get("sent")),
+        "notify_error": notify.get("error") or "",
+    }
+
+
+@router.post("/ai/drafts/{draft_id}/resend-decision")
+def ai_draft_resend_decision(
+    draft_id: int,
+    body: AiResendIn,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """Force re-send approve/reject WhatsApp when previous Graph call failed."""
+    draft = db.query(AiListingDraft).filter(AiListingDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(404, "Draft nahi mili")
+    st = (draft.status or "").upper()
+    if st not in {"REJECTED", "POSTED"}:
+        raise HTTPException(400, "Sirf REJECTED / POSTED draft pe resend chalta hai")
+    conv = db.query(AiConversation).filter(AiConversation.id == draft.conversation_id).first()
+    if not conv:
+        raise HTTPException(404, "Conversation nahi mili")
+    from ..ai.cards import ensure_card_id
+    from ..ai.data_push import notify_user_admin_decision, _payload
+
+    ensure_card_id(db, draft)
+    note = (body.note or "").strip()
+    pl = _payload(conv)
+    if st == "REJECTED" and not note:
+        note = str(pl.get("rejection_reason") or "")
+    notify = notify_user_admin_decision(
+        db,
+        conv,
+        approved=st == "POSTED",
+        reason=note,
+        draft=draft,
+        force=True,
+    )
+    db.add(
+        AiEvent(
+            wamid="",
+            mobile=draft.mobile,
+            event_type="admin_resend_decision",
+            detail=f"{st}:{'ok' if notify.get('sent') else notify.get('error') or 'fail'}",
+        )
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "status": st,
+        "notified": bool(notify.get("sent")),
+        "notify_error": notify.get("error") or "",
+        "text": notify.get("text") or "",
+    }
 
 
 @router.post("/ai/drafts/{draft_id}/post")
@@ -624,12 +686,14 @@ def ai_draft_post(draft_id: int, db: Session = Depends(get_db), _: None = Depend
     from ..ai.data_push import notify_user_admin_decision
 
     ensure_card_id(db, draft)
+    notify = {"sent": False, "error": ""}
     if conv:
-        notify_user_admin_decision(
+        notify = notify_user_admin_decision(
             db,
             conv,
             approved=True,
             draft=draft,
+            force=True,
             payload={
                 "listing": {
                     "listing_id": str(prod.id),
@@ -639,7 +703,14 @@ def ai_draft_post(draft_id: int, db: Session = Depends(get_db), _: None = Depend
         )
     db.add(AiEvent(wamid="", mobile=draft.mobile, event_type="admin_post", detail=str(prod.id)))
     db.commit()
-    return {"ok": True, "product_id": prod.id, "ref": prod.ref, "status": "POSTED"}
+    return {
+        "ok": True,
+        "product_id": prod.id,
+        "ref": prod.ref,
+        "status": "POSTED",
+        "notified": bool(notify.get("sent")),
+        "notify_error": notify.get("error") or "",
+    }
 
 
 @router.get("/ai/media/{media_id}")

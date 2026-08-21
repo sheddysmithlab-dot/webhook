@@ -850,11 +850,12 @@ class InfraDealerIntegrationService:
             .first()
         )
 
-    def _notify_customer(self, conv: AiConversation | None, text: str, *, preview_url: bool = False) -> None:
+    def _notify_customer(self, conv: AiConversation | None, text: str, *, preview_url: bool = False) -> bool:
         msg = (text or "").strip()
         if not conv or not msg or self.is_test_mode():
-            return
+            return False
         try:
+            from ..ai.data_push import mark_listing_review_notified
             from ..services import get_or_create_settings, send_whatsapp_fast, store_chat
 
             # Flush so listing status is durable before Graph call
@@ -876,9 +877,18 @@ class InfraDealerIntegrationService:
                 status="sent",
                 unread=False,
             )
+            mark_listing_review_notified(conv)
             log.info("customer WhatsApp notify ok mobile=***%s", (conv.mobile or "")[-4:])
-        except Exception:
+            return True
+        except Exception as exc:
+            try:
+                from ..ai.data_push import mark_listing_review_notified
+
+                mark_listing_review_notified(conv, error=str(exc)[:500])
+            except Exception:
+                pass
             log.exception("customer WhatsApp notify failed for %s", conv.mobile)
+            return False
 
     def _on_listing_posted(self, request_id: str, listing_id: str, payload: dict) -> None:
         customer = payload.get("customer") if isinstance(payload.get("customer"), dict) else {}
@@ -889,9 +899,9 @@ class InfraDealerIntegrationService:
             if draft:
                 draft.status = "POSTED"
             return
-        from ..ai.data_push import apply_admin_decision
+        from ..ai.data_push import notify_user_admin_decision
 
-        text = apply_admin_decision(
+        notify_user_admin_decision(
             self.db,
             conv,
             approved=True,
@@ -899,11 +909,6 @@ class InfraDealerIntegrationService:
             payload=payload,
             draft=draft,
         )
-        if text:
-            from ..ai.tools import _payload
-
-            url = str(_payload(conv).get("listing_url") or "")
-            self._notify_customer(conv, text, preview_url=bool(url))
 
     def _on_listing_rejected(self, request_id: str, listing_id: str, payload: dict) -> None:
         customer = payload.get("customer") if isinstance(payload.get("customer"), dict) else {}
@@ -914,10 +919,10 @@ class InfraDealerIntegrationService:
             if draft:
                 draft.status = "REJECTED"
             return
-        from ..ai.data_push import apply_admin_decision
+        from ..ai.data_push import notify_user_admin_decision
         from ..infradealer.events import listing_reject_reason
 
-        text = apply_admin_decision(
+        notify_user_admin_decision(
             self.db,
             conv,
             approved=False,
@@ -926,8 +931,6 @@ class InfraDealerIntegrationService:
             reason=listing_reject_reason(payload),
             draft=draft,
         )
-        if text:
-            self._notify_customer(conv, text)
 
     def _on_account_created(self, payload: dict) -> None:
         acct = payload.get("account") or {}
@@ -994,7 +997,22 @@ class InfraDealerIntegrationService:
             if pl.get("listing_review_notified"):
                 continue
             listing_status = str(pl.get("listing_status") or "").upper()
+            draft = self.db.get(AiListingDraft, req.draft_id) if req.draft_id else None
+            # Local decision already applied but WhatsApp failed — retry without remote poll
             if listing_status in {"POSTED", "REJECTED"}:
+                from ..ai.data_push import notify_user_admin_decision, should_retry_decision_notify
+
+                if should_retry_decision_notify(conv):
+                    notify_user_admin_decision(
+                        self.db,
+                        conv,
+                        approved=listing_status == "POSTED",
+                        listing_id=str(pl.get("infradealer_listing_id") or ""),
+                        reason=str(pl.get("rejection_reason") or pl.get("approval_note") or ""),
+                        draft=draft,
+                        force=True,
+                    )
+                    checked += 1
                 continue
             if listing_status not in {"PENDING_REVIEW", "PUSHED_TO_INFRADEALER", "CONFIRMED", ""}:
                 continue
