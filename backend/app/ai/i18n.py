@@ -153,12 +153,36 @@ def pick_language(text: str, previous: str | None, policy: str) -> str:
     return prev or "hinglish"
 
 
+def time_greeting(lang: str | None = None) -> str:
+    """Good morning / afternoon / evening by India time (IST)."""
+    from datetime import datetime, timedelta, timezone
+
+    lang = normalize_reply(lang or "hinglish")
+    ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    hour = ist.hour
+    if 5 <= hour < 12:
+        slot = "morning"
+    elif 12 <= hour < 17:
+        slot = "afternoon"
+    else:
+        slot = "evening"
+    by_lang = {
+        "hi": {"morning": "Good morning", "afternoon": "Good afternoon", "evening": "Good evening"},
+        "en": {"morning": "Good morning", "afternoon": "Good afternoon", "evening": "Good evening"},
+        "hinglish": {"morning": "Good morning", "afternoon": "Good afternoon", "evening": "Good evening"},
+    }
+    pack = by_lang.get(lang) or by_lang["hinglish"]
+    return pack[slot]
+
+
 def t(lang: str, key: str, **kwargs) -> str:
     lang = normalize_reply(lang)
     if key == "not_understood":
         return NOT_UNDERSTOOD.get(lang) or NOT_UNDERSTOOD["hinglish"]
     pack = STRINGS.get(lang) or STRINGS["hinglish"]
     raw = pack.get(key) or STRINGS["hinglish"].get(key) or STRINGS["en"].get(key) or key
+    if "{greet}" in str(raw) and "greet" not in kwargs:
+        kwargs = {**kwargs, "greet": time_greeting(lang)}
     if kwargs:
         try:
             return raw.format(**kwargs)
@@ -232,8 +256,8 @@ _HI = {
     "confirm_ready": "जी सर, ये details card में set हैं. सही हों तो Haan लिख दीजिए. गलत हो तो बता दीजिए क्या बदलना है.",
     "chat_cleared": "जी सर, previous conversation delete कर दी गई है. अब बताइए — गाड़ी बेचनी है या लेनी है?",
     "chat_cleared_followup": "जी सर, chat clear हो चुकी है. आप क्या चाहिए — listing बेचनी/लेनी, या कुछ और?",
-    "casual_hi": "जी सर, मैं ठीक हूँ. आप बताइए — गाड़ी/मशीन बेचनी है या लेनी है?",
-    "casual_hi_after_listing": "जी सर, मैं ठीक हूँ. आपकी listing पहले push हो चुकी है. Link चाहिए तो 'link do' लिखिए. नई listing के लिए बेचना/लेना बताइए.",
+    "casual_hi": "{greet} Sir, InfraDealer में आपका स्वागत है. कृपया बताइए — क्या आप गाड़ी/मशीन बेचना चाहते हैं या खरीदना?",
+    "casual_hi_after_listing": "{greet} Sir. आपकी listing पहले ही InfraDealer पर भेज दी गई है. Live link के लिए 'link do' लिखें. नई listing के लिए बताइए — बेचना है या खरीदना?",
     "casual_while_confirm": "जी सर, मैं यहाँ हूँ. {card} confirm करना है तो Haan लिखिए. Chat delete चाहिए तो 'delete conversation' लिखिए, या बताइए क्या change करना है.",
     "listing_link_live": "सर, आपकी listing का direct link:\n\n{url}\n\nWhatsApp से open करें — InfraDealer पर खुल जाएगा.",
     "listing_link_pending": "सर, listing admin approval पर है. Preview/link:\n\n{url}\n\nApprove होते ही live हो जाएगी.",
@@ -324,8 +348,8 @@ _EN = {
     "confirm_ready": "Yes Sir, these details are set on the card. If correct, please write Yes. If anything is wrong, tell me what to change.",
     "chat_cleared": "Yes Sir, previous conversation has been deleted. What do you need — sell or buy a vehicle?",
     "chat_cleared_followup": "Yes Sir, chat is clear. What do you need — sell/buy listing, or something else?",
-    "casual_hi": "I am fine, Sir. Please tell me — selling a vehicle/machine, or buying?",
-    "casual_hi_after_listing": "I am fine, Sir. Your listing was already pushed. Write 'link do' for the live link. For a new listing, say buy or sell.",
+    "casual_hi": "{greet} Sir, welcome to InfraDealer. Please tell me — would you like to sell a vehicle/machine, or buy one?",
+    "casual_hi_after_listing": "{greet} Sir. Your listing has already been sent to InfraDealer. Write 'link do' for the live link. For a new listing, please tell me — sell or buy?",
     "casual_while_confirm": "I am here, Sir. To confirm {card}, write Yes. To delete chat, write 'delete conversation', or tell me what to change.",
     "listing_link_live": "Sir, here is your listing direct link:\n\n{url}\n\nOpen from WhatsApp — it opens on InfraDealer.",
     "listing_link_pending": "Sir, listing is pending admin approval. Preview/link:\n\n{url}\n\nIt goes live after approve.",
@@ -416,8 +440,8 @@ _HINGLISH = {
     "confirm_ready": "Ji Sir, ye details card me set hain. Sahi hon to Haan likh dijiye. Galat ho to bata dijiye kya badalna hai.",
     "chat_cleared": "Ji Sir, previous conversation delete kar di gayi hai. Ab bataiye — gadi bechni hai ya leni hai?",
     "chat_cleared_followup": "Ji Sir, chat clear ho chuki hai. Aap kya chahiye — listing bechni/leni, ya kuch aur?",
-    "casual_hi": "Ji Sir, main theek hoon. Aap bataiye — gadi/machine bechni hai ya leni hai?",
-    "casual_hi_after_listing": "Ji Sir, main theek hoon. Aapki listing pehle push ho chuki hai. Link chahiye to 'link do' likhiye. Nayi listing ke liye bechna/lena bataiye.",
+    "casual_hi": "{greet} Sir, InfraDealer me aapka swagat hai. Kripya bataiye — aap gadi/machine bechna chahte hain ya kharidna?",
+    "casual_hi_after_listing": "{greet} Sir. Aapki listing pehle hi InfraDealer par bhej di gayi hai. Live link ke liye 'link do' likhein. Nayi listing ke liye bataiye — bechna hai ya kharidna?",
     "casual_while_confirm": "Ji Sir, main yahin hoon. {card} confirm karna hai to Haan likhiye. Chat delete chahiye to 'delete conversation' likhiye, ya bataiye kya change karna hai.",
     "listing_link_live": "Sir, aapki listing ka direct link:\n\n{url}\n\nWhatsApp se open karein — InfraDealer par khul jayega.",
     "listing_link_pending": "Sir, listing admin approval par hai. Preview/link:\n\n{url}\n\nApprove hote hi live ho jayegi.",
