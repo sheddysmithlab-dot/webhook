@@ -63,7 +63,7 @@ def test_collect_then_filter_ready():
     assert "Vehicle" in text or "vehicle" in text.lower() or "Tata" in text
     assert _payload(conv).get("awaiting_confirm") is True
     assert _payload(conv).get("summary_json")
-    print("OK chat_memory → data_filteration confirm")
+    print("OK chat_memory -> data_filteration confirm")
 
 
 if __name__ == "__main__":

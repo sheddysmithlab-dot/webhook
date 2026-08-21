@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     infradealer_timeout: float = 30.0
     infradealer_max_retries: int = 3
     infradealer_mode: str = "LIVE"
-    infradealer_auto_publish: bool = True
+    infradealer_auto_publish: bool = False
     redis_url: str = ""
 
 

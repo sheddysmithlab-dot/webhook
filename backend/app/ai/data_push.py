@@ -1,208 +1,940 @@
-"""Push filtered listing data to InfraDealer admin via webhook API.
+"""InfraDealer data_push — Secure Listing Submission & Admin Status Sync.
 
-Flow: account_filter → chat_memory → data_filteration → data_push
-
-After customer confirms:
-  WhatsApp AI → webhook → InfraDealer listing/push → admin panel
-Admin approve / reject callback → AI agent WhatsApp message to user.
-On approve: public listing card link (e.g. https://infradealer.com/listings/104)
-opens from WhatsApp; WA token lets InfraDealer auto-session without manual login.
+Final gateway between user-confirmed / Data-Filter-validated listing data
+and the InfraDealer Admin Panel. Does NOT invent data, chat with users,
+or approve/reject listings itself.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
+import re
+import time
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
-from ..models import AiConversation, AiListingDraft, AiMedia
-from ..services import normalize_mobile
-from .i18n import t
-from .schema import HUMAN_ONLY_STATUS, listing_title
-from .tools import _draft_for, _log, _payload, _write_payload
+from ..config import settings
+from ..models import AiConversation, AiEvent, AiListingDraft, InfraDealerCallback, InfraDealerOutbox
 
 log = logging.getLogger("infradealer.ai.data_push")
 
-PUBLIC_SITE = "https://infradealer.com"
-LISTING_PATH = "/listings"  # https://infradealer.com/listings/104
+AGENT_VERSION = "data-push-2.0"
+PAYLOAD_VERSION = "1.0"
+EVENT_VERSION = "1.0"
+
+MAX_RETRIES = int(getattr(settings, "infradealer_max_retries", 3) or 3)
+CONNECT_TIMEOUT = 3
+READ_TIMEOUT = float(getattr(settings, "infradealer_timeout", 10) or 10)
+
+ALLOWED_LIVE_DOMAINS = {
+    "infradealer.com",
+    "www.infradealer.com",
+    "api.infradealer.com",
+}
+
+# Higher rank wins — never downgrade (markdown §30 / §32)
+STATUS_RANK = {
+    "DRAFT": 10,
+    "USER_CONFIRMED": 20,
+    "SUBMISSION_PENDING": 30,
+    "SUBMISSION_BLOCKED": 35,
+    "SENDING": 40,
+    "RETRYING": 45,
+    "DELIVERY_FAILED": 48,
+    "FAILED": 49,
+    "ADMIN_ACKNOWLEDGED": 50,
+    "SUBMITTED": 50,
+    "UNDER_REVIEW": 60,
+    "PENDING_REVIEW": 60,
+    "READY_FOR_REVIEW": 60,
+    "REJECTED": 70,
+    "CORRECTION_REQUIRED": 72,
+    "APPROVED": 80,
+    "LIVE": 90,
+    "SUSPENDED": 85,
+    "EXPIRED": 86,
+    "DELETED": 95,
+}
+
+TRANSIENT_HTTP = {408, 425, 429, 500, 502, 503, 504}
+PERMANENT_HTTP = {400, 401, 403, 404, 422}
 
 
 @dataclass
 class PushResult:
-    ok: bool
-    draft_id: int | None = None
-    card_id: str = ""
-    status: str = ""
+    ok: bool = False
+    status: str = "ERROR"
+    reason_code: str = ""
+    submission_id: str = ""
     listing_id: str = ""
     listing_url: str = ""
-    already_pushed: bool = False
-    error: str = ""
-    need_confirm: bool = False
-    need_photos: bool = False
-    account_blocked: bool = False
-    buy_link: str = ""
-    gaps: list[str] = field(default_factory=list)
-    extra: dict[str, Any] = field(default_factory=dict)
+    request_id: str = ""
+    idempotency_key: str = ""
+    payload_hash: str = ""
+    message: str = ""
+    notification: dict = field(default_factory=dict)
+    detail: dict = field(default_factory=dict)
 
-    def as_dict(self) -> dict[str, Any]:
+    def as_dict(self) -> dict:
         out = {
             "ok": self.ok,
-            "draft_id": self.draft_id,
-            "card_id": self.card_id,
             "status": self.status,
+            "reason_code": self.reason_code,
+            "submission_id": self.submission_id,
             "listing_id": self.listing_id,
             "listing_url": self.listing_url,
-            "already_pushed": self.already_pushed,
-            "gaps": list(self.gaps),
+            "request_id": self.request_id,
+            "idempotency_key": self.idempotency_key,
+            "payload_hash": self.payload_hash,
+            "message": self.message,
+            "notification": self.notification,
+            "agent_version": AGENT_VERSION,
         }
-        if self.error:
-            out["error"] = self.error
-        if self.need_confirm:
-            out["need_confirm"] = True
-        if self.need_photos:
-            out["need_photos"] = True
-        if self.account_blocked:
-            out["account_blocked"] = True
-            out["buy_link"] = self.buy_link
-        out.update(self.extra)
+        out.update(self.detail or {})
         return out
 
 
-def listing_id_from_payload(payload: dict | None, listing_id: str = "") -> str:
-    data = payload or {}
-    listing = data.get("listing") if isinstance(data.get("listing"), dict) else {}
-    extra = data.get("data") if isinstance(data.get("data"), dict) else {}
-    for src in (listing, extra, data):
-        if not isinstance(src, dict):
-            continue
-        for key in ("listing_id", "id", "listingId", "listing_number"):
-            val = str(src.get(key) or "").strip()
-            if val:
-                return val
-    return str(listing_id or "").strip()
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _blank(val: Any) -> bool:
+    return val is None or str(val).strip() in {"", "null", "None", "unknown"}
 
 
 def public_listing_url(listing_id: str) -> str:
-    """Canonical public card URL — opens on InfraDealer without requiring site login page first."""
     lid = str(listing_id or "").strip()
     if not lid:
         return ""
-    return f"{PUBLIC_SITE}{LISTING_PATH}/{lid}"
+    return f"https://infradealer.com/listings/{lid}"
 
 
 def wa_open_token(mobile: str, listing_id: str) -> str:
-    """HMAC token so InfraDealer can trust WhatsApp redirect and auto-session the seller."""
     from ..infradealer.crypto import signed_token
 
-    phone = normalize_mobile(mobile)
-    lid = str(listing_id or "").strip()
-    if not phone or not lid:
+    return signed_token("wa_open", f"{mobile[-10:]}:{listing_id}", length=24)
+
+
+def listing_open_url(listing_id: str, mobile: str = "", payload: dict | None = None) -> str:
+    remote = ""
+    if payload:
+        listing = payload.get("listing") if isinstance(payload.get("listing"), dict) else {}
+        remote = str(listing.get("url") or payload.get("listing_url") or "")
+    if remote:
+        remote = remote.replace("/listing/", "/listings/")
+        base = remote.split("?")[0]
+    else:
+        base = public_listing_url(listing_id)
+    if not base or not validate_live_url(base):
         return ""
-    return signed_token("wa_listing_open", f"{phone}|{lid}", length=32)
+    if mobile and listing_id:
+        token = wa_open_token(mobile, listing_id)
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}from=whatsapp&wa={mobile[-10:]}&t={token}"
+    return base
 
 
-def listing_open_url(
-    listing_id: str,
+def validate_live_url(url: str) -> bool:
+    """Only allow InfraDealer domains — never invent or accept arbitrary hosts."""
+    text = (url or "").strip()
+    if not text.startswith("https://"):
+        return False
+    try:
+        host = (urlparse(text).hostname or "").lower()
+    except Exception:
+        return False
+    if host in ALLOWED_LIVE_DOMAINS:
+        return True
+    return host.endswith(".infradealer.com")
+
+
+def generate_idempotency_key(draft_id: Any, version: int | str) -> str:
+    return f"INF-DRAFT-{draft_id}-V{version}"
+
+
+def calculate_payload_hash(payload: dict) -> str:
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def canonicalize_payload(payload: dict) -> dict:
+    """Stable copy for hashing / audit (no secrets)."""
+    return json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def sign_payload(raw_body: str, *, timestamp: str | None = None, secret: str | None = None) -> dict:
+    """HMAC-SHA256 headers for outgoing webhook (secret never in JSON body)."""
+    ts = timestamp or str(int(time.time()))
+    sec = (secret or getattr(settings, "infradealer_api_secret", "") or "").strip()
+    if not sec:
+        return {
+            "X-InfraDealer-Timestamp": ts,
+            "X-InfraDealer-Request-ID": "",
+            "X-InfraDealer-Signature": "",
+            "X-InfraDealer-Event": "LISTING_SUBMIT",
+        }
+    digest = hmac.new(sec.encode(), f"{ts}.{raw_body}".encode(), hashlib.sha256).hexdigest()
+    return {
+        "X-InfraDealer-Timestamp": ts,
+        "X-InfraDealer-Signature": digest,
+        "X-InfraDealer-Event": "LISTING_SUBMIT",
+    }
+
+
+def verify_admin_event(headers: dict | None, raw_body: str, *, max_skew_sec: int = 300) -> tuple[bool, str]:
+    """Verify incoming admin status event signature."""
+    headers = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+    secret = (getattr(settings, "infradealer_api_secret", "") or "").strip()
+    if not secret:
+        # Dev / unconfigured — accept only if explicitly unsigned mode
+        return True, "NO_SECRET_CONFIGURED"
+    ts = headers.get("x-infradealer-timestamp") or headers.get("x-timestamp") or ""
+    sig = headers.get("x-infradealer-signature") or headers.get("x-signature") or ""
+    if not ts or not sig:
+        return False, "MISSING_SIGNATURE"
+    try:
+        skew = abs(int(time.time()) - int(ts))
+    except ValueError:
+        return False, "INVALID_TIMESTAMP"
+    if skew > max_skew_sec:
+        return False, "TIMESTAMP_SKEW"
+    expected = hmac.new(secret.encode(), f"{ts}.{raw_body}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        return False, "BAD_SIGNATURE"
+    return True, "OK"
+
+
+def validate_confirmation(payload: dict) -> tuple[bool, str]:
+    if not payload.get("customer_confirmed"):
+        conf = payload.get("confirmation") if isinstance(payload.get("confirmation"), dict) else {}
+        if not conf.get("confirmed"):
+            return False, "CONFIRMATION_OR_VALIDATION_FAILED"
+    return True, ""
+
+
+def validate_version(payload: dict) -> tuple[bool, str]:
+    current = int(payload.get("draft_version") or 1)
+    confirmed = payload.get("confirmed_version")
+    if confirmed is None:
+        conf = payload.get("confirmation") if isinstance(payload.get("confirmation"), dict) else {}
+        confirmed = conf.get("confirmed_version") or conf.get("version")
+    if confirmed is None:
+        # First confirm in-session: treat current as confirmed
+        return True, ""
+    try:
+        confirmed_i = int(confirmed)
+    except (TypeError, ValueError):
+        return False, "STALE_CONFIRMATION"
+    if confirmed_i != current:
+        return False, "STALE_CONFIRMATION"
+    return True, ""
+
+
+def validate_submission(payload: dict, conv: AiConversation | None = None) -> tuple[bool, str]:
+    """Lightweight final safety gate — not a second Data Filter."""
+    ok, reason = validate_confirmation(payload)
+    if not ok:
+        return False, reason
+    ok, reason = validate_version(payload)
+    if not ok:
+        return False, reason
+
+    fr = payload.get("filter_result") if isinstance(payload.get("filter_result"), dict) else {}
+    readiness = str(fr.get("readiness") or payload.get("data_status") or "").upper()
+    if readiness in {"INVALID_DATA", "CONFLICT_REQUIRES_USER", "SYSTEM_ERROR"}:
+        return False, "CONFIRMATION_OR_VALIDATION_FAILED"
+    if fr.get("conflicts"):
+        return False, "CONFIRMATION_OR_VALIDATION_FAILED"
+
+    intent = (payload.get("intent") or (conv.intent if conv else "") or "").upper()
+    if intent not in {"BUY", "SELL"}:
+        return False, "MISSING_REQUIRED_DATA"
+    if _blank(payload.get("category") or payload.get("type")):
+        return False, "MISSING_REQUIRED_DATA"
+    if intent == "SELL":
+        if _blank(payload.get("brand")) or _blank(payload.get("model")):
+            return False, "MISSING_REQUIRED_DATA"
+        if _blank(payload.get("expected_price") or payload.get("price")):
+            return False, "MISSING_REQUIRED_DATA"
+        if _blank(payload.get("state") or payload.get("location") or payload.get("city")):
+            return False, "MISSING_REQUIRED_DATA"
+    return True, ""
+
+
+def build_payload(
+    db: Session,
+    conv: AiConversation,
+    draft: AiListingDraft,
+    payload: dict,
     *,
-    mobile: str = "",
-    payload: dict | None = None,
-    prefer_remote: bool = True,
-) -> str:
-    """Build listing link for WhatsApp. Prefers remote URL if InfraDealer sent one; else /listings/{id}.
+    request_id: str,
+    idempotency_key: str,
+) -> dict:
+    """Canonical LISTING_SUBMIT envelope for Admin / integration layer."""
+    from ..infradealer.payloads import build_listing_payload
 
-    Appends from=whatsapp + wa + t so tap from WhatsApp can auto-login on InfraDealer.
-    """
-    from ..infradealer.events import listing_public_url as remote_url
+    version = int(payload.get("draft_version") or 1)
+    account_id = payload.get("profile_id") or conv.profile_id or ""
+    fr = payload.get("filter_result") if isinstance(payload.get("filter_result"), dict) else {}
+    nd = fr.get("normalized_data") if isinstance(fr.get("normalized_data"), dict) else {}
+    summary = payload.get("confirmed_json") or payload.get("summary_json") or {}
+    if isinstance(summary, str):
+        try:
+            summary = json.loads(summary)
+        except json.JSONDecodeError:
+            summary = {}
 
-    lid = listing_id_from_payload(payload, listing_id)
-    base = ""
-    if prefer_remote and payload:
-        base = remote_url(payload, lid)
-        # Normalize legacy /listing/ → /listings/
-        if "/listing/" in base and "/listings/" not in base:
-            base = base.replace("/listing/", "/listings/", 1)
-    if not base:
-        base = public_listing_url(lid)
-    if not base:
-        return ""
-    phone = normalize_mobile(mobile)
-    token = wa_open_token(phone, lid) if phone and lid else ""
-    if not token:
-        return base
-    sep = "&" if "?" in base else "?"
-    qs = urlencode({"from": "whatsapp", "wa": phone, "t": token})
-    return f"{base}{sep}{qs}"
+    data = {
+        "brand": payload.get("brand") or nd.get("brand") or summary.get("brand"),
+        "model": payload.get("model") or nd.get("model") or summary.get("model"),
+        "year": payload.get("year") or nd.get("year") or summary.get("year"),
+        "km": payload.get("running_km") or nd.get("km") or summary.get("km"),
+        "hours": payload.get("operating_hours") or nd.get("operating_hours"),
+        "location": payload.get("city") or payload.get("location") or nd.get("city") or summary.get("location"),
+        "state": payload.get("state") or nd.get("state") or summary.get("state"),
+        "price": nd.get("price") or payload.get("expected_price") or summary.get("price"),
+    }
+    data = {k: v for k, v in data.items() if not _blank(v)}
+
+    infra_user = ""
+    try:
+        from ..infradealer.service import get_integration_service, account_mobile
+
+        svc = get_integration_service(db)
+        state = svc.get_or_create_account_state(account_mobile(conv.mobile), conversation_id=conv.id)
+        infra_user = (state.infradealer_user_id if state else "") or ""
+    except Exception:
+        infra_user = ""
+
+    listing_body = build_listing_payload(db, conv, draft, payload, request_id, infra_user)
+    envelope = {
+        "event": "LISTING_SUBMIT",
+        "event_version": EVENT_VERSION,
+        "request_id": request_id,
+        "idempotency_key": idempotency_key,
+        "agent_version": AGENT_VERSION,
+        "payload_version": PAYLOAD_VERSION,
+        "schema_version": fr.get("schema_version") or payload.get("schema_version") or "",
+        "filter_version": fr.get("filter_version") or "",
+        "account": {"account_id": account_id, "mobile": conv.mobile},
+        "conversation": {
+            "conversation_id": conv.conversation_id,
+            "workflow_id": payload.get("workflow_id") or f"WF-{conv.id}",
+        },
+        "listing": {
+            "draft_id": draft.id,
+            "card_id": draft.card_id,
+            "version": version,
+            "intent": (payload.get("intent") or "SELL").upper(),
+            "category": payload.get("category"),
+            "data": data,
+        },
+        "validation": {
+            "status": "VALID" if validate_submission(payload, conv)[0] else "INVALID",
+            "schema_version": fr.get("schema_version") or "",
+            "filter_version": fr.get("filter_version") or "",
+            "readiness": fr.get("readiness") or "",
+        },
+        "confirmation": {
+            "confirmed": True,
+            "version": version,
+            "confirmed_version": int(payload.get("confirmed_version") or version),
+            "timestamp": payload.get("confirmed_at") or _now_iso(),
+        },
+        "infradealer_body": listing_body,
+    }
+    return envelope
 
 
-def approve_message(lang: str, *, url: str = "", card: str = "", reason: str = "") -> str:
-    """WhatsApp body after admin APPROVE — always states approved; link when available."""
-    label = card or "listing"
-    if url and reason:
-        text = t(lang, "listing_approved_link_note", card=label, url=url, reason=reason)
-    elif url:
-        text = t(lang, "listing_approved_link", card=label, url=url)
-    elif reason:
-        text = t(lang, "listing_approved_note", card=label, reason=reason)
+def parse_admin_response(response: dict | None, http_status: int = 0) -> dict:
+    response = response if isinstance(response, dict) else {}
+    listing_id = str(
+        response.get("listing_id")
+        or response.get("id")
+        or (response.get("listing") or {}).get("id")
+        or ""
+    )
+    submission_id = str(response.get("submission_id") or response.get("request_id") or "")
+    status = str(response.get("status") or response.get("business_code") or "").upper()
+    code = str(response.get("code") or response.get("business_code") or "")
+    success = bool(response.get("success")) or http_status in {200, 201} or bool(listing_id)
+    if http_status in PERMANENT_HTTP:
+        return {
+            "success": False,
+            "permanent": True,
+            "retry": False,
+            "listing_id": listing_id,
+            "submission_id": submission_id,
+            "status": "PERMANENT_FAILURE",
+            "admin_error_code": code or str(http_status),
+            "admin_error_message": str(response.get("message") or response.get("error") or "")[:300],
+        }
+    if http_status in TRANSIENT_HTTP or (not success and http_status >= 500):
+        return {
+            "success": False,
+            "permanent": False,
+            "retry": True,
+            "listing_id": listing_id,
+            "submission_id": submission_id,
+            "status": "RETRY",
+            "admin_error_code": code or str(http_status),
+            "admin_error_message": str(response.get("message") or "transient failure")[:300],
+        }
+    if success:
+        return {
+            "success": True,
+            "permanent": False,
+            "retry": False,
+            "listing_id": listing_id,
+            "submission_id": submission_id or response.get("request_id") or "",
+            "status": status or "UNDER_REVIEW",
+            "live_url": response.get("live_url") or response.get("url") or "",
+        }
+    return {
+        "success": False,
+        "permanent": True,
+        "retry": False,
+        "listing_id": listing_id,
+        "submission_id": submission_id,
+        "status": "PERMANENT_FAILURE",
+        "admin_error_code": code or "UNKNOWN",
+        "admin_error_message": str(response.get("message") or "submission failed")[:300],
+    }
+
+
+def _audit(db: Session, conv: AiConversation, event_type: str, detail: dict) -> None:
+    safe = {k: v for k, v in detail.items() if k.lower() not in {"secret", "api_key", "signature", "otp"}}
+    db.add(AiEvent(
+        wamid=conv.last_wamid or "",
+        mobile=conv.mobile,
+        event_type=event_type,
+        detail=json.dumps(safe, ensure_ascii=False, default=str)[:4000],
+    ))
+
+
+def store_submission(payload: dict, envelope: dict, *, status: str) -> dict:
+    """Persist submission snapshot on conversation payload (no silent field mutation)."""
+    version = int(payload.get("draft_version") or 1)
+    sub = {
+        "submission_id": envelope.get("request_id") or f"SUB-{uuid.uuid4().hex[:10]}",
+        "request_id": envelope.get("request_id"),
+        "idempotency_key": envelope.get("idempotency_key"),
+        "payload_hash": envelope.get("payload_hash") or calculate_payload_hash(envelope.get("listing") or {}),
+        "draft_id": (envelope.get("listing") or {}).get("draft_id"),
+        "draft_version": version,
+        "status": status,
+        "listing_id": payload.get("infradealer_listing_id") or "",
+        "live_url": payload.get("listing_url") or "",
+        "retry_count": int((payload.get("submission") or {}).get("retry_count") or 0),
+        "submitted_at": _now_iso(),
+        "agent_version": AGENT_VERSION,
+    }
+    payload["submission"] = sub
+    payload["push_stage"] = status
+    payload["listing_status"] = status
+    return sub
+
+
+def create_notification_event(
+    *,
+    notification_type: str,
+    listing_id: str = "",
+    status: str = "",
+    reason_code: str = "",
+    reason_text: str = "",
+    live_url: str = "",
+    account_id: Any = None,
+    submission_id: str = "",
+) -> dict:
+    return {
+        "event": "USER_NOTIFICATION_REQUIRED",
+        "type": notification_type,
+        "account_id": account_id,
+        "listing_id": listing_id,
+        "submission_id": submission_id,
+        "status": status,
+        "reason_code": reason_code,
+        "reason_text": reason_text,
+        "live_url": live_url if validate_live_url(live_url) else "",
+    }
+
+
+def _can_transition(old_status: str, new_status: str) -> bool:
+    old_r = STATUS_RANK.get((old_status or "").upper(), 0)
+    new_r = STATUS_RANK.get((new_status or "").upper(), 0)
+    if new_r == 0:
+        return False
+    # Allow sideways / equal for idempotent re-delivery of same state
+    return new_r >= old_r
+
+
+def get_submission_status(db: Session, conv: AiConversation, submission_id: str = "") -> dict:
+    """Backend-truth status for chat_memory status questions."""
+    from .tools import _payload
+
+    payload = _payload(conv)
+    sub = payload.get("submission") if isinstance(payload.get("submission"), dict) else {}
+    listing_id = payload.get("infradealer_listing_id") or sub.get("listing_id") or ""
+    live_url = payload.get("listing_url") or sub.get("live_url") or ""
+    if live_url and not validate_live_url(live_url):
+        live_url = ""
+    status = (
+        payload.get("listing_status")
+        or sub.get("status")
+        or "DRAFT"
+    )
+    sid = submission_id or sub.get("submission_id") or sub.get("request_id") or ""
+
+    # Prefer outbox/request truth when present
+    if conv.draft_id:
+        outbox = (
+            db.query(InfraDealerOutbox)
+            .filter(InfraDealerOutbox.draft_id == conv.draft_id)
+            .order_by(InfraDealerOutbox.id.desc())
+            .first()
+        )
+        if outbox:
+            sid = sid or outbox.request_id
+            if outbox.business_status:
+                status = outbox.business_status
+            elif outbox.status == "DONE":
+                status = status if STATUS_RANK.get(str(status).upper(), 0) >= 50 else "UNDER_REVIEW"
+
+    return {
+        "submission_id": sid,
+        "listing_id": listing_id,
+        "status": status,
+        "live_url": live_url if validate_live_url(live_url) else "",
+        "idempotency_key": sub.get("idempotency_key") or "",
+        "draft_version": sub.get("draft_version") or payload.get("draft_version"),
+    }
+
+
+def process_approval(db: Session, conv: AiConversation, event: dict) -> dict:
+    from .tools import _payload, _write_payload
+
+    payload = _payload(conv)
+    listing_id = str(event.get("listing_id") or "")
+    live_url = str(event.get("live_url") or event.get("url") or "")
+    if not listing_id:
+        return {"ok": False, "reason_code": "INVALID_ADMIN_EVENT", "message": "listing_id required"}
+    if live_url and not validate_live_url(live_url):
+        live_url = ""
+    new_status = str(event.get("status") or "APPROVED").upper()
+    if new_status in {"APPROVED", "LIVE", "PUBLISHED", "POSTED"}:
+        # APPROVED ≠ LIVE unless contract/auto_publish says so
+        if new_status == "APPROVED" and not getattr(settings, "infradealer_auto_publish", False) and not live_url:
+            target = "APPROVED"
+        elif live_url or new_status in {"LIVE", "PUBLISHED", "POSTED"}:
+            target = "LIVE"
+        else:
+            target = "APPROVED"
     else:
-        text = t(lang, "listing_approved", card=label)
-    return f"{text}\n\n{t(lang, 'card_cleanup_notice', card=label)}"
+        target = new_status
+
+    old = str(payload.get("listing_status") or "")
+    if not _can_transition(old, target):
+        return {"ok": True, "status": old, "ignored": True, "reason_code": "NO_DOWNGRADE"}
+
+    payload["listing_status"] = target
+    payload["infradealer_listing_id"] = listing_id
+    if live_url:
+        payload["listing_url"] = live_url
+    sub = payload.get("submission") if isinstance(payload.get("submission"), dict) else {}
+    sub.update({
+        "listing_id": listing_id,
+        "status": target,
+        "live_url": live_url or sub.get("live_url") or "",
+        "acknowledged_at": sub.get("acknowledged_at") or _now_iso(),
+        "completed_at": _now_iso() if target == "LIVE" else sub.get("completed_at"),
+    })
+    payload["submission"] = sub
+    note = create_notification_event(
+        notification_type="LISTING_APPROVED" if target == "APPROVED" else "LISTING_LIVE",
+        listing_id=listing_id,
+        status=target,
+        live_url=live_url,
+        account_id=payload.get("profile_id") or conv.profile_id,
+        submission_id=sub.get("submission_id") or "",
+    )
+    payload["pending_notification"] = note
+    _write_payload(conv, payload)
+    _audit(db, conv, "data_push_approval", {"old": old, "new": target, "listing_id": listing_id})
+    return {"ok": True, "status": target, "notification": note}
 
 
-def reject_message(lang: str, *, reason: str = "", card: str = "") -> str:
-    """WhatsApp body after admin REJECT — always includes reason when provided."""
-    label = card or "listing"
-    if reason:
-        text = t(lang, "listing_rejected_reason", card=label, reason=reason)
+def process_rejection(db: Session, conv: AiConversation, event: dict) -> dict:
+    from .tools import _payload, _write_payload
+
+    payload = _payload(conv)
+    listing_id = str(event.get("listing_id") or payload.get("infradealer_listing_id") or "")
+    reason_code = str(event.get("reason_code") or event.get("code") or "REJECTED")
+    reason_text = str(event.get("reason_text") or event.get("reason") or event.get("message") or "")
+    old = str(payload.get("listing_status") or "")
+    if not _can_transition(old, "REJECTED"):
+        # LIVE/APPROVED should not silently become REJECTED from stale event unless same or higher
+        if STATUS_RANK.get(old.upper(), 0) > STATUS_RANK["REJECTED"]:
+            return {"ok": True, "status": old, "ignored": True, "reason_code": "NO_DOWNGRADE"}
+
+    payload["listing_status"] = "REJECTED"
+    payload["rejection_reason"] = reason_text or reason_code
+    # Preserve draft / confirmation for correction workflow — do NOT delete
+    payload["customer_confirmed"] = False
+    payload["awaiting_confirm"] = False
+    sub = payload.get("submission") if isinstance(payload.get("submission"), dict) else {}
+    sub.update({
+        "listing_id": listing_id or sub.get("listing_id") or "",
+        "status": "REJECTED",
+        "reason_code": reason_code,
+        "reason_text": reason_text,
+        "reviewed_at": _now_iso(),
+    })
+    payload["submission"] = sub
+    note = create_notification_event(
+        notification_type="LISTING_REJECTED",
+        listing_id=listing_id,
+        status="REJECTED",
+        reason_code=reason_code,
+        reason_text=reason_text,
+        account_id=payload.get("profile_id") or conv.profile_id,
+        submission_id=sub.get("submission_id") or "",
+    )
+    payload["pending_notification"] = note
+    _write_payload(conv, payload)
+    _audit(db, conv, "data_push_rejection", {
+        "old": old, "listing_id": listing_id,
+        "reason_code": reason_code, "reason_text": reason_text,
+    })
+    return {"ok": True, "status": "REJECTED", "notification": note}
+
+
+def process_admin_event(
+    db: Session,
+    conv: AiConversation,
+    event: dict,
+    *,
+    headers: dict | None = None,
+    raw_body: str = "",
+) -> dict:
+    """Inbound Admin Panel status event — verify, idempotent, no state downgrade."""
+    from .tools import _payload, _write_payload
+
+    event = event if isinstance(event, dict) else {}
+    raw = raw_body or json.dumps(event, ensure_ascii=False, sort_keys=True)
+    ok, reason = verify_admin_event(headers, raw)
+    if not ok:
+        return {"ok": False, "reason_code": "REJECT_EVENT", "message": reason}
+
+    event_id = str(event.get("event_id") or event.get("id") or "")
+    payload = _payload(conv)
+    processed = list(payload.get("processed_admin_events") or [])
+    if event_id and event_id in processed:
+        return {"ok": True, "duplicate": True, "reason_code": "ALREADY_PROCESSED"}
+
+    # Persist callback row when possible
+    try:
+        cb = InfraDealerCallback(
+            callback_id=event_id or f"evt-{uuid.uuid4().hex[:12]}",
+            event_type=str(event.get("event") or event.get("status") or "")[:40],
+            request_id=str(event.get("request_id") or event.get("submission_id") or "")[:64],
+            payload_json=json.dumps(event, ensure_ascii=False)[:8000],
+            status="RECEIVED",
+            processed=False,
+        )
+        db.add(cb)
+        db.flush()
+    except Exception:
+        cb = None
+
+    etype = str(event.get("event") or event.get("status") or "").upper()
+    if "REJECT" in etype:
+        result = process_rejection(db, conv, event)
+    elif any(x in etype for x in ("APPROVE", "LIVE", "PUBLISH", "POSTED")):
+        if "APPROVE" in etype and not event.get("listing_id"):
+            return {"ok": False, "reason_code": "INVALID_ADMIN_EVENT", "message": "listing_id required"}
+        result = process_approval(db, conv, event)
+    elif "REVIEW" in etype or etype in {"LISTING_RECEIVED", "UNDER_REVIEW", "RECEIVED"}:
+        payload = _payload(conv)
+        old = str(payload.get("listing_status") or "")
+        if _can_transition(old, "UNDER_REVIEW"):
+            payload["listing_status"] = "UNDER_REVIEW"
+            sub = payload.get("submission") if isinstance(payload.get("submission"), dict) else {}
+            sub["status"] = "UNDER_REVIEW"
+            payload["submission"] = sub
+            _write_payload(conv, payload)
+        result = {"ok": True, "status": "UNDER_REVIEW"}
     else:
-        text = t(lang, "listing_rejected", card=label)
-    return f"{text}\n\n{t(lang, 'card_cleanup_notice', card=label)}"
+        result = {"ok": True, "status": etype or "RECEIVED", "ignored": True}
+
+    if event_id:
+        payload = _payload(conv)
+        processed = list(payload.get("processed_admin_events") or [])
+        processed.append(event_id)
+        payload["processed_admin_events"] = processed[-100:]
+        _write_payload(conv, payload)
+    if cb is not None:
+        cb.processed = True
+        cb.status = "PROCESSED"
+    return result
+
+
+def handle_failure(payload: dict, *, retry: bool, error_code: str, message: str) -> dict:
+    sub = payload.get("submission") if isinstance(payload.get("submission"), dict) else {}
+    retries = int(sub.get("retry_count") or 0) + 1
+    sub["retry_count"] = retries
+    sub["last_error"] = message[:300]
+    sub["admin_error_code"] = error_code
+    if retry and retries <= MAX_RETRIES:
+        sub["status"] = "RETRYING"
+        payload["listing_status"] = "RETRYING"
+        payload["push_stage"] = "RETRYING"
+    else:
+        sub["status"] = "DELIVERY_FAILED" if retry else "FAILED"
+        payload["listing_status"] = sub["status"]
+        payload["push_stage"] = sub["status"]
+    payload["submission"] = sub
+    return sub
+
+
+def push_listing(db: Session, conv: AiConversation) -> PushResult:
+    """Submit confirmed draft to Admin via InfraDealer integration (idempotent)."""
+    from .data_filter import final_validation
+    from .tools import _draft_for, _payload, _write_payload
+
+    payload = _payload(conv)
+
+    # Gate: confirmation + version + safety
+    ok, reason = validate_submission(payload, conv)
+    if not ok:
+        status = "STALE_CONFIRMATION" if reason == "STALE_CONFIRMATION" else "SUBMISSION_BLOCKED"
+        _audit(db, conv, "data_push_blocked", {"reason": reason})
+        return PushResult(
+            ok=False,
+            status=status,
+            reason_code=reason or "CONFIRMATION_OR_VALIDATION_FAILED",
+            message="Submission blocked — confirmation/validation/version failed",
+        )
+
+    # Final Data Filter safety pass
+    gate = final_validation(db, conv)
+    payload = _payload(conv)
+    if not gate.ready and gate.readiness in {"INVALID_DATA", "CONFLICT_REQUIRES_USER", "MISSING_REQUIRED_DATA"}:
+        return PushResult(
+            ok=False,
+            status="SUBMISSION_BLOCKED",
+            reason_code="CONFIRMATION_OR_VALIDATION_FAILED",
+            message=f"Data filter blocked submission: {gate.readiness}",
+            detail={"missing_fields": gate.missing_fields, "conflicts": gate.conflicts},
+        )
+
+    # Lock confirmation version to current draft
+    version = int(payload.get("draft_version") or 1)
+    payload["confirmed_version"] = version
+    payload["confirmed_at"] = payload.get("confirmed_at") or _now_iso()
+    payload["customer_confirmed"] = True
+
+    draft = _draft_for(db, conv)
+    request_id = f"listing-draft-{draft.id}-v{version}"
+    idem = generate_idempotency_key(draft.id, version)
+
+    # Idempotent short-circuit: same key already acknowledged
+    existing = payload.get("submission") if isinstance(payload.get("submission"), dict) else {}
+    if (
+        existing.get("idempotency_key") == idem
+        and STATUS_RANK.get(str(existing.get("status") or "").upper(), 0) >= STATUS_RANK["ADMIN_ACKNOWLEDGED"]
+    ):
+        return PushResult(
+            ok=True,
+            status=str(existing.get("status") or "UNDER_REVIEW"),
+            submission_id=str(existing.get("submission_id") or ""),
+            listing_id=str(existing.get("listing_id") or payload.get("infradealer_listing_id") or ""),
+            listing_url=str(existing.get("live_url") or payload.get("listing_url") or ""),
+            request_id=str(existing.get("request_id") or request_id),
+            idempotency_key=idem,
+            payload_hash=str(existing.get("payload_hash") or ""),
+            message="Idempotent replay — existing submission returned",
+            detail={"duplicate_skipped": True},
+        )
+
+    envelope = build_payload(db, conv, draft, payload, request_id=request_id, idempotency_key=idem)
+    listing_hash = calculate_payload_hash(envelope.get("listing") or {})
+    envelope["payload_hash"] = listing_hash
+    store_submission(payload, envelope, status="SENDING")
+    _write_payload(conv, payload)
+    _audit(db, conv, "data_push_started", {
+        "request_id": request_id,
+        "idempotency_key": idem,
+        "payload_hash": listing_hash,
+        "draft_version": version,
+    })
+
+    try:
+        from ..infradealer.service import get_integration_service
+
+        svc = get_integration_service(db)
+        # Integration service owns HTTPS + outbox; we keep AI-layer gates here
+        outbox = svc.push_listing_for_draft(conv, draft, payload)
+        listing_id = str(payload.get("infradealer_listing_id") or "")
+        listing_url = str(payload.get("listing_url") or "")
+        if outbox is not None:
+            listing_id = listing_id or str(getattr(outbox, "business_status", "") and payload.get("infradealer_listing_id") or "")
+            # Refresh payload after service side-effects
+            payload = _payload(conv)
+            listing_id = str(payload.get("infradealer_listing_id") or listing_id or "")
+            listing_url = str(payload.get("listing_url") or listing_url or "")
+            if listing_url and not validate_live_url(listing_url):
+                listing_url = ""
+                payload["listing_url"] = ""
+
+        # Do not mark LIVE without admin confirmation / valid URL
+        ack_status = "UNDER_REVIEW"
+        if outbox is not None and (outbox.status or "").upper() == "DONE":
+            ack_status = "ADMIN_ACKNOWLEDGED"
+        elif outbox is None and not getattr(settings, "infradealer_base_url", ""):
+            ack_status = "READY_FOR_REVIEW"
+
+        draft.status = "READY_FOR_REVIEW"
+        payload["listing_status"] = "PENDING_REVIEW" if ack_status != "READY_FOR_REVIEW" else "READY_FOR_REVIEW"
+        sub = store_submission(payload, envelope, status=ack_status if ack_status != "READY_FOR_REVIEW" else "UNDER_REVIEW")
+        sub["listing_id"] = listing_id
+        sub["live_url"] = listing_url
+        sub["acknowledged_at"] = _now_iso()
+        payload["submission"] = sub
+        if listing_id:
+            payload["infradealer_listing_id"] = listing_id
+        payload["push_stage"] = "PUSHED_TO_INFRADEALER"
+        note = create_notification_event(
+            notification_type="LISTING_SUBMITTED",
+            listing_id=listing_id,
+            status=payload["listing_status"],
+            account_id=payload.get("profile_id") or conv.profile_id,
+            submission_id=sub.get("submission_id") or request_id,
+        )
+        payload["pending_notification"] = note
+        _write_payload(conv, payload)
+        _audit(db, conv, "data_push_ack", {
+            "status": ack_status,
+            "listing_id": listing_id,
+            "request_id": request_id,
+        })
+        return PushResult(
+            ok=True,
+            status=ack_status if ack_status != "READY_FOR_REVIEW" else "SUBMITTED",
+            submission_id=str(sub.get("submission_id") or request_id),
+            listing_id=listing_id,
+            listing_url=listing_url,
+            request_id=request_id,
+            idempotency_key=idem,
+            payload_hash=listing_hash,
+            message="Listing submitted for admin review",
+            notification=note,
+            detail={"draft_id": draft.id, "card_id": draft.card_id, "outbox_id": getattr(outbox, "id", None)},
+        )
+    except Exception as exc:
+        log.exception("data_push failed")
+        payload = _payload(conv)
+        err = str(exc)[:300]
+        # Classify — network-ish → retry; otherwise permanent
+        retry = bool(re.search(r"timeout|timed out|503|502|504|connection|unavailable", err, re.I))
+        sub = handle_failure(payload, retry=retry, error_code="SYSTEM_ERROR", message=err)
+        _write_payload(conv, payload)
+        _audit(db, conv, "data_push_failed", {"retry": retry, "error": err})
+        note = create_notification_event(
+            notification_type="LISTING_DELIVERY_FAILED",
+            status=sub.get("status") or "FAILED",
+            reason_code="SYSTEM_ERROR",
+            reason_text="InfraDealer server temporarily unavailable; submission preserved for retry.",
+            account_id=payload.get("profile_id") or conv.profile_id,
+            submission_id=str(sub.get("submission_id") or request_id),
+        )
+        return PushResult(
+            ok=False,
+            status="RETRY" if retry and int(sub.get("retry_count") or 0) <= MAX_RETRIES else "DELIVERY_FAILED",
+            reason_code="SYSTEM_ERROR",
+            request_id=request_id,
+            idempotency_key=idem,
+            payload_hash=listing_hash,
+            message=err,
+            notification=note,
+            detail={"user_data_error": False, "system_error": True, "retry_count": sub.get("retry_count")},
+        )
+
+
+def handle_post_listing_query(db: Session, conv: AiConversation, text: str, lang: str = "hinglish") -> str | None:
+    """Status / link / last-post queries — backend truth via get_submission_status."""
+    from .i18n import t
+
+    low = (text or "").lower()
+    status = get_submission_status(db, conv)
+    link = status.get("live_url") or ""
+    if link and not validate_live_url(link):
+        link = ""
+    st = str(status.get("status") or "").upper()
+
+    if re.search(r"\b(link|url)\b|listing\s*link", low):
+        return t(lang, "approved", link=link) if link else t(lang, "link_missing")
+    if re.search(r"(last|pichhli|previous).{0,20}(post|listing)|listing\s*status|meri\s+listing", low):
+        if st == "LIVE" and link:
+            return t(lang, "approved", link=link)
+        if st in {"PENDING_REVIEW", "UNDER_REVIEW", "SUBMITTED", "ADMIN_ACKNOWLEDGED", "APPROVED", "READY_FOR_REVIEW"}:
+            return t(lang, "not_live")
+        return t(lang, "status_ask", status=st or "DRAFT")
+    if re.search(r"(delete|hata|mita).{0,24}(listing|post|ad)|(listing|post).{0,24}(delete|hata)", low):
+        return t(lang, "handoff")  # listing delete is admin/human — never silent wipe
+    return None
+
+
+def has_recent_listing(db: Session, conv: AiConversation) -> bool:
+    """True if this conversation already submitted / has a listing id."""
+    payload = None
+    try:
+        from .tools import _payload
+
+        payload = _payload(conv)
+    except Exception:
+        payload = {}
+    if payload.get("infradealer_listing_id") or payload.get("listing_url"):
+        return True
+    st = str(payload.get("listing_status") or "").upper()
+    return st in {"LIVE", "PENDING_REVIEW", "UNDER_REVIEW", "SUBMITTED", "APPROVED", "READY_FOR_REVIEW", "POSTED"}
 
 
 def mark_listing_review_notified(conv: AiConversation, *, error: str = "") -> None:
-    pl = _payload(conv)
-    attempts = int(pl.get("listing_wa_notify_attempts") or 0)
-    from ..services import utcnow
+    """Persist that approve/reject WhatsApp was attempted (success or fail)."""
+    from .tools import _payload, _write_payload
 
-    pl["listing_wa_last_attempt_at"] = utcnow().isoformat()
+    payload = _payload(conv)
     if error:
-        pl["listing_wa_last_error"] = error[:500]
-        pl["listing_review_notified"] = False
-        pl["listing_wa_notify_attempts"] = attempts + 1
+        payload["listing_review_notify_error"] = str(error)[:500]
+        payload["listing_review_notified"] = False
+        payload["listing_review_notify_at"] = _now_iso()
     else:
-        pl["listing_review_notified"] = True
-        pl.pop("listing_wa_last_error", None)
-        pl["listing_wa_notify_attempts"] = attempts + 1
-    _write_payload(conv, pl)
+        payload["listing_review_notified"] = True
+        payload["listing_review_notify_error"] = ""
+        payload["listing_review_notify_at"] = _now_iso()
+    _write_payload(conv, payload)
 
 
-def should_retry_decision_notify(conv: AiConversation, *, force: bool = False) -> bool:
-    """Avoid hammering Graph when WhatsApp keeps failing."""
-    if force:
-        return True
-    pl = _payload(conv)
-    if pl.get("listing_review_notified"):
+def should_retry_decision_notify(conv: AiConversation) -> bool:
+    """Retry WhatsApp notify when decision exists but prior Graph send failed."""
+    from .tools import _payload
+
+    payload = _payload(conv)
+    if payload.get("listing_review_notified"):
         return False
-    attempts = int(pl.get("listing_wa_notify_attempts") or 0)
-    if attempts >= 8:
+    status = str(payload.get("listing_status") or "").upper()
+    if status not in {"POSTED", "LIVE", "APPROVED", "REJECTED"}:
         return False
-    last = str(pl.get("listing_wa_last_attempt_at") or "")
-    if not last:
-        return True
-    try:
-        from datetime import datetime, timezone
-
-        from ..services import utcnow
-
-        ts = datetime.fromisoformat(last.replace("Z", "+00:00"))
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        return (utcnow() - ts).total_seconds() >= 45
-    except Exception:
-        return True
+    # Always allow retry if never marked notified, or last attempt errored
+    return True
 
 
 def notify_user_admin_decision(
@@ -213,435 +945,84 @@ def notify_user_admin_decision(
     listing_id: str = "",
     payload: dict | None = None,
     reason: str = "",
-    draft: AiListingDraft | None = None,
+    draft: Any = None,
     force: bool = False,
 ) -> dict:
-    """Build + send WhatsApp approve/reject. Marks notified only after WA succeeds."""
-    text = apply_admin_decision(
-        db,
-        conv,
-        approved=approved,
-        listing_id=listing_id,
-        payload=payload,
-        reason=reason,
-        draft=draft,
-        force=force,
-    )
-    out = {"text": text or "", "sent": False, "error": ""}
-    if not text:
-        # Already notified earlier — treat as done so callers don't retry forever
-        pl = _payload(conv)
-        if pl.get("listing_review_notified"):
-            out["sent"] = True
-        return out
-    if not should_retry_decision_notify(conv, force=force):
-        pl = _payload(conv)
-        out["error"] = str(pl.get("listing_wa_last_error") or "notify retry delayed")
-        return out
-    try:
-        from ..services import get_or_create_settings, send_whatsapp_fast, store_chat, utcnow
+    """Update shared state + send WhatsApp approve/reject message (Admin is final authority)."""
+    from .i18n import pick_language, t
+    from .tools import _payload, _write_payload
 
-        mobile = (conv.mobile or (draft.mobile if draft else "") or "").strip()
-        if not mobile:
-            out["error"] = "mobile missing"
-            mark_listing_review_notified(conv, error=out["error"])
-            return out
-        try:
-            db.flush()
-        except Exception:
-            pass
-        meta = get_or_create_settings(db)
-        url = str(_payload(conv).get("listing_url") or "")
-        result = send_whatsapp_fast(meta, mobile, text, preview_url=bool(approved and url))
-        store_chat(
-            db,
-            wamid=result.get("wamid")
-            or f"ai.admin.{'ok' if approved else 'rej'}.{conv.id}.{int(utcnow().timestamp())}",
-            conversation_id=conv.conversation_id or f"CONV_{mobile}",
-            from_mobile=meta.phone_number_id or "infradealer",
-            from_name="InfraDealer AI",
-            to_mobile=mobile,
-            direction="outbound",
-            body=text,
-            status="sent",
-            unread=False,
-        )
-        mark_listing_review_notified(conv)
-        out["sent"] = True
-        log.info(
-            "admin_decision_wa_sent approved=%s mobile=***%s ms_path=fast",
-            approved,
-            mobile[-4:],
-        )
-    except Exception as exc:
-        out["error"] = str(exc)[:500]
-        mark_listing_review_notified(conv, error=out["error"])
-        log.exception("admin decision WhatsApp notify failed for %s", conv.mobile)
-        try:
-            from ..models import AiEvent
-
-            db.add(
-                AiEvent(
-                    wamid="",
-                    mobile=conv.mobile or "",
-                    event_type="admin_decision_wa_fail",
-                    detail=out["error"],
-                )
-            )
-        except Exception:
-            pass
-    return out
-
-
-def push_listing(db: Session, conv: AiConversation) -> PushResult:
-    """API push: filtered/confirmed chat data → InfraDealer admin listing queue (via webhook)."""
-    from .account_filter import eligibility_message, sync_conversation_account
-    from .cards import ensure_card_id, photos_status
-    from .data_filteration import filter_memory
-
-    payload = _payload(conv)
-    if not payload.get("customer_confirmed"):
-        return PushResult(
-            ok=False,
-            error="Wait for Haan/Yes on the final summary first.",
-            need_confirm=True,
-        )
-
-    # Ensure filtered snapshot is fresh before push
-    filtered = filter_memory(db, conv, payload)
-    if filtered.data:
-        payload["filtered_listing"] = filtered.data.get("filtered") or payload.get("filtered_listing")
-        if filtered.ready and not payload.get("summary_json"):
-            payload["summary_json"] = {k: v for k, v in filtered.data.items() if k != "filtered"}
-            _write_payload(conv, payload)
-
-    verdict = sync_conversation_account(db, conv, refresh=True)
-    payload = _payload(conv)
-    if not verdict.can_post and verdict.reason != "no_account":
-        msg = eligibility_message(conv.language or "hinglish", verdict) or "Account not eligible to post."
-        return PushResult(ok=False, error=msg, account_blocked=True, buy_link=verdict.buy_link or "")
-
-    draft = _draft_for(db, conv)
-    ensure_card_id(db, draft)
-    if verdict.reason == "no_account":
-        try:
-            from ..infradealer.service import InfraDealerIntegrationService
-
-            svc = InfraDealerIntegrationService(db)
-            if svc.is_configured():
-                st = svc.get_or_create_account_state(conv.mobile, conversation_id=conv.id)
-                if st and not st.pending_draft_id:
-                    st.pending_draft_id = draft.id
-        except Exception:
-            log.exception("pending draft stash failed")
-
-    photo = photos_status(db, draft.id)
-    if photo["need_more"]:
-        return PushResult(
-            ok=False,
-            error=f"Need at least {photo['min']} photos for {draft.card_id}. Now {photo['count']}.",
-            need_photos=True,
-            draft_id=draft.id,
-            card_id=draft.card_id or "",
-            extra={"photo_count": photo["count"]},
-        )
-
-    if draft.status in HUMAN_ONLY_STATUS:
-        return PushResult(ok=False, error="Already posted by admin", draft_id=draft.id, card_id=draft.card_id or "")
-
-    try:
-        from ..infradealer.service import InfraDealerIntegrationService
-
-        svc = InfraDealerIntegrationService(db)
-        if svc.is_configured() and svc.listing_already_pushed(conv, draft, payload):
-            url = str(payload.get("listing_url") or "")
-            lid = str(payload.get("infradealer_listing_id") or "")
-            if lid and not url:
-                url = listing_open_url(lid, mobile=conv.mobile)
-            return PushResult(
-                ok=True,
-                already_pushed=True,
-                draft_id=draft.id,
-                card_id=draft.card_id or "",
-                status=draft.status or payload.get("listing_status") or "PUSHED",
-                listing_id=lid,
-                listing_url=url,
-            )
-    except Exception:
-        log.exception("listing duplicate check failed")
-
-    draft.intent = conv.intent
-    draft.user_id = conv.profile_id
-    draft.title = listing_title(payload)
-    if payload.get("confirmed_json"):
-        draft.customer_json = json.dumps(payload.get("confirmed_json"), ensure_ascii=False)
-        draft.confirmed_json = draft.customer_json
-    draft.status = "CONFIRMED"
-    payload["listing_status"] = "CONFIRMED"
-    payload["data_status"] = "COMPLETE"
-    payload["active_card_id"] = draft.card_id
-    payload["push_stage"] = "ADMIN_QUEUE"
-    conv.state = "CONFIRMED"
-    _write_payload(conv, payload)
-
-    ids = [int(x) for x in (payload.get("media_ids") or []) if isinstance(x, int) or str(x).isdigit()]
-    if ids:
-        ids = ids[:5]
-        db.query(AiMedia).filter(AiMedia.id.in_(ids)).update({"draft_id": draft.id}, synchronize_session=False)
-
-    _log(
-        db,
-        conv,
-        "tool",
-        {"tool": "data_push", "status": draft.status, "draft_id": draft.id, "card_id": draft.card_id},
-    )
-
-    listing_id = ""
-    listing_url = ""
-    try:
-        from ..infradealer.service import InfraDealerIntegrationService
-
-        svc = InfraDealerIntegrationService(db)
-        if svc.is_configured():
-            item = svc.push_listing_for_draft(conv, draft, payload)
-            if item and item.status in {"PENDING", "RETRY"}:
-                svc.process_outbox_item(item)
-            payload = _payload(conv)
-            listing_id = str(payload.get("infradealer_listing_id") or "")
-            listing_url = str(payload.get("listing_url") or "")
-            if listing_id and not listing_url:
-                listing_url = listing_open_url(listing_id, mobile=conv.mobile, payload=payload)
-                payload["listing_url"] = listing_url
-                _write_payload(conv, payload)
-            if (draft.status or "").upper() in {"POSTED", "PENDING_REVIEW", "PUSHED_TO_INFRADEALER"}:
-                pass
-            elif item and item.status == "DONE":
-                draft.status = draft.status or "PENDING_REVIEW"
-                payload["listing_status"] = payload.get("listing_status") or "PENDING_REVIEW"
-                payload["push_stage"] = "AWAITING_ADMIN"
-                _write_payload(conv, payload)
-    except Exception:
-        log.exception("listing.push failed")
-
-    return PushResult(
-        ok=True,
-        draft_id=draft.id,
-        card_id=draft.card_id or "",
-        status=draft.status,
-        listing_id=listing_id,
-        listing_url=listing_url,
-        gaps=[],
-    )
-
-
-def apply_admin_decision(
-    db: Session,
-    conv: AiConversation,
-    *,
-    approved: bool,
-    listing_id: str = "",
-    payload: dict | None = None,
-    reason: str = "",
-    draft: AiListingDraft | None = None,
-    force: bool = False,
-) -> str:
-    """Update memory for approve/reject and return WhatsApp body.
-
-    Does NOT mark listing_review_notified — that happens only after WA send succeeds,
-    so failed Graph calls can be retried by poll / resend.
-    """
-    from ..infradealer.events import listing_reject_reason
-
+    remote = payload if isinstance(payload, dict) else {}
     pl = _payload(conv)
-    status = str(pl.get("listing_status") or "").upper()
-    if not force and pl.get("listing_review_notified"):
-        if approved and status == "POSTED":
-            return ""
-        if (not approved) and status == "REJECTED":
-            return ""
+    if pl.get("listing_review_notified") and not force:
+        return {"sent": False, "skipped": True, "error": "", "text": ""}
 
-    lid = listing_id_from_payload(payload, listing_id) or str(pl.get("infradealer_listing_id") or "")
-    lang = conv.language or "hinglish"
-    card = (draft.card_id if draft else None) or pl.get("active_card_id") or ""
+    lid = str(
+        listing_id
+        or pl.get("infradealer_listing_id")
+        or (remote.get("listing") or {}).get("listing_id")
+        or (remote.get("listing") or {}).get("id")
+        or ""
+    )
+    live_url = str(
+        remote.get("live_url")
+        or remote.get("listing_url")
+        or (remote.get("listing") or {}).get("url")
+        or (remote.get("listing") or {}).get("listing_url")
+        or pl.get("listing_url")
+        or ""
+    )
+    if live_url:
+        live_url = live_url.replace("/listing/", "/listings/")
+    if not live_url and lid:
+        live_url = public_listing_url(lid)
+    if live_url and not validate_live_url(live_url):
+        live_url = public_listing_url(lid) if lid else ""
 
+    open_url = listing_open_url(lid, mobile=conv.mobile, payload={"listing_url": live_url}) if lid else live_url
+
+    # Sync shared listing state (Admin is final authority)
     if approved:
-        url = listing_open_url(lid, mobile=conv.mobile, payload=payload)
         pl["listing_status"] = "POSTED"
-        pl["push_stage"] = "LIVE"
-        # Keep False until WhatsApp send confirms — prevents silent "stuck" rejects/approves
-        pl["listing_review_notified"] = False
-        if lid:
-            pl["infradealer_listing_id"] = lid
-        if url:
-            pl["listing_url"] = url
-        if reason:
-            pl["approval_note"] = reason
-        _write_payload(conv, pl)
-        if draft:
+        pl["infradealer_listing_id"] = lid or pl.get("infradealer_listing_id") or ""
+        if open_url or live_url:
+            pl["listing_url"] = open_url or live_url
+        sub = pl.get("submission") if isinstance(pl.get("submission"), dict) else {}
+        sub.update({"status": "LIVE", "listing_id": lid, "live_url": open_url or live_url})
+        pl["submission"] = sub
+        if draft is not None:
             draft.status = "POSTED"
-            try:
-                from .cards import schedule_card_cleanup
-
-                schedule_card_cleanup(draft)
-            except Exception:
-                pass
-        return approve_message(lang, url=url, card=card or "", reason=reason)
-    reject_reason = reason or listing_reject_reason(payload) or str(pl.get("rejection_reason") or "")
-    pl["listing_status"] = "REJECTED"
-    pl["push_stage"] = "REJECTED"
-    pl["listing_review_notified"] = False
-    if lid:
-        pl["infradealer_listing_id"] = lid
-    if reject_reason:
-        pl["rejection_reason"] = reject_reason
-    _write_payload(conv, pl)
-    if draft:
-        draft.status = "REJECTED"
-        try:
-            from .cards import schedule_card_cleanup
-
-            schedule_card_cleanup(draft)
-        except Exception:
-            pass
-    return reject_message(lang, reason=reject_reason, card=card or "")
-
-
-_LIVE = {"POSTED", "APPROVED", "LIVE", "PUBLISHED"}
-_PENDING = {"PENDING_REVIEW", "CONFIRMED", "PUSHED_TO_INFRADEALER", "READY_FOR_REVIEW"}
-
-
-def resolve_last_listing(db: Session, conv: AiConversation) -> dict[str, Any]:
-    """Best-effort last listing card info for link / status / history replies."""
-    pl = _payload(conv)
-    summary = pl.get("summary_json") if isinstance(pl.get("summary_json"), dict) else {}
-    confirmed = pl.get("confirmed_json") if isinstance(pl.get("confirmed_json"), dict) else {}
-    info: dict[str, Any] = {
-        "listing_id": str(pl.get("infradealer_listing_id") or summary.get("listing_id") or ""),
-        "listing_url": str(pl.get("listing_url") or ""),
-        "status": str(pl.get("listing_status") or "").upper(),
-        "card": str(pl.get("active_card_id") or summary.get("card") or ""),
-        "vehicle": str(summary.get("vehicle") or confirmed.get("vehicle") or "").strip(),
-        "year": str(summary.get("year") or confirmed.get("year") or pl.get("year") or ""),
-        "rate": str(summary.get("rate") or confirmed.get("rate") or pl.get("expected_price") or ""),
-        "location": str(summary.get("location") or confirmed.get("location") or pl.get("state") or ""),
-    }
-    if not info["vehicle"]:
-        info["vehicle"] = " ".join(
-            str(x) for x in [pl.get("brand"), pl.get("model")] if x
-        ).strip()
-
-    drafts = (
-        db.query(AiListingDraft)
-        .filter(AiListingDraft.mobile == conv.mobile)
-        .order_by(AiListingDraft.id.desc())
-        .limit(8)
-        .all()
-    )
-    for draft in drafts:
-        st = (draft.status or "").upper()
-        if st not in _LIVE | _PENDING | {"REJECTED", "ACCOUNT_REQUIRED"}:
-            continue
-        if not info["card"] and draft.card_id:
-            info["card"] = draft.card_id
-        if not info["status"]:
-            info["status"] = st
-        if not info["vehicle"] and draft.title:
-            info["vehicle"] = draft.title
-        try:
-            blob = json.loads(draft.confirmed_json or draft.customer_json or "{}")
-        except Exception:
-            blob = {}
-        if isinstance(blob, dict):
-            if not info["vehicle"] and blob.get("vehicle"):
-                info["vehicle"] = str(blob["vehicle"])
-            if not info["year"] and blob.get("year"):
-                info["year"] = str(blob["year"])
-            if not info["rate"] and blob.get("rate"):
-                info["rate"] = str(blob["rate"])
-            if not info["location"] and blob.get("location"):
-                info["location"] = str(blob["location"])
-        break
-
-    try:
-        from ..models import InfraDealerAccountState
-
-        phone = normalize_mobile(conv.mobile)
-        state = (
-            db.query(InfraDealerAccountState)
-            .filter(InfraDealerAccountState.mobile == phone)
-            .first()
-            if phone
-            else None
+        text = t(
+            pick_language("", str(getattr(conv, "language", "") or ""), "auto"),
+            "approved",
+            link=open_url or live_url or public_listing_url(lid),
         )
-        if state and state.meta_json:
-            meta = json.loads(state.meta_json or "{}")
-            if not info["listing_id"] and meta.get("listing_id"):
-                info["listing_id"] = str(meta["listing_id"])
-            if not info["status"] and meta.get("listing_status"):
-                info["status"] = str(meta["listing_status"]).upper()
-    except Exception:
-        pass
+    else:
+        reason_text = str(reason or remote.get("reason_text") or remote.get("message") or "Needs correction")
+        pl["listing_status"] = "REJECTED"
+        pl["rejection_reason"] = reason_text
+        pl["customer_confirmed"] = False
+        pl["awaiting_confirm"] = False
+        sub = pl.get("submission") if isinstance(pl.get("submission"), dict) else {}
+        sub.update({"status": "REJECTED", "reason_text": reason_text, "listing_id": lid})
+        pl["submission"] = sub
+        if draft is not None:
+            draft.status = "REJECTED"
+        text = t(
+            pick_language("", str(getattr(conv, "language", "") or ""), "auto"),
+            "rejected",
+            reason=reason_text,
+        )
 
-    lid = str(info.get("listing_id") or "")
-    if lid and (not info["listing_url"] or "/listing/" in info["listing_url"]):
-        info["listing_url"] = listing_open_url(lid, mobile=conv.mobile)
-    return info
+    _write_payload(conv, pl)
 
+    # Send WhatsApp via integration service helper when possible
+    try:
+        from ..infradealer.service import get_integration_service
 
-def has_recent_listing(db: Session, conv: AiConversation) -> bool:
-    info = resolve_last_listing(db, conv)
-    if info.get("listing_url") or info.get("listing_id"):
-        return True
-    st = str(info.get("status") or "").upper()
-    return st in _LIVE | _PENDING | {"REJECTED"}
-
-
-def handle_post_listing_query(db: Session, conv: AiConversation, text: str, lang: str) -> str | None:
-    """Answer link / last-post / website-delete without restarting buy/sell intent loop."""
-    from .account import wants_delete_listing, wants_last_post, wants_listing_link
-
-    msg = (text or "").strip()
-    if not msg:
-        return None
-    want_link = wants_listing_link(msg)
-    want_last = wants_last_post(msg)
-    want_del = wants_delete_listing(msg)
-    if not (want_link or want_last or want_del):
-        return None
-
-    info = resolve_last_listing(db, conv)
-    url = str(info.get("listing_url") or "")
-    status = str(info.get("status") or "").upper()
-    card = str(info.get("card") or "")
-    vehicle = str(info.get("vehicle") or "")
-    bits = [x for x in [vehicle, info.get("year"), info.get("rate"), info.get("location")] if x]
-    label = " · ".join(str(b) for b in bits[:4]) or (card or "listing")
-
-    if want_del:
-        if url:
-            return t(lang, "listing_delete_help", label=label, url=url)
-        return t(lang, "listing_delete_no_link")
-
-    if want_link:
-        if url and status in _LIVE:
-            return t(lang, "listing_link_live", url=url)
-        if url and status in _PENDING:
-            return t(lang, "listing_link_pending", url=url)
-        if status in _PENDING or status == "CONFIRMED":
-            return t(lang, "listing_awaiting_approve")
-        if status == "REJECTED":
-            reason = str(_payload(conv).get("rejection_reason") or "")
-            return t(lang, "rejected_with_reason", reason=reason) if reason else t(lang, "rejected")
-        return t(lang, "listing_link_missing")
-
-    # last post / history
-    if url and status in _LIVE:
-        return t(lang, "listing_last_live", label=label, url=url)
-    if status in _PENDING or status == "CONFIRMED":
-        return t(lang, "listing_last_pending", label=label)
-    if status == "REJECTED":
-        reason = str(_payload(conv).get("rejection_reason") or "")
-        return t(lang, "listing_last_rejected", label=label, reason=reason or "—")
-    if label and label != "listing":
-        return t(lang, "listing_last_known", label=label)
-    return t(lang, "listing_none")
+        svc = get_integration_service(db)
+        sent = svc._notify_customer(conv, text, preview_url=bool(approved and (open_url or live_url)))
+        return {"sent": bool(sent), "error": "" if sent else "send_failed", "text": text}
+    except Exception as exc:
+        mark_listing_review_notified(conv, error=str(exc)[:500])
+        return {"sent": False, "error": str(exc)[:300], "text": text}

@@ -18,18 +18,32 @@ from ..ai.schema import listing_title, loads as schema_loads, normalize_vehicle_
 from .crypto import signed_token
 
 POST_AD_CATEGORY = {
-    "Truck": "Trucks",
-    "Dumper": "Dumpers / Tippers",
-    "Tipper": "Dumpers / Tippers",
-    "Crane": "Crane",
-    "Poclain": "Excavators / Pockland",
-    "Excavator": "Excavators / Pockland",
-    "JCB": "JCB / Backhoe Loaders",
-    "Backhoe Loader": "JCB / Backhoe Loaders",
-    "Loader": "Loaders",
-    "Crusher": "Crushers",
-    "Grader": "Road Roller",
-    "Other": "Others",
+    "Truck": "trucks",
+    "Dumper": "dumpers",
+    "Tipper": "dumpers",
+    "Crane": "crane",
+    "Poclain": "excavator",
+    "Excavator": "excavator",
+    "JCB": "jcb",
+    "Backhoe Loader": "jcb",
+    "Loader": "loaders",
+    "Crusher": "crushers",
+    "Grader": "road-roller",
+    "Other": "others",
+}
+# Display labels kept for title/description context only
+POST_AD_CATEGORY_LABEL = {
+    "trucks": "Trucks",
+    "dumpers": "Dumpers / Tippers",
+    "crane": "Crane",
+    "excavator": "Excavators / Pockland",
+    "jcb": "JCB / Backhoe Loaders",
+    "loaders": "Loaders",
+    "crushers": "Crushers",
+    "road-roller": "Road Roller",
+    "others": "Others",
+    "buses": "Buses",
+    "tractors": "Tractors",
 }
 HOUR_CATEGORIES = {
     "JCB", "Excavator", "Poclain", "Loader", "Crane", "Crusher",
@@ -43,8 +57,26 @@ def listing_push_status() -> str:
 
 
 def map_post_ad_category(internal: str) -> str:
+    """Map internal AI category → frontend/API slug (trucks, jcb, …)."""
     canon = normalize_vehicle_category(internal) or (internal or "").strip()
-    return POST_AD_CATEGORY.get(canon, "Others")
+    if canon in POST_AD_CATEGORY:
+        return POST_AD_CATEGORY[canon]
+    raw = str(internal or "").strip().lower()
+    # Already a slug or display name
+    for slug, label in POST_AD_CATEGORY_LABEL.items():
+        if raw == slug or raw == label.lower():
+            return slug
+    aliases = {
+        "truck": "trucks",
+        "trucks": "trucks",
+        "tipper": "dumpers",
+        "dumper": "dumpers",
+        "dumpers / tippers": "dumpers",
+        "jcb / backhoe loaders": "jcb",
+        "excavators / pockland": "excavator",
+        "road roller": "road-roller",
+    }
+    return aliases.get(raw) or POST_AD_CATEGORY.get(canon, "others")
 
 
 def strip_contact_from_text(text: str) -> str:

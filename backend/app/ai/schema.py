@@ -1,6 +1,9 @@
 import json
 import re
 
+FILTER_VERSION = "df-2.4"
+SCHEMA_VERSION = "infra-vehicle-v12"
+
 SELL_ASK = ["category", "brand", "model", "year", "expected_price", "state"]
 BUY_ASK = ["category", "brand", "budget", "state"]
 HUMAN_ONLY_STATUS = {"POSTED", "APPROVED", "LIVE", "published", "PUBLISHED"}
@@ -17,6 +20,110 @@ VEHICLE_CATEGORIES = (
     "Truck", "Dumper", "Tipper", "Crane", "Poclain", "Loader",
     "Backhoe Loader", "JCB", "Excavator", "Grader", "Crusher", "Other",
 )
+
+# Category-driven schemas for Data Filter (required fields vary by category).
+_BASE_SELL_REQUIRED = ["brand", "model", "year", "location", "price"]
+_BASE_SELL_OPTIONAL = ["km", "fuel", "owners", "condition", "photos"]
+_BASE_PRIORITIES = {
+    "category": 100,
+    "brand": 95,
+    "model": 94,
+    "year": 93,
+    "price": 100,
+    "location": 90,
+    "state": 90,
+    "hours": 92,
+    "km": 70,
+    "photos": 60,
+    "budget": 95,
+}
+
+CATEGORY_SCHEMAS: dict[str, dict] = {
+    "Truck": {
+        "category": "Truck",
+        "schema_version": "truck-v12",
+        "required": ["brand", "model", "year", "location", "price"],
+        "optional": ["km", "fuel", "owners", "condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+    "Tipper": {
+        "category": "Tipper",
+        "schema_version": "tipper-v12",
+        "required": ["brand", "model", "year", "location", "price"],
+        "optional": ["km", "fuel", "owners", "condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+    "Dumper": {
+        "category": "Dumper",
+        "schema_version": "dumper-v12",
+        "required": ["brand", "model", "year", "location", "price"],
+        "optional": ["km", "fuel", "owners", "condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+    "Excavator": {
+        "category": "Excavator",
+        "schema_version": "excavator-v12",
+        "required": ["brand", "model", "year", "hours", "location", "price"],
+        "optional": ["condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+    "JCB": {
+        "category": "JCB",
+        "schema_version": "jcb-v12",
+        "required": ["brand", "model", "year", "hours", "location", "price"],
+        "optional": ["condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+    "Poclain": {
+        "category": "Poclain",
+        "schema_version": "poclain-v12",
+        "required": ["brand", "model", "year", "hours", "location", "price"],
+        "optional": ["condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+    "Loader": {
+        "category": "Loader",
+        "schema_version": "loader-v12",
+        "required": ["brand", "model", "year", "hours", "location", "price"],
+        "optional": ["condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+    "Backhoe Loader": {
+        "category": "Backhoe Loader",
+        "schema_version": "backhoe-v12",
+        "required": ["brand", "model", "year", "hours", "location", "price"],
+        "optional": ["condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+    "Crane": {
+        "category": "Crane",
+        "schema_version": "crane-v12",
+        "required": ["brand", "model", "year", "hours", "location", "price"],
+        "optional": ["condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+    "Grader": {
+        "category": "Grader",
+        "schema_version": "grader-v12",
+        "required": ["brand", "model", "year", "hours", "location", "price"],
+        "optional": ["condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+    "Crusher": {
+        "category": "Crusher",
+        "schema_version": "crusher-v12",
+        "required": ["brand", "model", "year", "location", "price"],
+        "optional": ["hours", "condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+    "Other": {
+        "category": "Other",
+        "schema_version": "other-v12",
+        "required": ["brand", "model", "year", "location", "price"],
+        "optional": ["km", "hours", "condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+}
 _CAT_ALIASES = {
     "truck": "Truck", "truk": "Truck", "lorry": "Truck", "lory": "Truck",
     "ट्रक": "Truck",
@@ -53,6 +160,20 @@ def normalize_vehicle_category(raw: str | None) -> str:
         if re.search(rf"(?<![a-z0-9]){re.escape(cue)}(?![a-z0-9])", text):
             return label
     return ""
+
+
+def category_schema(category: str | None) -> dict:
+    """Return category-driven required/optional schema for Data Filter."""
+    canon = normalize_vehicle_category(category) if category else ""
+    if canon and canon in CATEGORY_SCHEMAS:
+        return dict(CATEGORY_SCHEMAS[canon])
+    return {
+        "category": canon or "Other",
+        "schema_version": SCHEMA_VERSION,
+        "required": list(_BASE_SELL_REQUIRED),
+        "optional": list(_BASE_SELL_OPTIONAL),
+        "priorities": dict(_BASE_PRIORITIES),
+    }
 
 
 def empty_payload() -> dict:
@@ -125,6 +246,39 @@ def empty_payload() -> dict:
         "data_status": "INCOMPLETE",
         "confidence": {},
         "source": {"customer": {}, "inferred": {}, "backend": {}},
+        "filter_result": {},
+        "field_conflicts": [],
+        "documents": {},
+        "draft_version": 1,
+        "rm_state": "",
+        "workflow_state": "",
+        "workflow_id": None,
+        "conversation_summary": "",
+        "field_history": [],
+        "account_context": {},
+        "handoff": {},
+        "listing_url": None,
+        "rejection_reason": None,
+        # data_push submission + admin sync
+        "submission": {},
+        "confirmed_version": None,
+        "confirmed_at": None,
+        "confirmation": {},
+        "push_stage": None,
+        "infradealer_listing_id": None,
+        "processed_admin_events": [],
+        "pending_notification": {},
+        "schema_version": None,
+        "request_id": None,
+        "correlation_id": None,
+        "last_event_id": None,
+        "master_workflow_state": None,
+        "agent_events": [],
+        "infradealer_user_id": None,
+        "draft_id": None,
+        "listing_review_notified": False,
+        "listing_review_notify_error": None,
+        "listing_review_notify_at": None,
     }
 
 
@@ -137,6 +291,8 @@ def loads(raw: str | None) -> dict:
     if isinstance(data, dict):
         for key, val in data.items():
             if key in base:
+                base[key] = val
+            elif key in {"filter_result", "field_conflicts", "documents", "draft_version"}:
                 base[key] = val
         src = data.get("source") if isinstance(data.get("source"), dict) else {}
         base["source"] = {

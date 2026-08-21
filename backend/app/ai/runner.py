@@ -23,7 +23,6 @@ from ..services import (
     utcnow,
 )
 from .schema import loads
-from .simple_chat import simple_respond
 from .tools import _draft_for, _payload, _write_payload
 from ..identity import usable_person_name
 
@@ -31,10 +30,15 @@ log = logging.getLogger("infradealer.ai")
 
 
 def _ai_respond(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str:
-    """Hot path: fresh listing agent by default; plain chat if AI_SIMPLE_CHAT=true."""
+    """Hot path: four-agent orchestrator (account_filter → chat_memory ↔ filter/push)."""
     if getattr(settings, "ai_simple_chat", False):
-        return simple_respond(db, conv, text, media_note)
-    from .listing_agent import handle_message
+        try:
+            from .simple_chat import simple_respond
+            return simple_respond(db, conv, text, media_note)
+        except Exception:
+            from .orchestrator import handle_message
+            return handle_message(db, conv, text, media_note)
+    from .orchestrator import handle_message
 
     return handle_message(db, conv, text, media_note)
 
@@ -260,7 +264,7 @@ def process_inbound(
         t_ai0 = time.perf_counter()
         try:
             reply = _ai_respond(db, conv, text, media_note)
-            path = "simple_zai" if simple else "listing_agent"
+            path = "simple_zai" if simple else "orchestrator"
             if not simple:
                 pl = _payload(conv)
                 if pl.get("active_card_id"):

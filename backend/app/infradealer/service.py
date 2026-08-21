@@ -549,12 +549,12 @@ class InfraDealerIntegrationService:
                     state.meta_json = json.dumps(meta)
                 conv = self.db.get(AiConversation, item.conversation_id) if item.conversation_id else None
                 if conv:
-                    from ..ai.data_push import listing_open_url
+                    from ..ai.data_push import listing_open_url, notify_user_admin_decision
                     from ..ai.tools import _payload, _write_payload
 
                     pl = _payload(conv)
                     pl["listing_status"] = "POSTED"
-                    pl["listing_review_notified"] = True
+                    pl["listing_review_notified"] = False
                     pl["push_stage"] = "LIVE"
                     if listing_id:
                         pl["infradealer_listing_id"] = listing_id
@@ -562,6 +562,14 @@ class InfraDealerIntegrationService:
                     if url:
                         pl["listing_url"] = url
                     _write_payload(conv, pl)
+                    notify_user_admin_decision(
+                        self.db,
+                        conv,
+                        approved=True,
+                        listing_id=listing_id,
+                        payload=body,
+                        draft=self.db.get(AiListingDraft, item.draft_id) if item.draft_id else None,
+                    )
             elif ok and not auto:
                 if item.draft_id:
                     draft = self.db.get(AiListingDraft, item.draft_id)

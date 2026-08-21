@@ -130,6 +130,14 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
+            "name": "validate_listing_data",
+            "description": "Run Data Filter validation on the current listing draft. Returns readiness, missing fields, conflicts, and quality score. Does not invent data.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "submit_for_review",
             "description": "After customer Haan/Yes: push filtered listing card to InfraDealer webhook (direct publish when auto_publish is on).",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -330,6 +338,21 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
                 conv.state = "SELL_DATA_COLLECTION"
             elif conv.intent == "BUY":
                 conv.state = "BUY_DATA_COLLECTION"
+        # Data Filter quality gate — normalize/validate without inventing values
+        try:
+            from .data_filter import apply_filter_to_payload, filter_payload
+
+            apply_filter_to_payload(payload)
+            fr = filter_payload(payload)
+            if fr.normalized_data.get("category"):
+                payload["category"] = fr.normalized_data["category"]
+                payload["type"] = fr.normalized_data["category"]
+            if fr.normalized_data.get("brand") and not payload.get("brand"):
+                payload["brand"] = fr.normalized_data["brand"]
+            if fr.validation_errors:
+                payload["filter_result"] = fr.as_dict()
+        except Exception:
+            log.exception("data_filter on save_vehicle_data failed")
         _write_payload(conv, payload)
         draft = _draft_for(db, conv)
         if draft.status in HUMAN_ONLY_STATUS:
@@ -339,7 +362,7 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
         draft.title = listing_title(payload)
         if draft.status not in {"READY_FOR_REVIEW", "POSTED", "CONFIRMED"}:
             draft.status = "COLLECTING"
-        return {"ok": True, "missing_fields": payload.get("missing_fields") or [], "draft_id": draft.id}
+        return {"ok": True, "missing_fields": payload.get("missing_fields") or [], "draft_id": draft.id, "readiness": (payload.get("filter_result") or {}).get("readiness")}
 
     if name == "save_conversation":
         state = str(args.get("state") or "").upper()
@@ -424,10 +447,30 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
         _log(db, conv, "tool", {"tool": "verify_otp", "profile_id": user.id, "created": created})
         return {"ok": True, "verified": True, "profile_id": user.id, "created": created}
 
+    if name == "validate_listing_data":
+        from .data_filter import filter_memory
+
+        result = filter_memory(db, conv)
+        return result.as_dict()
+
     if name == "submit_for_review":
+        from .data_filter import final_validation
         from .data_push import push_listing
 
+        gate = final_validation(db, conv)
+        if not gate.ready and gate.readiness in {"INVALID_DATA", "CONFLICT_REQUIRES_USER", "MISSING_REQUIRED_DATA"}:
+            return {
+                "ok": False,
+                "error": "listing_not_ready",
+                "readiness": gate.readiness,
+                "missing_fields": gate.missing_fields,
+                "conflicts": gate.conflicts,
+                "validation_errors": gate.validation_errors,
+            }
         result = push_listing(db, conv)
-        return result.as_dict()
+        out = result.as_dict() if hasattr(result, "as_dict") else dict(result or {})
+        out["filter_readiness"] = gate.readiness
+        out["quality"] = gate.quality
+        return out
 
     return {"ok": False, "error": "Unknown or forbidden tool"}
