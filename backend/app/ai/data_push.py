@@ -1022,6 +1022,14 @@ def notify_user_admin_decision(
 
         svc = get_integration_service(db)
         sent = svc._notify_customer(conv, text, preview_url=bool(approved and (open_url or live_url)))
+        # After approve/reject: 10-min silence → wipe live chat (listing memory kept)
+        if sent and draft is not None:
+            try:
+                from .cards import schedule_card_cleanup
+
+                schedule_card_cleanup(draft, minutes=10)
+            except Exception:
+                log.exception("schedule_card_cleanup failed")
         return {"sent": bool(sent), "error": "" if sent else "send_failed", "text": text}
     except Exception as exc:
         mark_listing_review_notified(conv, error=str(exc)[:500])

@@ -437,8 +437,8 @@ def handle_admin_status_event(db: Session, conv: AiConversation, event: dict) ->
 def handle_message(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str:
     """
     Master turn:
-      USER → account_filter → chat_memory (↔ Data_filter / data_push) → USER
-    Appears as one Relationship Manager; agents keep strict roles.
+      USER → (10-min memory / last-listing) → account_filter → chat_memory ↔ filter/push
+    Last-listing updates resume from DB and use the listing engine.
     """
     started = time.perf_counter()
     ids = new_ids()
@@ -453,6 +453,40 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
         source_agent="orchestrator",
         detail={"text_len": len(text or ""), "has_media": bool(media_note)},
     )
+
+    from .i18n import pick_language, t
+    from .session_memory import prepare_turn
+
+    prep = prepare_turn(db, conv, text)
+    lang = pick_language(text, str(getattr(conv, "language", "") or ""), "auto")
+
+    if prep.get("missing_last_listing"):
+        reply = t(lang, "last_listing_missing")
+        sync_master_from_rm(db, conv)
+        return reply
+
+    if prep.get("mode") == "engine_update":
+        emit_event(
+            db,
+            conv,
+            "DRAFT_UPDATED",
+            source_agent="orchestrator",
+            detail={"reason": "LAST_LISTING_UPDATE", "card_id": prep.get("card_id")},
+        )
+        from .engine import respond as engine_respond
+
+        card = prep.get("card_id") or ""
+        head = t(lang, "last_listing_loaded", card=card) if card else ""
+        try:
+            body = engine_respond(db, conv, text, media_note)
+        except Exception:
+            log.exception("engine update path failed — falling back to chat_memory")
+            from .chat_memory import handle_message as rm_handle
+
+            body = rm_handle(db, conv, text, media_note)
+        reply = (head + "\n\n" + (body or "")).strip() if head else (body or "")
+        sync_master_from_rm(db, conv)
+        return reply
 
     # Agent 1 — WHO?
     af_req = handshake(
@@ -472,10 +506,19 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
         log.exception("account_filter failed — continuing to chat_memory")
         emit_event(db, conv, "SYSTEM_ERROR", source_agent="account_filter", detail={"stage": "identity"})
 
-    # Agent 2 — WHAT / WHAT NEXT? (internally coordinates Agents 3 & 4)
+    # Agent 2 — WHAT / WHAT NEXT?
     from .chat_memory import handle_message as rm_handle
 
     reply = rm_handle(db, conv, text, media_note)
+    if prep.get("mode") == "new_chat" and prep.get("reset"):
+        # Soft intro so it feels like a fresh conversation after 10-min memory reset
+        intro = t(lang, "memory_reset_new_chat")
+        body = (reply or "").strip()
+        if body and intro not in body:
+            reply = intro + "\n\n" + body
+        elif not body:
+            reply = intro
+
     sync_master_from_rm(db, conv)
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -488,6 +531,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
             "elapsed_ms": elapsed_ms,
             "master_state": _payload(conv).get("master_workflow_state"),
             "rm_state": _payload(conv).get("rm_state"),
+            "prep_mode": prep.get("mode"),
         },
     )
     return reply

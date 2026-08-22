@@ -286,6 +286,11 @@ def conv_otp_pending(payload: dict) -> bool:
 
 def apply_fields(db: Session, conv: AiConversation, fields: dict) -> dict:
     data = dict(fields or {})
+    if data:
+        payload = _payload(conv)
+        if payload.get("chat_cleared"):
+            payload["chat_cleared"] = False
+            _write_payload(conv, payload)
     if data.get("intent"):
         execute_tool(db, conv, "save_customer_data", {"intent": str(data["intent"]).upper()})
     veh = {
@@ -312,8 +317,8 @@ def apply_fields(db: Session, conv: AiConversation, fields: dict) -> dict:
                     "field": key,
                     "old_value": old,
                     "new_value": val,
-                    "source": "USER",
                     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "source": "USER",
                 })
         if history:
             payload["field_history"] = history[-40:]

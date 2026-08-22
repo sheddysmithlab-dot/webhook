@@ -279,6 +279,13 @@ def empty_payload() -> dict:
         "listing_review_notified": False,
         "listing_review_notify_error": None,
         "listing_review_notify_at": None,
+        "last_activity_at": None,
+        "last_user_message_at": None,
+        "memory_idle_minutes": 10,
+        "memory_reset_at": None,
+        "memory_reset_reason": None,
+        "listing_edit_mode": False,
+        "editing_draft_id": None,
     }
 
 
