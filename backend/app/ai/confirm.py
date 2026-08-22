@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 from sqlalchemy.orm import Session
@@ -10,6 +11,44 @@ from sqlalchemy.orm import Session
 from ..models import AiConversation, AiListingDraft
 from .schema import listing_title, loads, dumps
 from .tools import _payload, _write_payload
+
+log = logging.getLogger("infradealer.ai.confirm")
+
+
+def _send_listing_button(db: Session, conv: AiConversation, lang: str) -> None:
+    """Send interactive button message with listing link after push."""
+    try:
+        from ..services import get_or_create_settings, send_whatsapp_button, store_chat
+        from ..config import settings as app_settings
+
+        payload = _payload(conv)
+        listing_url = str(payload.get("listing_url") or "").strip()
+        listing_id = str(payload.get("infradealer_listing_id") or "").strip()
+        if not listing_url and listing_id:
+            listing_url = f"https://infradealer.com/listing/{listing_id}"
+        if not listing_url:
+            return
+        meta = get_or_create_settings(db)
+        body_text = t(lang, "listing_live_button")
+        buttons = [
+            {"title": t(lang, "btn_view_listing"), "url": listing_url},
+            {"title": t(lang, "btn_browse"), "url": "https://infradealer.com"},
+        ]
+        result = send_whatsapp_button(meta, conv.mobile, body_text, buttons)
+        store_chat(
+            db,
+            wamid=result.get("wamid") or f"btn.{conv.id}.{int(__import__('time').time())}",
+            conversation_id=conv.conversation_id or f"CONV_{conv.mobile}",
+            from_mobile=meta.phone_number_id or "infradealer",
+            from_name="InfraDealer",
+            to_mobile=conv.mobile,
+            direction="outbound",
+            body=body_text,
+            status="sent",
+            unread=False,
+        )
+    except Exception:
+        log.exception("listing button send failed for %s", conv.mobile)
 
 _YES = re.compile(
     r"^\s*("
@@ -156,6 +195,7 @@ def handle_confirmation(db: Session, conv: AiConversation, text: str, lang: str 
         result = submit_confirmed_listing(db, conv)
         if result.get("ok") is False:
             return t(lang, "unclear")
+        _send_listing_button(db, conv, lang)
         return t(lang, "submitted")
     if is_no(text):
         payload = _payload(conv)

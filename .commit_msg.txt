@@ -1,16 +1,9 @@
-feat: AI Corrector — fix user message typos before agent processes
+feat: WhatsApp interactive buttons for listing + website forwarding
 
-New layer between user message and agent:
-  User msg → AI Corrector → Agent (detect_intent → collect → reply)
-
-- corrector.py: fixes spelling, word completion, grammar
-  "gdi bechna h" → "gaadi bechna hain"
-  "jcB tipr 40 lac" → "JCB Tipper 40 lakh"
-- Fast Python correction for known typos (no LLM needed)
-- LLM correction for complex messages (scoped, no tools, no meaning change)
-- Meaning change detection: rejects if intent/numbers flipped
-- Skip short messages (Haan, Nahi, Ok, OTP, photo)
-- Original text preserved in DB for audit (ai_correction event)
-- Config flag: ai_corrector (default True)
-- Wired into runner.py before _ai_respond
-- 13 unit tests
+- send_whatsapp_button() in services.py: interactive button message
+  via WhatsApp Business API (type: interactive, URL buttons)
+- confirm.py: after listing push, sends "Listing Dekhein" + "Aur Listings" buttons
+- account.py: after account onboarding, sends "Website Par Jayein" button
+- 4 new i18n keys: listing_live_button, btn_view_listing,
+  btn_browse, btn_visit_website (hinglish/hi/en)
+- 8 unit tests

@@ -344,6 +344,69 @@ def send_whatsapp_fast(meta: MetaSettings, to: str, body: str, preview_url: bool
     return send_whatsapp_text(meta, to, body, preview_url=preview_url, timeout=12.0, retries=1)
 
 
+def send_whatsapp_button(
+    meta: MetaSettings,
+    to: str,
+    body_text: str,
+    buttons: list[dict],
+    *,
+    timeout: float = 20,
+    retries: int = 0,
+) -> dict:
+    """Send an interactive button message via WhatsApp Business API.
+
+    Args:
+        body_text: Main message text shown above buttons.
+        buttons: List of {"title": str, "url": str} dicts (max 2).
+    """
+    to = to_whatsapp_id(to)
+    if not meta.phone_number_id or not meta.system_user_token:
+        raise RuntimeError("Phone Number ID aur System User Token save karo.")
+    if not to:
+        raise RuntimeError("Valid WhatsApp recipient missing.")
+    btn_list = []
+    for b in (buttons or [])[:2]:
+        title = str(b.get("title") or "Open")[:20]
+        url = str(b.get("url") or "https://infradealer.com")
+        btn_list.append({"type": "URL", "title": title, "url": url})
+    if not btn_list:
+        raise RuntimeError("At least one button required.")
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": body_text[:1024]},
+            "action": {"buttons": btn_list},
+        },
+    }
+    url = graph_url(meta, f"{meta.phone_number_id}/messages")
+    headers = {"Authorization": f"Bearer {meta.system_user_token}"}
+    attempts = max(1, int(retries) + 1)
+    last_err: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            with httpx.Client(timeout=float(timeout)) as client:
+                resp = client.post(url, json=payload, headers=headers)
+                data = resp.json() if resp.content else {}
+                if resp.status_code >= 400:
+                    raise RuntimeError(data.get("error", {}).get("message") or f"Graph API HTTP {resp.status_code}")
+                wamid = ""
+                messages = data.get("messages") or []
+                if messages:
+                    wamid = messages[0].get("id") or ""
+                return {"wamid": wamid, "http_status": resp.status_code, "payload": payload, "response": data}
+        except Exception as exc:
+            last_err = exc
+            if attempt + 1 < attempts:
+                time.sleep(0.35)
+                continue
+            raise
+    raise last_err or RuntimeError("WhatsApp button send failed")
+
+
 def send_whatsapp_delete(meta: MetaSettings, message_id: str) -> dict:
     message_id = (message_id or "").strip()
     if not meta.phone_number_id or not meta.system_user_token:

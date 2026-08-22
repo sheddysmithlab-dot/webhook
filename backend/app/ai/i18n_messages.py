@@ -639,6 +639,26 @@ MESSAGES = {
         "hi": "जी सर, मैं यहाँ हूँ। लिस्टिंग से जुड़ा कुछ चाहिए?",
         "en": "I'm here, Sir. Anything I can help with for a listing?",
     },
+    "listing_live_button": {
+        "hinglish": "Aapki listing InfraDealer par live ho gayi hai!",
+        "hi": "आपकी लिस्टिंग InfraDealer पर लाइव हो गई है!",
+        "en": "Your listing is live on InfraDealer!",
+    },
+    "btn_view_listing": {
+        "hinglish": "Listing Dekhein",
+        "hi": "लिस्टिंग देखें",
+        "en": "View Listing",
+    },
+    "btn_browse": {
+        "hinglish": "Aur Listings",
+        "hi": "और लिस्टिंग",
+        "en": "Browse More",
+    },
+    "btn_visit_website": {
+        "hinglish": "Website Par Jayein",
+        "hi": "वेबसाइट पर जाएं",
+        "en": "Visit Website",
+    },
     "continue_chat": {
         "hinglish": "Aapki listing submit ho chuki hai. Kuch aur chahiye to bataiye.",
         "hi": "आपकी लिस्टिंग सबमिट हो चुकी है। कुछ और चाहिए तो बताइए।",

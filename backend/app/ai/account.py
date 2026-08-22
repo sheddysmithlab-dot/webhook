@@ -203,8 +203,36 @@ def _finish(db: Session, conv: AiConversation, user: User, lang: str, extra: str
     conv.profile_status = "verified"
     _write_payload(conv, payload)
     _maybe_push_listing(db, conv)
+    _send_website_button(db, conv, lang)
     bits = [x for x in (extra, _website_line(lang)) if x]
     return "\n\n".join(bits)
+
+
+def _send_website_button(db: Session, conv: AiConversation, lang: str) -> None:
+    """Send interactive button with website link after account onboarding."""
+    try:
+        from ..services import get_or_create_settings, send_whatsapp_button, store_chat
+        from .i18n import t
+        import time as _time
+
+        meta = get_or_create_settings(db)
+        body_text = t(lang, "account_created", site=SITE)
+        buttons = [{"title": t(lang, "btn_visit_website"), "url": SITE}]
+        result = send_whatsapp_button(meta, conv.mobile, body_text, buttons)
+        store_chat(
+            db,
+            wamid=result.get("wamid") or f"btn.{conv.id}.{int(_time.time())}",
+            conversation_id=conv.conversation_id or f"CONV_{conv.mobile}",
+            from_mobile=meta.phone_number_id or "infradealer",
+            from_name="InfraDealer",
+            to_mobile=conv.mobile,
+            direction="outbound",
+            body=body_text,
+            status="sent",
+            unread=False,
+        )
+    except Exception:
+        log.exception("website button send failed for %s", conv.mobile)
 
 
 def _ensure_user(db: Session, conv: AiConversation, payload: dict) -> User:
