@@ -1,6 +1,6 @@
 from app.ai.extract import extract_from_text, extract_state
 from app.ai.i18n import t
-from app.ai.memory import is_repeat_outbound, too_similar
+from app.ai.free_chat import is_repeat_outbound, too_similar
 
 
 def _card(location: str) -> str:

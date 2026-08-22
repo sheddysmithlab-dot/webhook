@@ -82,6 +82,8 @@ class PushResult:
     message: str = ""
     notification: dict = field(default_factory=dict)
     detail: dict = field(default_factory=dict)
+    elapsed_ms: int = 0
+    submitted_at: str = ""
 
     def as_dict(self) -> dict:
         out = {
@@ -96,6 +98,8 @@ class PushResult:
             "payload_hash": self.payload_hash,
             "message": self.message,
             "notification": self.notification,
+            "elapsed_ms": self.elapsed_ms,
+            "submitted_at": self.submitted_at,
             "agent_version": AGENT_VERSION,
         }
         out.update(self.detail or {})
@@ -190,12 +194,20 @@ def sign_payload(raw_body: str, *, timestamp: str | None = None, secret: str | N
 
 
 def verify_admin_event(headers: dict | None, raw_body: str, *, max_skew_sec: int = 300) -> tuple[bool, str]:
-    """Verify incoming admin status event signature."""
+    """Verify incoming admin status event signature.
+
+    If a secret is configured, a valid HMAC signature is required.
+    If no secret is configured (dev/test), unsigned events are accepted with a warning
+    unless ``allow_unsigned_admin_events`` is explicitly set to False.
+    """
     headers = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
     secret = (getattr(settings, "infradealer_api_secret", "") or "").strip()
     if not secret:
-        # Dev / unconfigured — accept only if explicitly unsigned mode
-        return True, "NO_SECRET_CONFIGURED"
+        allow_unsigned = getattr(settings, "allow_unsigned_admin_events", True)
+        if allow_unsigned:
+            log.warning("admin event accepted without signature (no secret configured)")
+            return True, "NO_SECRET_CONFIGURED"
+        return False, "NO_SECRET_CONFIGURED"
     ts = headers.get("x-infradealer-timestamp") or headers.get("x-timestamp") or ""
     sig = headers.get("x-infradealer-signature") or headers.get("x-signature") or ""
     if not ts or not sig:
@@ -205,9 +217,11 @@ def verify_admin_event(headers: dict | None, raw_body: str, *, max_skew_sec: int
     except ValueError:
         return False, "INVALID_TIMESTAMP"
     if skew > max_skew_sec:
+        log.warning("admin event rejected — timestamp skew %ds > %ds", skew, max_skew_sec)
         return False, "TIMESTAMP_SKEW"
     expected = hmac.new(secret.encode(), f"{ts}.{raw_body}".encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, sig):
+        log.warning("admin event rejected — bad signature")
         return False, "BAD_SIGNATURE"
     return True, "OK"
 
@@ -277,8 +291,13 @@ def build_payload(
     *,
     request_id: str,
     idempotency_key: str,
+    validation_ok: bool | None = None,
 ) -> dict:
-    """Canonical LISTING_SUBMIT envelope for Admin / integration layer."""
+    """Canonical LISTING_SUBMIT envelope for Admin / integration layer.
+
+    Pass ``validation_ok`` from a prior ``validate_submission`` call to avoid
+    re-running validation inside the envelope.
+    """
     from ..infradealer.payloads import build_listing_payload
 
     version = int(payload.get("draft_version") or 1)
@@ -312,9 +331,12 @@ def build_payload(
         state = svc.get_or_create_account_state(account_mobile(conv.mobile), conversation_id=conv.id)
         infra_user = (state.infradealer_user_id if state else "") or ""
     except Exception:
+        log.warning("build_payload: infradealer account state lookup failed for ***%s", account_mobile(conv.mobile)[-4:])
         infra_user = ""
 
     listing_body = build_listing_payload(db, conv, draft, payload, request_id, infra_user)
+    if validation_ok is None:
+        validation_ok = validate_submission(payload, conv)[0]
     envelope = {
         "event": "LISTING_SUBMIT",
         "event_version": EVENT_VERSION,
@@ -338,7 +360,7 @@ def build_payload(
             "data": data,
         },
         "validation": {
-            "status": "VALID" if validate_submission(payload, conv)[0] else "INVALID",
+            "status": "VALID" if validation_ok else "INVALID",
             "schema_version": fr.get("schema_version") or "",
             "filter_version": fr.get("filter_version") or "",
             "readiness": fr.get("readiness") or "",
@@ -365,7 +387,8 @@ def parse_admin_response(response: dict | None, http_status: int = 0) -> dict:
     submission_id = str(response.get("submission_id") or response.get("request_id") or "")
     status = str(response.get("status") or response.get("business_code") or "").upper()
     code = str(response.get("code") or response.get("business_code") or "")
-    success = bool(response.get("success")) or http_status in {200, 201} or bool(listing_id)
+    success = bool(response.get("success")) or http_status in {200, 201}
+    # listing_id alone does NOT imply success — admin may return listing_id with success:false
     if http_status in PERMANENT_HTTP:
         return {
             "success": False,
@@ -423,6 +446,11 @@ def _audit(db: Session, conv: AiConversation, event_type: str, detail: dict) -> 
 def store_submission(payload: dict, envelope: dict, *, status: str) -> dict:
     """Persist submission snapshot on conversation payload (no silent field mutation)."""
     version = int(payload.get("draft_version") or 1)
+    # Never downgrade an existing higher listing status.
+    old_status = str(payload.get("listing_status") or "").upper()
+    final_status = status
+    if old_status and not _can_transition(old_status, status):
+        final_status = old_status
     sub = {
         "submission_id": envelope.get("request_id") or f"SUB-{uuid.uuid4().hex[:10]}",
         "request_id": envelope.get("request_id"),
@@ -430,7 +458,7 @@ def store_submission(payload: dict, envelope: dict, *, status: str) -> dict:
         "payload_hash": envelope.get("payload_hash") or calculate_payload_hash(envelope.get("listing") or {}),
         "draft_id": (envelope.get("listing") or {}).get("draft_id"),
         "draft_version": version,
-        "status": status,
+        "status": final_status,
         "listing_id": payload.get("infradealer_listing_id") or "",
         "live_url": payload.get("listing_url") or "",
         "retry_count": int((payload.get("submission") or {}).get("retry_count") or 0),
@@ -438,8 +466,8 @@ def store_submission(payload: dict, envelope: dict, *, status: str) -> dict:
         "agent_version": AGENT_VERSION,
     }
     payload["submission"] = sub
-    payload["push_stage"] = status
-    payload["listing_status"] = status
+    payload["push_stage"] = final_status
+    payload["listing_status"] = final_status
     return sub
 
 
@@ -639,6 +667,25 @@ def process_admin_event(
     if event_id and event_id in processed:
         return {"ok": True, "duplicate": True, "reason_code": "ALREADY_PROCESSED"}
 
+    # Listing ID mismatch guard — reject events for a different listing.
+    event_listing_id = str(event.get("listing_id") or event.get("id") or "")
+    conv_listing_id = str(payload.get("infradealer_listing_id") or "")
+    if (
+        conv_listing_id
+        and event_listing_id
+        and event_listing_id != conv_listing_id
+    ):
+        log.warning(
+            "admin event listing_id mismatch: event=%s conv=%s — rejected",
+            event_listing_id, conv_listing_id,
+        )
+        _audit(db, conv, "admin_event_listing_mismatch", {
+            "event_listing_id": event_listing_id,
+            "conv_listing_id": conv_listing_id,
+            "event_id": event_id,
+        })
+        return {"ok": False, "reason_code": "LISTING_MISMATCH", "message": "listing_id does not match conversation"}
+
     # Persist callback row when possible
     try:
         cb = InfraDealerCallback(
@@ -677,7 +724,8 @@ def process_admin_event(
     if event_id:
         payload = _payload(conv)
         processed = list(payload.get("processed_admin_events") or [])
-        processed.append(event_id)
+        if event_id not in processed:
+            processed.append(event_id)
         payload["processed_admin_events"] = processed[-100:]
         _write_payload(conv, payload)
     if cb is not None:
@@ -692,6 +740,10 @@ def handle_failure(payload: dict, *, retry: bool, error_code: str, message: str)
     sub["retry_count"] = retries
     sub["last_error"] = message[:300]
     sub["admin_error_code"] = error_code
+    # Exponential backoff hint: 2^retry seconds (capped), so callers/schedulers know when to retry.
+    backoff_seconds = min(2 ** retries, 300)
+    sub["next_retry_after_seconds"] = backoff_seconds
+    sub["next_retry_at"] = _now_iso() if retries <= MAX_RETRIES else ""
     if retry and retries <= MAX_RETRIES:
         sub["status"] = "RETRYING"
         payload["listing_status"] = "RETRYING"
@@ -704,66 +756,44 @@ def handle_failure(payload: dict, *, retry: bool, error_code: str, message: str)
     return sub
 
 
-def push_listing(db: Session, conv: AiConversation) -> PushResult:
-    """Submit confirmed draft to Admin via InfraDealer integration (idempotent)."""
-    from .data_filteration import final_validation
-    from .tools import _draft_for, _payload, _write_payload
+def _classify_retry(exc: Exception) -> tuple[bool, str]:
+    """Classify an exception as transient (retry) or permanent. Based on type, not regex."""
+    from .data_filteration import final_validation  # noqa: F401 — keep import lazy
+    err = str(exc)[:300]
+    # Transient: network / timeout / 5xx
+    transient_types = (ConnectionError, TimeoutError, OSError)
+    if isinstance(exc, transient_types):
+        return True, "TRANSIENT_NETWORK"
+    # Check for common transient keywords in the message as a fallback
+    if re.search(r"\b(timeout|timed out|503|502|504|connection|unavailable|reset|refused)\b", err, re.I):
+        return True, "TRANSIENT_MESSAGE"
+    return False, "PERMANENT"
 
-    payload = _payload(conv)
 
-    # Eligibility gate — block submission for blocked / not-eligible accounts.
+def _preflight_eligibility(payload: dict) -> PushResult | None:
+    """Eligibility gate — returns a blocking PushResult or None to continue."""
     if str(payload.get("master_workflow_state") or "") == "INVALID_IDENTITY":
-        _audit(db, conv, "data_push_blocked", {"reason": "BLOCKED_ACCOUNT"})
         return PushResult(
-            ok=False,
-            status="SUBMISSION_BLOCKED",
-            reason_code="BLOCKED_ACCOUNT",
+            ok=False, status="SUBMISSION_BLOCKED", reason_code="BLOCKED_ACCOUNT",
             message="Account is blocked — submission refused.",
         )
     if payload.get("account_gate") == "ELIGIBILITY_BLOCKED" or str(payload.get("account_eligibility") or "") == "NOT_ELIGIBLE":
-        _audit(db, conv, "data_push_blocked", {"reason": "ACCOUNT_NOT_ELIGIBLE"})
         return PushResult(
-            ok=False,
-            status="SUBMISSION_BLOCKED",
-            reason_code="ACCOUNT_NOT_ELIGIBLE",
+            ok=False, status="SUBMISSION_BLOCKED", reason_code="ACCOUNT_NOT_ELIGIBLE",
             message="Account is not eligible to post — submission refused.",
         )
+    return None
 
-    # Gate: confirmation + version + safety
-    ok, reason = validate_submission(payload, conv)
-    if not ok:
-        status = "STALE_CONFIRMATION" if reason == "STALE_CONFIRMATION" else "SUBMISSION_BLOCKED"
-        _audit(db, conv, "data_push_blocked", {"reason": reason})
-        return PushResult(
-            ok=False,
-            status=status,
-            reason_code=reason or "CONFIRMATION_OR_VALIDATION_FAILED",
-            message="Submission blocked — confirmation/validation/version failed",
-        )
 
-    # Final Data Filter safety pass
-    gate = final_validation(db, conv)
-    payload = _payload(conv)
-    if not gate.ready and gate.readiness in {"INVALID_DATA", "CONFLICT_REQUIRES_USER", "MISSING_REQUIRED_DATA"}:
-        return PushResult(
-            ok=False,
-            status="SUBMISSION_BLOCKED",
-            reason_code="CONFIRMATION_OR_VALIDATION_FAILED",
-            message=f"Data filter blocked submission: {gate.readiness}",
-            detail={"missing_fields": gate.missing_fields, "conflicts": gate.conflicts},
-        )
+def _preflight_validation(payload: dict, conv: AiConversation) -> tuple[bool, str]:
+    """Confirmation + version + safety gate."""
+    return validate_submission(payload, conv)
 
-    # Lock confirmation version to current draft
-    version = int(payload.get("draft_version") or 1)
-    payload["confirmed_version"] = version
-    payload["confirmed_at"] = payload.get("confirmed_at") or _now_iso()
-    payload["customer_confirmed"] = True
 
-    draft = _draft_for(db, conv)
-    request_id = f"listing-draft-{draft.id}-v{version}"
-    idem = generate_idempotency_key(draft.id, version)
-
-    # Idempotent short-circuit: same key already acknowledged
+def _idempotent_short_circuit(
+    payload: dict, idem: str, request_id: str,
+) -> PushResult | None:
+    """Return existing submission if same key already acknowledged."""
     existing = payload.get("submission") if isinstance(payload.get("submission"), dict) else {}
     if (
         existing.get("idempotency_key") == idem
@@ -781,30 +811,82 @@ def push_listing(db: Session, conv: AiConversation) -> PushResult:
             message="Idempotent replay — existing submission returned",
             detail={"duplicate_skipped": True},
         )
+    return None
 
-    envelope = build_payload(db, conv, draft, payload, request_id=request_id, idempotency_key=idem)
+
+def push_listing(db: Session, conv: AiConversation) -> PushResult:
+    """Submit confirmed draft to Admin via InfraDealer integration (idempotent)."""
+    from .data_filteration import final_validation
+    from .tools import _draft_for, _payload, _write_payload
+
+    started = time.perf_counter()
+    payload = _payload(conv)
+
+    # --- Pre-flight: eligibility ---
+    blocked = _preflight_eligibility(payload)
+    if blocked:
+        _audit(db, conv, "data_push_blocked", {"reason": blocked.reason_code})
+        blocked.elapsed_ms = int((time.perf_counter() - started) * 1000)
+        return blocked
+
+    # --- Pre-flight: confirmation + version + safety ---
+    ok, reason = _preflight_validation(payload, conv)
+    if not ok:
+        status = "STALE_CONFIRMATION" if reason == "STALE_CONFIRMATION" else "SUBMISSION_BLOCKED"
+        _audit(db, conv, "data_push_blocked", {"reason": reason})
+        return PushResult(
+            ok=False, status=status, reason_code=reason or "CONFIRMATION_OR_VALIDATION_FAILED",
+            message="Submission blocked — confirmation/validation/version failed",
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+        )
+
+    # --- Final Data Filter safety pass ---
+    gate = final_validation(db, conv)
+    payload = _payload(conv)
+    if not gate.ready and gate.readiness in {"INVALID_DATA", "CONFLICT_REQUIRES_USER", "MISSING_REQUIRED_DATA"}:
+        return PushResult(
+            ok=False, status="SUBMISSION_BLOCKED", reason_code="CONFIRMATION_OR_VALIDATION_FAILED",
+            message=f"Data filter blocked submission: {gate.readiness}",
+            detail={"missing_fields": gate.missing_fields, "conflicts": gate.conflicts},
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+        )
+
+    # --- Lock confirmation version + build envelope ---
+    version = int(payload.get("draft_version") or 1)
+    payload["confirmed_version"] = version
+    payload["confirmed_at"] = payload.get("confirmed_at") or _now_iso()
+    payload["customer_confirmed"] = True
+
+    draft = _draft_for(db, conv)
+    request_id = f"listing-draft-{draft.id}-v{version}"
+    idem = generate_idempotency_key(draft.id, version)
+
+    # --- Idempotent short-circuit ---
+    replay = _idempotent_short_circuit(payload, idem, request_id)
+    if replay:
+        replay.elapsed_ms = int((time.perf_counter() - started) * 1000)
+        return replay
+
+    envelope = build_payload(db, conv, draft, payload, request_id=request_id, idempotency_key=idem, validation_ok=ok)
     listing_hash = calculate_payload_hash(envelope.get("listing") or {})
     envelope["payload_hash"] = listing_hash
     store_submission(payload, envelope, status="SENDING")
     _write_payload(conv, payload)
     _audit(db, conv, "data_push_started", {
-        "request_id": request_id,
-        "idempotency_key": idem,
-        "payload_hash": listing_hash,
-        "draft_version": version,
+        "request_id": request_id, "idempotency_key": idem,
+        "payload_hash": listing_hash, "draft_version": version,
     })
 
+    # --- Send to Admin ---
     try:
         from ..infradealer.service import get_integration_service
 
         svc = get_integration_service(db)
-        # Integration service owns HTTPS + outbox; we keep AI-layer gates here
         outbox = svc.push_listing_for_draft(conv, draft, payload)
         listing_id = str(payload.get("infradealer_listing_id") or "")
         listing_url = str(payload.get("listing_url") or "")
         if outbox is not None:
             listing_id = listing_id or str(getattr(outbox, "business_status", "") and payload.get("infradealer_listing_id") or "")
-            # Refresh payload after service side-effects
             payload = _payload(conv)
             listing_id = str(payload.get("infradealer_listing_id") or listing_id or "")
             listing_url = str(payload.get("listing_url") or listing_url or "")
@@ -812,7 +894,6 @@ def push_listing(db: Session, conv: AiConversation) -> PushResult:
                 listing_url = ""
                 payload["listing_url"] = ""
 
-        # Do not mark LIVE without admin confirmation / valid URL
         ack_status = "UNDER_REVIEW"
         if outbox is not None and (outbox.status or "").upper() == "DONE":
             ack_status = "ADMIN_ACKNOWLEDGED"
@@ -830,45 +911,36 @@ def push_listing(db: Session, conv: AiConversation) -> PushResult:
             payload["infradealer_listing_id"] = listing_id
         payload["push_stage"] = "PUSHED_TO_INFRADEALER"
         note = create_notification_event(
-            notification_type="LISTING_SUBMITTED",
-            listing_id=listing_id,
-            status=payload["listing_status"],
-            account_id=payload.get("profile_id") or conv.profile_id,
+            notification_type="LISTING_SUBMITTED", listing_id=listing_id,
+            status=payload["listing_status"], account_id=payload.get("profile_id") or conv.profile_id,
             submission_id=sub.get("submission_id") or request_id,
         )
         payload["pending_notification"] = note
         _write_payload(conv, payload)
         _audit(db, conv, "data_push_ack", {
-            "status": ack_status,
-            "listing_id": listing_id,
-            "request_id": request_id,
+            "status": ack_status, "listing_id": listing_id, "request_id": request_id,
         })
         return PushResult(
-            ok=True,
-            status=ack_status if ack_status != "READY_FOR_REVIEW" else "SUBMITTED",
+            ok=True, status=ack_status if ack_status != "READY_FOR_REVIEW" else "SUBMITTED",
             submission_id=str(sub.get("submission_id") or request_id),
-            listing_id=listing_id,
-            listing_url=listing_url,
-            request_id=request_id,
-            idempotency_key=idem,
-            payload_hash=listing_hash,
-            message="Listing submitted for admin review",
-            notification=note,
+            listing_id=listing_id, listing_url=listing_url,
+            request_id=request_id, idempotency_key=idem, payload_hash=listing_hash,
+            message="Listing submitted for admin review", notification=note,
             detail={"draft_id": draft.id, "card_id": draft.card_id, "outbox_id": getattr(outbox, "id", None)},
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            submitted_at=_now_iso(),
         )
     except Exception as exc:
         log.exception("data_push failed")
         payload = _payload(conv)
         err = str(exc)[:300]
-        # Classify — network-ish → retry; otherwise permanent
-        retry = bool(re.search(r"timeout|timed out|503|502|504|connection|unavailable", err, re.I))
-        sub = handle_failure(payload, retry=retry, error_code="SYSTEM_ERROR", message=err)
+        retry, error_class = _classify_retry(exc)
+        sub = handle_failure(payload, retry=retry, error_code=error_class, message=err)
         _write_payload(conv, payload)
-        _audit(db, conv, "data_push_failed", {"retry": retry, "error": err})
+        _audit(db, conv, "data_push_failed", {"retry": retry, "error": err, "error_class": error_class})
         note = create_notification_event(
-            notification_type="LISTING_DELIVERY_FAILED",
-            status=sub.get("status") or "FAILED",
-            reason_code="SYSTEM_ERROR",
+            notification_type="LISTING_DELIVERY_FAILED", status=sub.get("status") or "FAILED",
+            reason_code=error_class,
             reason_text="InfraDealer server temporarily unavailable; submission preserved for retry.",
             account_id=payload.get("profile_id") or conv.profile_id,
             submission_id=str(sub.get("submission_id") or request_id),
@@ -876,13 +948,11 @@ def push_listing(db: Session, conv: AiConversation) -> PushResult:
         return PushResult(
             ok=False,
             status="RETRY" if retry and int(sub.get("retry_count") or 0) <= MAX_RETRIES else "DELIVERY_FAILED",
-            reason_code="SYSTEM_ERROR",
-            request_id=request_id,
-            idempotency_key=idem,
-            payload_hash=listing_hash,
-            message=err,
-            notification=note,
+            reason_code=error_class, request_id=request_id, idempotency_key=idem,
+            payload_hash=listing_hash, message=err, notification=note,
             detail={"user_data_error": False, "system_error": True, "retry_count": sub.get("retry_count")},
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            submitted_at=_now_iso(),
         )
 
 

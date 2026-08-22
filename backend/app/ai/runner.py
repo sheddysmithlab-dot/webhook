@@ -30,14 +30,8 @@ log = logging.getLogger("infradealer.ai")
 
 
 def _ai_respond(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str:
-    """Hot path: four-agent orchestrator (account_filter → chat_memory ↔ filter/push)."""
-    if getattr(settings, "ai_simple_chat", False):
-        try:
-            from .simple_chat import simple_respond
-            return simple_respond(db, conv, text, media_note)
-        except Exception:
-            from .orchestrator import handle_message
-            return handle_message(db, conv, text, media_note)
+    """Hot path: four-agent orchestrator (account_filter -> chat_memory <-> filter/push)."""
+    # ai_simple_chat mode used the legacy simple_chat.py module (now removed); always use orchestrator.
     from .orchestrator import handle_message
 
     return handle_message(db, conv, text, media_note)

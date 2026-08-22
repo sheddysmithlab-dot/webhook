@@ -10,23 +10,37 @@ from .account import account_busy, handle_account, should_intercept_account, wan
 from .confirm import handle_confirmation, handle_vehicle_slot, is_no, is_yes, collection_ready, sync_posted_product
 from .extract import extract_from_text
 from .i18n import _GREET, _WEAK, language_instruction, pick_language, t
-from .memory import (
+from .free_chat import (
     customer_annoyed,
-    harvest_turn,
     is_repeat_outbound,
-    load_reps,
     photos_complete,
     question_kind,
     recent_outbound_bodies,
-    seed_memory,
     too_similar,
 )
-from .prompt import SYSTEM_PROMPT
 from .schema import missing_fields, normalize_vehicle_category
 from .tools import TOOL_DEFS, _payload, _write_payload, execute_tool
 from ..identity import looks_like_price, usable_person_name
 
 log = logging.getLogger("infradealer.ai")
+
+# Stubs previously provided by legacy memory.py (no-ops kept for compat).
+def seed_memory(db=None) -> None:
+    pass
+
+
+def load_reps(db=None) -> list:
+    return []
+
+
+def harvest_turn(db=None, *args, **kwargs) -> None:
+    return None
+
+# Legacy system prompt (was in prompt.py — now inlined here since only engine.py uses it).
+SYSTEM_PROMPT = """You are InfraDealer Relationship Manager for used trucks and machinery.
+Collect listing details honestly. Never invent price, year, km, or approval.
+Use tools for save/validate/submit. Confirm with the user before submit.
+"""
 
 FIELD_KEYS = (
     "intent", "brand", "model", "year", "expected_price", "state",
@@ -379,10 +393,9 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
         "customer_confirmed is true and account_onboarded is false AND they just confirmed. "
         "Never invent OTP/password. Reply in {lang}."
     )
-    from .memory import prompt_block
-
+    # prompt_block was a legacy memory.py stub that returned "" — inlined as no-op.
     sys = SYSTEM_PROMPT + "\n\n" + language_instruction(lang)
-    learned = prompt_block(db)
+    learned = ""
     if learned:
         sys += "\n\n" + learned
     messages = [{"role": "system", "content": sys}]

@@ -9,7 +9,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .config import settings
 from .database import Base, SessionLocal, engine, migrate_schema
-from .ai.memory import seed_memory
 from .auth import SessionGate
 from .contacts import sync_contacts_from_chats
 from .infradealer.worker import run_integration_tasks
@@ -72,7 +71,7 @@ def startup():
     db = SessionLocal()
     try:
         get_or_create_settings(db)
-        seed_memory(db)
+        # seed_memory was a legacy no-op stub (removed with memory.py).
         repair_posted_listings(db)
         sync_contacts_from_chats(db)
         try:

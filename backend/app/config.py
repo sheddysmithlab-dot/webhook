@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     infradealer_max_retries: int = 3
     infradealer_mode: str = "LIVE"
     infradealer_auto_publish: bool = False
+    # When True (default), unsigned admin events are accepted if no API secret is configured.
+    # Set to False in production with a configured secret for strict HMAC verification.
+    allow_unsigned_admin_events: bool = True
     redis_url: str = ""
 
 

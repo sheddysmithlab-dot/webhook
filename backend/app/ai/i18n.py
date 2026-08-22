@@ -1,238 +1,220 @@
-"""Lightweight i18n helpers for AI Relationship Manager replies."""
+"""InfraDealer AI — multilingual i18n infrastructure.
+
+Messages live in i18n_messages.py (key-centric dict).
+This module provides: t(), pick_language(), validate_dictionary(), etc.
+"""
 
 from __future__ import annotations
 
+import logging
 import re
 
+from .i18n_messages import MESSAGES
+
+log = logging.getLogger("infradealer.ai.i18n")
+
+DEFAULT_LANG = "hinglish"
+SUPPORTED_LANGS = (
+    "hinglish", "hi", "en",
+    "pa", "pa_roman", "gu", "gu_roman", "mr", "mr_roman",
+    "ta", "ta_roman", "te", "te_roman", "kn", "kn_roman",
+    "ml", "ml_roman", "bn", "bn_roman", "ur", "ur_roman",
+)
+POLICY_LANGS = ("auto",) + SUPPORTED_LANGS
+
+LANG_LABELS = {
+    "auto": "Auto-detect",
+    "hinglish": "Hinglish (Roman Hindi)",
+    "hi": "Hindi (Devanagari)",
+    "en": "English",
+    "pa": "Punjabi (Gurmukhi)",
+    "pa_roman": "Punjabi (Roman)",
+    "gu": "Gujarati",
+    "gu_roman": "Gujarati (Roman)",
+    "mr": "Marathi (Devanagari)",
+    "mr_roman": "Marathi (Roman)",
+    "ta": "Tamil",
+    "ta_roman": "Tamil (Roman)",
+    "te": "Telugu",
+    "te_roman": "Telugu (Roman)",
+    "kn": "Kannada",
+    "kn_roman": "Kannada (Roman)",
+    "ml": "Malayalam",
+    "ml_roman": "Malayalam (Roman)",
+    "bn": "Bengali",
+    "bn_roman": "Bengali (Roman)",
+    "ur": "Urdu",
+    "ur_roman": "Urdu (Roman)",
+}
+
+FALLBACK_CHAIN = {
+    "hi": ["hinglish", "en"],
+    "hinglish": ["en"],
+    "pa": ["pa_roman", "hinglish", "en"],
+    "pa_roman": ["hinglish", "en"],
+    "gu": ["gu_roman", "hinglish", "en"],
+    "gu_roman": ["hinglish", "en"],
+    "mr": ["mr_roman", "hi", "hinglish", "en"],
+    "mr_roman": ["hinglish", "en"],
+    "ta": ["ta_roman", "en"],
+    "ta_roman": ["en"],
+    "te": ["te_roman", "en"],
+    "te_roman": ["en"],
+    "kn": ["kn_roman", "en"],
+    "kn_roman": ["en"],
+    "ml": ["ml_roman", "en"],
+    "ml_roman": ["en"],
+    "bn": ["bn_roman", "hinglish", "en"],
+    "bn_roman": ["hinglish", "en"],
+    "ur": ["ur_roman", "en"],
+    "ur_roman": ["en"],
+    "en": ["hinglish"],
+}
+
+# Script detection
 _DEVANAGARI = re.compile(r"[\u0900-\u097F]")
+_GURMUKHI = re.compile(r"[\u0A00-\u0A7F]")
+_GUJARATI = re.compile(r"[\u0A80-\u0AFF]")
+_TAMIL = re.compile(r"[\u0B80-\u0BFF]")
+_TELUGU = re.compile(r"[\u0C00-\u0C7F]")
+_KANNADA = re.compile(r"[\u0C80-\u0CFF]")
+_MALAYALAM = re.compile(r"[\u0D00-\u0D7F]")
+_BENGALI = re.compile(r"[\u0980-\u09FF]")
+_URDU = re.compile(r"[\u0600-\u06FF]")
+
+_SCRIPT_MAP = [
+    ("hi", _DEVANAGARI), ("pa", _GURMUKHI), ("gu", _GUJARATI),
+    ("ta", _TAMIL), ("te", _TELUGU), ("kn", _KANNADA),
+    ("ml", _MALAYALAM), ("bn", _BENGALI), ("ur", _URDU),
+]
+
 _GREET = re.compile(r"^\s*(hi|hello|hey|namaste|namaskar|hola)\b", re.I)
 _WEAK = re.compile(r"^\s*(ok+|okay|hmm+|han|haan|ji)\s*$", re.I)
 
-
-def language_instruction(lang: str = "hinglish") -> str:
-    if lang == "hindi":
-        return "Reply in simple Hindi (Devanagari)."
-    if lang == "english":
-        return "Reply in clear simple English."
-    return "Reply in Hinglish (Hindi + English, Latin script)."
-
-TEMPLATES = {
-    "hinglish": {
-        "greet": "Namaste! Main InfraDealer Relationship Manager hoon. Aap gaadi/machine bechna chahte ho ya kharidna?",
-        "intent": "Aap sell karna chahte ho ya buy?",
-        "category": "Kaunsi category hai? (Truck / Tipper / JCB / Excavator / Crane…)",
-        "brand": "Brand bata dijiye.",
-        "model": "Model bata dijiye.",
-        "year": "Model year kya hai?",
-        "expected_price": "Expected price bata dijiye.",
-        "budget": "Budget kitna hai?",
-        "state": "Kaunse state/city se listing hai?",
-        "location": "Location / city bata dijiye.",
-        "km": "Kitne KM chali hai?",
-        "hours": "Kitne operating hours hain?",
-        "photos": "Ab clear photos bhej dijiye (kam se kam 2).",
-        "photo_need_min": "Abhi {count} photo mili. Kam se kam 2 clear photos bhejiye.",
-        "ack": "Theek hai — {facts}. ",
-        "confirm_prompt": "Kya ye details sahi hain? Haan likhiye confirm karne ke liye.",
-        "confirm_ok": "Confirm ho gaya.",
-        "submitted": "Aapki listing submit ho gayi hai. Ab InfraDealer admin team review karegi.",
-        "not_live": "Listing abhi live nahi hui — admin review pending hai.",
-        "approved": "Aapki listing approve hokar live ho gayi hai.\nListing link: {link}",
-        "rejected": "Aapki listing abhi approve nahi hui.\nReason: {reason}\nZaroori correction bhejiye, phir dobara submit karenge.",
-        "conflict_year": "Aapne year {user} bataya, document mein {document} dikh raha hai. Listing mein kaunsa year rakhein?",
-        "duplicate": "Isi vehicle ki similar listing pehle se mil sakti hai. Purani update karni hai ya nayi listing?",
-        "paused": "Theek hai, abhi listing pause kar di. Jab ready ho bol dena — wahi se continue karenge.",
-        "resume": "Bilkul. Aapki {vehicle} listing mein abhi {missing} baaki hai.",
-        "handoff": "Main aapko human support se connect karata hoon. Thodi der mein team reply karegi.",
-        "account_blocked": "Aapka number blocked hai. Kripya support se sampark karein — listing abhi possible nahi.",
-        "unclear": "Samajh nahi paya. Thoda clear bata dijiye.",
-        "otp_ask": "OTP bhej diya hai. 6-digit OTP type kijiye.",
-        "otp_ok": "OTP verify ho gaya.",
-        "otp_fail": "OTP match nahi hua. Dobara try kijiye.",
-        "no_invent": "Jo detail aapne di hai wahi use karunga — guess nahi karunga.",
-        "status_ask": "Listing status: {status}",
-        "link_missing": "Abhi listing link backend se confirm nahi hua.",
-        "injection_refuse": "Main sirf InfraDealer listing/account help kar sakta hoon.",
-        "saving": "Save kar raha hoon…",
-        "card_clarify": "Kaunse card pe baat karein?\n{cards}\nJaise: CARD-001",
-        "card_switched": "Theek hai — ab {card} active hai.",
-        "intro": "Namaste! Main InfraDealer ka AI Relationship Manager hoon.",
-        "photo_at_max": "Is card pe max photos lag chuki hain.",
-        "photo_need_min": "Abhi {count} photo mili. Kam se kam 2 clear photos bhejiye.",
-        "memory_reset_new_chat": "Aapke last message ke 10 minute baad naya chat start kar rahe hain — pehle wali baat clear ho gayi. Ab kya listing karna chahte ho?",
-        "last_listing_loaded": "Aapki last listing ({card}) DB se load kar li. Bataiye kya change/update karna hai?",
-        "last_listing_missing": "Is number pe koi purani listing nahi mili. Nayi listing start karein?",
-        "card_cleanup_warn": "1 minute baad {card} wali chat clear ho jayegi. Agar continue karna hai to kuch bhi message bhej dijiye.",
-        "card_conversation_deleted": "{card} wali chat clear ho gayi. Listing details save hain — update ke liye 'last listing change' likhiye.",
-        "chat_cleared": "Chat clear ho gayi. Nayi listing shuru karein ya last listing update karein.",
-        "chat_cleared_followup": "Ji — naya chat ready hai. Sell/buy bataiye, ya last listing update.",
-        "free_chat_fallback": "Ji Sir, main yahan hoon. Kya listing se related kuch chahiye?",
-        "summary_header": "Aapki listing ki details:",
-        "summary_category": "Category: {value}",
-        "summary_year": "Year: {value}",
-        "summary_km": "KM: {value}",
-        "summary_hours": "Hours: {value}",
-        "summary_location": "Location: {value}",
-        "summary_price": "Price: {value}",
-        "summary_photos": "Photos: {value}",
-        "year_confirm": "Year {year} confirm kar doon?",
-        "account_not_eligible": "Aapka account abhi listing ke liye ready nahi hai. Kripya InfraDealer par account complete karein ya support se sampark karein.",
-        "submit_blocked": "Listing submit nahi ho saki. Kripya phir se confirm karein.",
-    },
-    "hindi": {
-        "greet": "नमस्ते! मैं InfraDealer Relationship Manager हूँ। आप गाड़ी/मशीन बेचना चाहते हैं या खरीदना?",
-        "intent": "आप बेचना चाहते हैं या खरीदना?",
-        "category": "कौन सी कैटेगरी है? (ट्रक / टिपर / जेसीबी / एक्स्केवेटर…)",
-        "brand": "ब्रांड बता दीजिए।",
-        "model": "मॉडल बता दीजिए।",
-        "year": "मॉडल ईयर क्या है?",
-        "expected_price": "अपेक्षित कीमत बता दीजिए।",
-        "budget": "बजट कितना है?",
-        "state": "किस राज्य/शहर से लिस्टिंग है?",
-        "location": "लोकेशन / शहर बता दीजिए।",
-        "km": "कितने किलोमीटर चली है?",
-        "hours": "कितने ऑपरेटिंग ऑवर्स हैं?",
-        "photos": "अब साफ फोटो भेज दीजिए (कम से कम 2)।",
-        "photo_need_min": "अभी {count} फोटो मिली। कम से कम 2 साफ फोटो भेजिए।",
-        "ack": "ठीक है — {facts}। ",
-        "confirm_prompt": "क्या ये डिटेल्स सही हैं? हाँ लिखकर कन्फर्म करें।",
-        "confirm_ok": "कन्फर्म हो गया।",
-        "submitted": "आपकी लिस्टिंग सबमिट हो गई है। अब InfraDealer एडमिन टीम रिव्यू करेगी।",
-        "not_live": "लिस्टिंग अभी लाइव नहीं हुई — एडमिन रिव्यू पेंडिंग है।",
-        "approved": "आपकी लिस्टिंग अप्रूव होकर लाइव हो गई है।\nलिस्टिंग लिंक: {link}",
-        "rejected": "आपकी लिस्टिंग अभी अप्रूव नहीं हुई।\nकारण: {reason}\nजरूरी सुधार भेजें, फिर दोबारा सबमिट करेंगे।",
-        "conflict_year": "आपने ईयर {user} बताया, दस्तावेज़ में {document} दिख रहा है। लिस्टिंग में कौन सा ईयर रखें?",
-        "duplicate": "इसी वाहन की मिलती-जुलती लिस्टिंग पहले से हो सकती है। पुरानी अपडेट करनी है या नई?",
-        "paused": "ठीक है, लिस्टिंग अभी पॉज़ कर दी। जब तैयार हों बता दें — वहीं से जारी रखेंगे।",
-        "resume": "बिल्कुल। आपकी {vehicle} लिस्टिंग में अभी {missing} बाकी है।",
-        "handoff": "मैं आपको मानव सपोर्ट से जोड़ रहा हूँ। थोड़ी देर में टीम जवाब देगी।",
-        "account_blocked": "आपका नंबर ब्लॉक है। कृपया सपोर्ट से संपर्क करें — लिस्टिंग अभी संभव नहीं है।",
-        "unclear": "समझ नहीं पाया। थोड़ा साफ़ बताइए।",
-        "otp_ask": "OTP भेज दिया है। 6 अंकों का OTP टाइप कीजिए।",
-        "otp_ok": "OTP वेरिफाई हो गया।",
-        "otp_fail": "OTP मैच नहीं हुआ। दोबारा कोशिश कीजिए।",
-        "injection_refuse": "मैं केवल InfraDealer लिस्टिंग/अकाउंट में मदद कर सकता हूँ।",
-        "saving": "सेव कर रहा हूँ…",
-        "status_ask": "लिस्टिंग स्टेटस: {status}",
-        "link_missing": "अभी लिस्टिंग लिंक बैकएंड से कन्फर्म नहीं हुआ।",
-        "confirm_ok": "कन्फर्म हो गया।",
-        "card_clarify": "किस कार्ड पर बात करें?\n{cards}\nजैसे: CARD-001",
-        "card_switched": "ठीक है — अब {card} एक्टिव है।",
-        "memory_reset_new_chat": "आपके पिछले मैसेज के 10 मिनट बाद नया चैट शुरू कर रहे हैं — पहले वाली बात क्लियर हो गई। अब क्या लिस्टिंग करना चाहते हैं?",
-        "last_listing_loaded": "आपकी पिछली लिस्टिंग ({card}) लोड हो गई। क्या बदलना/अपडेट करना है?",
-        "last_listing_missing": "इस नंबर पर कोई पुरानी लिस्टिंग नहीं मिली। नई लिस्टिंग शुरू करें?",
-        "card_cleanup_warn": "1 मिनट बाद {card} वाली चैट क्लियर हो जाएगी। जारी रखना हो तो कोई भी मैसेज भेजें।",
-        "card_conversation_deleted": "{card} वाली चैट क्लियर हो गई। अपडेट के लिए 'last listing change' लिखें।",
-        "chat_cleared": "चैट क्लियर हो गई।",
-        "chat_cleared_followup": "नया चैट तैयार है।",
-        "free_chat_fallback": "जी सर, मैं यहाँ हूँ। लिस्टिंग से जुड़ा कुछ चाहिए?",
-        "summary_header": "आपकी लिस्टिंग की डिटेल्स:",
-        "summary_category": "कैटेगरी: {value}",
-        "summary_year": "ईयर: {value}",
-        "summary_km": "किमी: {value}",
-        "summary_hours": "ऑवर्स: {value}",
-        "summary_location": "लोकेशन: {value}",
-        "summary_price": "कीमत: {value}",
-        "summary_photos": "फोटो: {value}",
-        "year_confirm": "ईयर {year} कन्फर्म कर दूँ?",
-        "account_not_eligible": "आपका अकाउंट अभी लिस्टिंग के लिए तैयार नहीं है। कृपया InfraDealer पर अकाउंट पूरा करें या सपोर्ट से संपर्क करें।",
-        "submit_blocked": "लिस्टिंग सबमिट नहीं हो सकी। कृपया फिर से कन्फर्म करें।",
-    },
-    "english": {
-        "greet": "Hello! I'm the InfraDealer Relationship Manager. Do you want to sell or buy a vehicle/machine?",
-        "intent": "Would you like to sell or buy?",
-        "category": "Which category? (Truck / Tipper / JCB / Excavator / Crane…)",
-        "brand": "Please share the brand.",
-        "model": "Please share the model.",
-        "year": "What is the model year?",
-        "expected_price": "What is the expected price?",
-        "budget": "What is your budget?",
-        "state": "Which state/city is this listing from?",
-        "location": "Please share the location/city.",
-        "km": "How many KM has it run?",
-        "hours": "How many operating hours?",
-        "photos": "Please send clear photos (at least 2).",
-        "photo_need_min": "Got {count} photo(s). Please send at least 2 clear photos.",
-        "ack": "Got it — {facts}. ",
-        "confirm_prompt": "Are these details correct? Reply Yes to confirm.",
-        "confirm_ok": "Confirmed.",
-        "submitted": "Your listing has been submitted. InfraDealer admin will review it.",
-        "not_live": "Listing is not live yet — admin review is pending.",
-        "approved": "Your listing is approved and live.\nListing link: {link}",
-        "rejected": "Your listing was not approved.\nReason: {reason}\nSend the required correction and we will resubmit.",
-        "conflict_year": "You said year {user}, but the document shows {document}. Which year should we keep?",
-        "duplicate": "A similar listing for this vehicle may already exist. Update the old one or create new?",
-        "paused": "Okay, pausing this listing for now. Tell me when to continue.",
-        "resume": "Sure. Your {vehicle} listing still needs: {missing}.",
-        "handoff": "Connecting you to human support. The team will reply shortly.",
-        "account_blocked": "Your number is blocked. Please contact support — listing is not possible right now.",
-        "unclear": "I didn't catch that. Please clarify.",
-        "otp_ask": "OTP sent. Please type the 6-digit OTP.",
-        "otp_ok": "OTP verified.",
-        "otp_fail": "OTP did not match. Please try again.",
-        "injection_refuse": "I can only help with InfraDealer listing/account support.",
-        "saving": "Saving…",
-        "status_ask": "Listing status: {status}",
-        "link_missing": "Listing link is not confirmed by backend yet.",
-        "card_clarify": "Which card should we continue on?\n{cards}\nExample: CARD-001",
-        "card_switched": "Okay — {card} is now active.",
-        "memory_reset_new_chat": "Starting a fresh chat — 10 minutes passed since your last message, so the previous topic was cleared. What would you like to list?",
-        "last_listing_loaded": "Loaded your last listing ({card}). What should we change/update?",
-        "last_listing_missing": "No previous listing found for this number. Start a new listing?",
-        "card_cleanup_warn": "{card} chat will clear in 1 minute. Send any message to keep it.",
-        "card_conversation_deleted": "{card} chat cleared. Listing data is saved — say 'update last listing' to edit.",
-        "chat_cleared": "Chat cleared.",
-        "chat_cleared_followup": "Fresh chat ready.",
-        "free_chat_fallback": "I'm here, Sir. Anything I can help with for a listing?",
-        "summary_header": "Your listing details:",
-        "summary_category": "Category: {value}",
-        "summary_year": "Year: {value}",
-        "summary_km": "KM: {value}",
-        "summary_hours": "Hours: {value}",
-        "summary_location": "Location: {value}",
-        "summary_price": "Price: {value}",
-        "summary_photos": "Photos: {value}",
-        "year_confirm": "Shall I confirm year {year}?",
-        "account_not_eligible": "Your account is not ready for listing yet. Please complete your account on InfraDealer or contact support.",
-        "submit_blocked": "Listing could not be submitted. Please confirm again.",
-    },
-}
+_ROMAN_HINTS = [
+    ("pa_roman", re.compile(r"\b(sat\s*sri|balle|kida|jao)\b", re.I)),
+    ("gu_roman", re.compile(r"\b(kem\s*cho|ahu|bhalu|khabar)\b", re.I)),
+    ("mr_roman", re.compile(r"\b(kay\s*mi|bharat|kasa|barobar|aho)\b", re.I)),
+    ("ta_roman", re.compile(r"\b(vanakkam|sollu|saaptu|illai|romba)\b", re.I)),
+    ("te_roman", re.compile(r"\b(namaskaram|cheppu|undhi|ledhu|vastha)\b", re.I)),
+    ("kn_roman", re.compile(r"\b(namaskara|hogi|illa|haage|yelli)\b", re.I)),
+    ("ml_roman", re.compile(r"\b(namaskaram|undu|alla|engotto|enthu)\b", re.I)),
+    ("bn_roman", re.compile(r"\b(namaskar|ache|kemon|bhalo|kichu)\b", re.I)),
+    ("ur_roman", re.compile(r"\b(adab|salam|kya|haan|nahin|theek)\b", re.I)),
+]
 
 
 def normalize_policy(value: str | None) -> str:
     raw = (value or "auto").strip().lower()
-    if raw in {"auto", "hinglish", "hindi", "english", "en", "hi"}:
-        if raw == "en":
-            return "english"
-        if raw == "hi":
-            return "hindi"
+    aliases = {"en": "en", "english": "en", "hi": "hi", "hindi": "hi"}
+    if raw in aliases:
+        return aliases[raw]
+    if raw in POLICY_LANGS:
         return raw
     return "auto"
 
 
+def normalize_reply(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    if raw in SUPPORTED_LANGS:
+        return raw
+    return DEFAULT_LANG
+
+
 def pick_language(text: str = "", previous: str = "", policy: str = "auto") -> str:
     pol = normalize_policy(policy)
-    if pol in {"hinglish", "hindi", "english"}:
+    if pol in SUPPORTED_LANGS:
         return pol
-    if previous in {"hinglish", "hindi", "english"}:
-        # Switch if user clearly changed script
-        if text and _DEVANAGARI.search(text) and previous != "hindi":
-            return "hindi"
-        if text and re.search(r"\b(the|please|what|how|yes|no)\b", text, re.I) and not _DEVANAGARI.search(text):
-            if previous == "hindi" and re.search(r"\b(the|please|what)\b", text, re.I):
-                return "english"
+    if previous in SUPPORTED_LANGS:
+        if text:
+            for lang, pat in _SCRIPT_MAP:
+                if pat.search(text) and previous != lang:
+                    return lang
+            if _DEVANAGARI.search(text) and previous not in ("hi", "mr"):
+                return "hi"
+            if re.search(r"\b(the|please|what|how|yes|no)\b", text, re.I) and not _DEVANAGARI.search(text):
+                if previous in ("hi", "mr") and re.search(r"\b(the|please|what)\b", text, re.I):
+                    return "en"
         return previous
-    if text and _DEVANAGARI.search(text):
-        return "hindi"
-    if text and re.search(r"\b(the|please|what|how|yes|want to)\b", text or "", re.I):
-        return "english"
-    return "hinglish"
+    if text:
+        for lang, pat in _SCRIPT_MAP:
+            if pat.search(text):
+                return lang
+        if _DEVANAGARI.search(text):
+            return "hi"
+        for rlang, pat in _ROMAN_HINTS:
+            if pat.search(text):
+                return rlang
+        if re.search(r"\b(the|please|what|how|yes|want to)\b", text or "", re.I):
+            return "en"
+    return DEFAULT_LANG
+
+
+def language_instruction(lang: str = "hinglish") -> str:
+    instructions = {
+        "hi": "Reply in simple Hindi (Devanagari script).",
+        "en": "Reply in clear simple English.",
+        "pa": "Reply in Punjabi (Gurmukhi script).",
+        "pa_roman": "Reply in Roman Punjabi (Latin script).",
+        "gu": "Reply in Gujarati script.",
+        "gu_roman": "Reply in Roman Gujarati.",
+        "mr": "Reply in Marathi (Devanagari script).",
+        "mr_roman": "Reply in Roman Marathi.",
+        "ta": "Reply in Tamil script.",
+        "ta_roman": "Reply in Roman Tamil.",
+        "te": "Reply in Telugu script.",
+        "te_roman": "Reply in Roman Telugu.",
+        "kn": "Reply in Kannada script.",
+        "kn_roman": "Reply in Roman Kannada.",
+        "ml": "Reply in Malayalam script.",
+        "ml_roman": "Reply in Roman Malayalam.",
+        "bn": "Reply in Bengali script.",
+        "bn_roman": "Reply in Roman Bengali.",
+        "ur": "Reply in Urdu (Nastaliq script).",
+        "ur_roman": "Reply in Roman Urdu.",
+    }
+    return instructions.get(lang, "Reply in Hinglish (Hindi + English, Latin script).")
 
 
 def t(lang: str, key: str, **kwargs) -> str:
-    bucket = TEMPLATES.get(lang) or TEMPLATES["hinglish"]
-    raw = bucket.get(key) or TEMPLATES["hinglish"].get(key) or TEMPLATES["english"].get(key) or key
+    lang = lang if lang in SUPPORTED_LANGS else DEFAULT_LANG
+    entry = MESSAGES.get(key)
+    if not entry:
+        log.warning("i18n missing key: %s", key)
+        return f"[{key}]"
+    text = entry.get(lang)
+    if not text:
+        for fb in FALLBACK_CHAIN.get(lang, [DEFAULT_LANG, "en"]):
+            text = entry.get(fb)
+            if text:
+                break
+    if not text:
+        text = entry.get(DEFAULT_LANG) or entry.get("en") or ""
+    if not text:
+        log.warning("i18n no translation for key: %s lang: %s", key, lang)
+        return f"[{key}]"
     try:
-        return raw.format(**kwargs)
-    except Exception:
-        return raw
+        return text.format(**kwargs)
+    except (KeyError, IndexError, ValueError) as exc:
+        log.warning("i18n format failed for %s: %s", key, exc)
+        return text
+
+
+def validate_dictionary() -> list[str]:
+    issues = []
+    for key, langs in MESSAGES.items():
+        if not isinstance(langs, dict):
+            issues.append(f"Key '{key}' has invalid structure")
+            continue
+        for lang in SUPPORTED_LANGS:
+            if lang not in langs or not langs[lang]:
+                issues.append(f"Missing {lang} for key '{key}'")
+    return issues
+
+
+def all_keys() -> list[str]:
+    return sorted(MESSAGES.keys())
+
+
+def keys_for_lang(lang: str) -> list[str]:
+    return sorted(k for k, v in MESSAGES.items() if isinstance(v, dict) and v.get(lang))

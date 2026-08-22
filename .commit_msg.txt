@@ -1,13 +1,16 @@
-refactor: merge data_filter into data_filteration + harden error handling
+feat: comprehensive multilingual i18n dictionary for all Indian languages
 
-- Delete data_filter.py shim; consolidate into single data_filteration.py
-- Update all imports (orchestrator, tools, data_push, tests) to use data_filteration
-- Add top-level import json; remove lazy local _json imports
-- Fix 2 broad except handlers → specific exceptions with logging
-- Add 19 new unit tests covering validate_ranges, validate_cross_fields,
-  validate_field_types, calculate_confidence, calculate_quality_score,
-  check_master_data, check_duplicates, build_canonical_listing,
-  resolve_category, build_missing_fields
-- Include previously uncommitted AI improvements (account_filter conflict
-  detection, chat_memory workflow updates, orchestrator eligibility gate,
-  data_push blocked-account checks, i18n additions)
+- Key-centric structure: MESSAGES[key][lang] = text (86 keys)
+- 21 language variants: hinglish, hi, en + 9 regional native+romanized
+  (pa, gu, mr, ta, te, kn, ml, bn, ur — each with native + roman)
+- 15 key messages fully translated in all 21 languages
+  (greet, intent, brand, model, year, price, state, photos,
+   confirm, submitted, approved, rejected, otp, saving, unclear)
+- Remaining 71 keys fall back via FALLBACK_CHAIN
+- Hardened t(): never returns raw key to user, logs warnings
+- validate_dictionary(): catches missing translations at startup
+- Enhanced pick_language(): Unicode script detection for 9 Indian scripts
+  + romanized word hints for Punjabi, Gujarati, Marathi, Tamil, etc.
+- language_instruction() for all 21 languages
+- LANG_LABELS for admin UI
+- 32 unit tests covering all functions

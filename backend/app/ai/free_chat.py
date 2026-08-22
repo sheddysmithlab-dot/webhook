@@ -27,11 +27,58 @@ from ..config import settings
 from ..models import AiConversation
 from ..services import resolve_ai_config
 from .i18n import language_instruction, t
-from .memory import recent_outbound_bodies
 from .schema import missing_fields
 from .tools import _payload
 
 log = logging.getLogger("infradealer.ai.free_chat")
+
+# --- Chat utility helpers (merged from legacy memory.py) ---
+
+from difflib import SequenceMatcher as _SequenceMatcher
+
+from ..models import Chat as _Chat
+
+
+def customer_annoyed(text: str = "") -> bool:
+    return bool(re.search(r"\b(bakwas|pagal|irritat|bar bar|same\s+question)\b", text or "", re.I))
+
+
+def photos_complete(payload: dict | None = None) -> bool:
+    ids = (payload or {}).get("media_ids") or []
+    return len([i for i in ids if i]) >= 2
+
+
+def question_kind(text: str = "") -> str:
+    t = (text or "").lower()
+    if "price" in t or "rate" in t or "lakh" in t:
+        return "price"
+    if "year" in t or "model" in t:
+        return "year"
+    if "photo" in t:
+        return "photos"
+    return "other"
+
+
+def recent_outbound_bodies(db: Session, conversation_id: str, limit: int = 6) -> list[str]:
+    rows = (
+        db.query(_Chat)
+        .filter(_Chat.conversation_id == conversation_id, _Chat.direction == "outbound")
+        .order_by(_Chat.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [r.body or "" for r in rows]
+
+
+def too_similar(a: str, b: str, threshold: float = 0.86) -> bool:
+    if not a or not b:
+        return False
+    return _SequenceMatcher(None, a.lower(), b.lower()).ratio() >= threshold
+
+
+def is_repeat_outbound(db: Session, conversation_id: str, text: str) -> bool:
+    bodies = recent_outbound_bodies(db, conversation_id, 3)
+    return any(too_similar(text, b) for b in bodies)
 
 FREE_CHAT_SYSTEM = (
     "You are InfraDealer's polite WhatsApp assistant for used trucks and "
