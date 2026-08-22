@@ -118,6 +118,11 @@ def listing_category(payload: dict, fallback: str = "Other", title: str = "") ->
 
 
 def unique_photo_ids(db: Session, conv: AiConversation | None, payload: dict | None = None) -> list[int]:
+    """Return up to 5 unique local image ids for the active listing draft.
+
+    Always merges payload media_ids with images attached to the current draft so
+    late photo uploads are included in marketplace push (not just the first id).
+    """
     wanted = []
     if payload:
         wanted = [int(x) for x in (payload.get("media_ids") or []) if str(x).isdigit()]
@@ -130,35 +135,41 @@ def unique_photo_ids(db: Session, conv: AiConversation | None, payload: dict | N
             .all()
         )
     by_id = {row.id: row for row in rows}
-    ordered = []
-    seen_meta = set()
+    ordered: list[int] = []
+    seen_meta: set[str] = set()
+    seen_ids: set[int] = set()
+
+    def _add(row: AiMedia | None) -> None:
+        if not row or not row.local_path or row.id in seen_ids:
+            return
+        key = str(row.meta_media_id or row.local_path)
+        if key in seen_meta:
+            return
+        seen_meta.add(key)
+        seen_ids.add(row.id)
+        ordered.append(row.id)
+
     for mid in wanted:
-        row = by_id.get(mid)
-        if not row or not row.local_path:
-            continue
-        key = row.meta_media_id or row.local_path
-        if key in seen_meta:
-            continue
-        seen_meta.add(key)
-        ordered.append(row.id)
-    if ordered:
-        return ordered[:5]
+        _add(by_id.get(mid))
+
+    draft_id = None
     if conv and conv.draft_id:
-        rows = [row for row in rows if row.draft_id == conv.draft_id]
-    elif wanted:
-        return ordered[:5]
-    else:
-        return []
-    for row in rows:
-        if not row.local_path:
-            continue
-        key = row.meta_media_id or row.local_path
-        if key in seen_meta:
-            continue
-        seen_meta.add(key)
-        ordered.append(row.id)
+        draft_id = conv.draft_id
+    elif payload and payload.get("draft_id"):
+        try:
+            draft_id = int(payload.get("draft_id"))
+        except (TypeError, ValueError):
+            draft_id = None
+
+    draft_rows = [row for row in rows if draft_id and row.draft_id == draft_id]
+    # Prefer draft-scoped images; if none tagged, fall back to all conversation images
+    # only when wanted was empty (avoid mixing old listing photos into a new draft).
+    extras = draft_rows if draft_rows else ([] if ordered else rows)
+    for row in extras:
         if len(ordered) >= 5:
             break
+        _add(row)
+
     return ordered[:5]
 
 
