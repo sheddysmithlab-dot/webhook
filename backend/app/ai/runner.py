@@ -257,6 +257,15 @@ def process_inbound(
 
         t_ai0 = time.perf_counter()
         try:
+            # AI Corrector: fix typos/spelling before agent processes
+            try:
+                from .corrector import correct_user_message
+                corrected = correct_user_message(db, conv, text, media_note)
+                if corrected != text:
+                    log.info("corrector: '%s' → '%s' mobile=***%s", text[:80], corrected[:80], conv.mobile[-4:] if conv.mobile else "")
+                    text = corrected
+            except Exception:
+                log.exception("corrector failed, using original text")
             reply = _ai_respond(db, conv, text, media_note)
             path = "simple_zai" if simple else "orchestrator"
             if not simple:

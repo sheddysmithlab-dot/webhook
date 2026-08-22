@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     # Scoped free-chat for non-business messages (greetings, general queries, small talk).
     # Known listing/account/OTP/confirm flows still use hard rules + tools.
     ai_free_chat: bool = True
+    # AI Corrector: fix user message typos/spelling before agent processes it.
+    ai_corrector: bool = True
     ai_media_dir: str = "./data/media"
     infradealer_base_url: str = ""
     infradealer_api_key: str = ""

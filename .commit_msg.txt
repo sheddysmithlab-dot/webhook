@@ -1,16 +1,16 @@
-feat: comprehensive multilingual i18n dictionary for all Indian languages
+feat: AI Corrector — fix user message typos before agent processes
 
-- Key-centric structure: MESSAGES[key][lang] = text (86 keys)
-- 21 language variants: hinglish, hi, en + 9 regional native+romanized
-  (pa, gu, mr, ta, te, kn, ml, bn, ur — each with native + roman)
-- 15 key messages fully translated in all 21 languages
-  (greet, intent, brand, model, year, price, state, photos,
-   confirm, submitted, approved, rejected, otp, saving, unclear)
-- Remaining 71 keys fall back via FALLBACK_CHAIN
-- Hardened t(): never returns raw key to user, logs warnings
-- validate_dictionary(): catches missing translations at startup
-- Enhanced pick_language(): Unicode script detection for 9 Indian scripts
-  + romanized word hints for Punjabi, Gujarati, Marathi, Tamil, etc.
-- language_instruction() for all 21 languages
-- LANG_LABELS for admin UI
-- 32 unit tests covering all functions
+New layer between user message and agent:
+  User msg → AI Corrector → Agent (detect_intent → collect → reply)
+
+- corrector.py: fixes spelling, word completion, grammar
+  "gdi bechna h" → "gaadi bechna hain"
+  "jcB tipr 40 lac" → "JCB Tipper 40 lakh"
+- Fast Python correction for known typos (no LLM needed)
+- LLM correction for complex messages (scoped, no tools, no meaning change)
+- Meaning change detection: rejects if intent/numbers flipped
+- Skip short messages (Haan, Nahi, Ok, OTP, photo)
+- Original text preserved in DB for audit (ai_correction event)
+- Config flag: ai_corrector (default True)
+- Wired into runner.py before _ai_respond
+- 13 unit tests
