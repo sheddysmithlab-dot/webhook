@@ -199,6 +199,8 @@ def _finish(db: Session, conv: AiConversation, user: User, lang: str, extra: str
     payload["account_step"] = "done"
     payload["account_role"] = user.role or payload.get("account_role") or "user"
     payload["account_password_set"] = bool(user.password_hash)
+    payload["account_eligibility"] = "ELIGIBLE"
+    payload.pop("account_context", None)  # force refresh on next turn
     conv.profile_id = user.id
     conv.profile_status = "verified"
     _write_payload(conv, payload)

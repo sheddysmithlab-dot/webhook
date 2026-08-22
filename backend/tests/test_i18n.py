@@ -18,7 +18,7 @@ from app.ai.i18n import (
 
 def test_all_keys_defined():
     keys = all_keys()
-    assert len(keys) == 91
+    assert len(keys) == 92
     assert "greet" in keys
     assert "account_otp" in keys
     assert "confirm_ready" in keys
@@ -26,11 +26,12 @@ def test_all_keys_defined():
     assert "btn_view_listing" in keys
     assert "listing_live_button" in keys
     assert "infradealer_options" in keys
+    assert "ai_error_retry" in keys
 
 
 def test_core_languages_complete():
     for lang in ("hinglish", "hi", "en"):
-        assert len(keys_for_lang(lang)) == 91, f"{lang} missing keys"
+        assert len(keys_for_lang(lang)) == 92, f"{lang} missing keys"
 
 
 def test_t_hinglish():

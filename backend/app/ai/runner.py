@@ -307,10 +307,14 @@ def process_inbound(
         except Exception as exc:
             log.exception("ai respond failed mobile=***%s", mobile[-4:] if mobile else "")
             db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="error", detail=str(exc)[:300]))
-            reply = (
-                "Ji Sir, thodi technical dikkat hai. "
-                "Kripya ek pal baad phir se message bhej dijiye."
-            )
+            reply = t(lang, "ai_error_retry")
+            path = "error"
+
+        # LLM connectivity failure — reply is None or empty
+        if not reply or not reply.strip():
+            log.warning("ai empty reply mobile=***%s", mobile[-4:] if mobile else "")
+            db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="error", detail="empty_reply"))
+            reply = t(lang, "ai_error_retry")
             path = "error"
         t_ai = (time.perf_counter() - t_ai0) * 1000
 

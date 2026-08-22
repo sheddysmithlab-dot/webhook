@@ -848,6 +848,9 @@ def _safe_truncate(text: str, limit: int = REPLY_MAX_CHARS) -> str:
 
 def _is_eligible_to_post(payload: dict) -> bool:
     """True if the account is allowed to proceed with listing creation."""
+    # Trust local onboarding state — if account_onboarded is True, allow posting
+    if payload.get("account_onboarded"):
+        return True
     if str(payload.get("master_workflow_state") or "") == "INVALID_IDENTITY":
         return False
     if payload.get("account_gate") == "ELIGIBILITY_BLOCKED":

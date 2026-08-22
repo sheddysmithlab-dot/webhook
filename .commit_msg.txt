@@ -1,0 +1,12 @@
+fix: account state persistence + AI failure fallback
+
+Fixes:
+- _is_eligible_to_post: now trusts account_onboarded=True from payload
+  (was blocking even after account was completed)
+- account.py _finish: sets account_eligibility=ELIGIBLE + clears
+  cached account_context so next turn refreshes
+- runner.py: AI response failure now sends user-friendly message
+  "Ji Sir, main abhi technical dikkat me hoon.
+   Aap thodi der baad phir se connect karein."
+  (also catches empty/None reply from LLM connectivity issues)
+- i18n: ai_error_retry string (hinglish/hi/en)
