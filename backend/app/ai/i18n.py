@@ -65,6 +65,7 @@ TEMPLATES = {
         "card_conversation_deleted": "{card} wali chat clear ho gayi. Listing details save hain — update ke liye 'last listing change' likhiye.",
         "chat_cleared": "Chat clear ho gayi. Nayi listing shuru karein ya last listing update karein.",
         "chat_cleared_followup": "Ji — naya chat ready hai. Sell/buy bataiye, ya last listing update.",
+        "free_chat_fallback": "Ji Sir, main yahan hoon. Kya listing se related kuch chahiye?",
     },
     "hindi": {
         "greet": "नमस्ते! मैं InfraDealer Relationship Manager हूँ। आप गाड़ी/मशीन बेचना चाहते हैं या खरीदना?",
@@ -111,6 +112,7 @@ TEMPLATES = {
         "card_conversation_deleted": "{card} वाली चैट क्लियर हो गई। अपडेट के लिए 'last listing change' लिखें।",
         "chat_cleared": "चैट क्लियर हो गई।",
         "chat_cleared_followup": "नया चैट तैयार है।",
+        "free_chat_fallback": "जी सर, मैं यहाँ हूँ। लिस्टिंग से जुड़ा कुछ चाहिए?",
     },
     "english": {
         "greet": "Hello! I'm the InfraDealer Relationship Manager. Do you want to sell or buy a vehicle/machine?",
@@ -156,6 +158,7 @@ TEMPLATES = {
         "card_conversation_deleted": "{card} chat cleared. Listing data is saved — say 'update last listing' to edit.",
         "chat_cleared": "Chat cleared.",
         "chat_cleared_followup": "Fresh chat ready.",
+        "free_chat_fallback": "I'm here, Sir. Anything I can help with for a listing?",
     },
 }
 

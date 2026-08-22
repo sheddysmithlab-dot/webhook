@@ -848,7 +848,16 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
             response_type = "ASK_QUESTION"
             _set_rm_state(payload, "INTENT_DETECTION")
             _write_payload(conv, payload)
-            reply = t(lang, "greet")
+            try:
+                from .free_chat import free_chat_enabled, free_chat_reply
+
+                if free_chat_enabled(db):
+                    reply = free_chat_reply(db, conv, msg, lang, media_note)
+                else:
+                    reply = t(lang, "greet")
+            except Exception:
+                log.exception("free_chat on greeting failed")
+                reply = t(lang, "greet")
 
         elif intent == "VERIFY_OTP":
             digits = re.sub(r"\D", "", msg)
@@ -967,7 +976,21 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
 
         else:
             response_type = "ASK_QUESTION"
-            reply = build_next_question(_payload(conv), lang) or t(lang, "greet")
+            payload_now = _payload(conv)
+            if not payload_now.get("intent"):
+                try:
+                    from .free_chat import free_chat_enabled, free_chat_reply, has_business_context
+
+                    if free_chat_enabled(db) and not has_business_context(payload_now):
+                        reply = free_chat_reply(db, conv, msg, lang, media_note)
+                        response_type = "FREE_CHAT"
+                    else:
+                        reply = build_next_question(payload_now, lang) or t(lang, "greet")
+                except Exception:
+                    log.exception("free_chat fallback failed")
+                    reply = build_next_question(payload_now, lang) or t(lang, "greet")
+            else:
+                reply = build_next_question(payload_now, lang) or t(lang, "greet")
 
     except Exception:
         log.exception("chat_memory handle_message failed")

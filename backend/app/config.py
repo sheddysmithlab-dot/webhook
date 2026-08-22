@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     ai_reply_language: str = "auto"
     # True = plain Z.AI chat only (no listing agent). False = InfraDealer listing agent.
     ai_simple_chat: bool = False
+    # Scoped free-chat for non-business messages (greetings, general queries, small talk).
+    # Known listing/account/OTP/confirm flows still use hard rules + tools.
+    ai_free_chat: bool = True
     ai_media_dir: str = "./data/media"
     infradealer_base_url: str = ""
     infradealer_api_key: str = ""

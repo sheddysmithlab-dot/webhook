@@ -268,6 +268,13 @@ def fallback_reply(db, conv: AiConversation, text: str, media_note: str = "") ->
             conv.error_message = "ask:intent"
             label = " ".join(x for x in [payload.get("brand"), payload.get("model")] if x) or "ye"
             return t(lang, "intent_confirm", label=label)
+        try:
+            from .free_chat import free_chat_enabled, free_chat_reply, has_business_context
+
+            if free_chat_enabled(db) and not has_business_context(payload):
+                return free_chat_reply(db, conv, msg, lang, media_note)
+        except Exception:
+            log.exception("free_chat in fallback_reply failed")
         conv.state = "NEW"
         conv.error_message = "ask:intent"
         return t(lang, "intent")
