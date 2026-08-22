@@ -254,3 +254,64 @@ def correct_user_message(db: Session, conv: AiConversation, text: str, media_not
         pass
 
     return corrected
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Message classifier + router
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Intents that mean the agent should handle it (confirmed)
+_CONFIRMED_INTENTS = frozenset({
+    "SELL", "BUY", "CONFIRM_LISTING", "VERIFY_OTP", "UPLOAD_PHOTO",
+    "PROVIDE_FIELD", "REJECT_CORRECTION", "RESOLVE_CONFLICT",
+    "CHECK_LISTING_STATUS", "ASK_LISTING_LINK", "RESUME_WORKFLOW",
+    "CANCEL_WORKFLOW", "HUMAN_SUPPORT", "PROMPT_INJECTION",
+})
+
+# Max free chat messages before showing options
+_FREE_CHAT_LIMIT = 2  # 0-indexed: msg 0, 1 = free chat; msg 2 = options
+
+
+def classify_message(text: str, payload: dict, media_note: str = "") -> dict:
+    """Classify a user message and decide routing.
+
+    Returns:
+        {"route": "confirmed"|"unconfirmed"|"options", "text": corrected_text}
+    """
+    from .chat_memory import detect_intent
+
+    msg = (text or "").strip()
+    intent = detect_intent(msg, payload, media_note=media_note)
+
+    if intent in _CONFIRMED_INTENTS:
+        return {"route": "confirmed", "text": text, "intent": intent}
+
+    # GREETING with no intent set → unconfirmed (free chat)
+    if intent == "GREETING" and not payload.get("intent"):
+        free_count = int(payload.get("free_chat_count") or 0)
+        if free_count < _FREE_CHAT_LIMIT:
+            return {"route": "unconfirmed", "text": text, "intent": intent, "free_count": free_count}
+        return {"route": "options", "text": text, "intent": intent, "free_count": free_count}
+
+    # PROVIDE_FIELD with active listing → confirmed
+    if intent == "PROVIDE_FIELD" and payload.get("intent"):
+        return {"route": "confirmed", "text": text, "intent": intent}
+
+    # OTHER with active listing → confirmed (could be field data)
+    if intent == "OTHER" and payload.get("intent"):
+        return {"route": "confirmed", "text": text, "intent": intent}
+
+    # Unconfirmed — check free chat counter
+    free_count = int(payload.get("free_chat_count") or 0)
+
+    if free_count < _FREE_CHAT_LIMIT:
+        return {"route": "unconfirmed", "text": text, "intent": intent, "free_count": free_count}
+
+    # 3rd unconfirmed → show options
+    return {"route": "options", "text": text, "intent": intent, "free_count": free_count}
+
+
+def reset_free_chat_count(payload: dict) -> dict:
+    """Reset free chat counter when user enters a confirmed flow."""
+    payload["free_chat_count"] = 0
+    return payload

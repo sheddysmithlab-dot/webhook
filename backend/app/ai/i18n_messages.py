@@ -659,6 +659,11 @@ MESSAGES = {
         "hi": "वेबसाइट पर जाएं",
         "en": "Visit Website",
     },
+    "infradealer_options": {
+        "hinglish": "Sir, kya aap karna chahte hain?\n\n1. Gaadi bechna (Sell)\n2. Gaadi kharidna (Buy)\n3. apni listing dekhna (Status)\n4. account setup\n\nNumber reply kijiye.",
+        "hi": "सर, क्या आप करना चाहते हैं?\n\n1. गाड़ी बेचना (Sell)\n2. गाड़ी खरीदना (Buy)\n3. अपनी लिस्टिंग देखना (Status)\n4. अकाउंट सेटअप\n\nनंबर रिप्लाई कीजिए।",
+        "en": "Sir, what would you like to do?\n\n1. Sell a vehicle\n2. Buy a vehicle\n3. Check listing status\n4. Account setup\n\nReply with a number.",
+    },
     "continue_chat": {
         "hinglish": "Aapki listing submit ho chuki hai. Kuch aur chahiye to bataiye.",
         "hi": "आपकी लिस्टिंग सबमिट हो चुकी है। कुछ और चाहिए तो बताइए।",

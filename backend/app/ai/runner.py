@@ -257,17 +257,49 @@ def process_inbound(
 
         t_ai0 = time.perf_counter()
         try:
-            # AI Corrector: fix typos/spelling before agent processes
+            # AI Understanding: correct typos + classify routing
+            from .corrector import correct_user_message, classify_message, reset_free_chat_count
+            from .free_chat import free_chat_reply, free_chat_enabled
+            from .i18n import pick_language, t
+
+            lang = pick_language(text, getattr(conv, "language", "") or "", "auto")
+            conv.language = lang
+
+            # Step 1: Correct typos
             try:
-                from .corrector import correct_user_message
                 corrected = correct_user_message(db, conv, text, media_note)
                 if corrected != text:
                     log.info("corrector: '%s' → '%s' mobile=***%s", text[:80], corrected[:80], conv.mobile[-4:] if conv.mobile else "")
                     text = corrected
             except Exception:
                 log.exception("corrector failed, using original text")
-            reply = _ai_respond(db, conv, text, media_note)
-            path = "simple_zai" if simple else "orchestrator"
+
+            # Step 2: Classify and route
+            pl = _payload(conv)
+            verdict = classify_message(text, pl, media_note)
+
+            if verdict["route"] == "confirmed":
+                # Confirmed → agent handles it
+                pl = reset_free_chat_count(pl)
+                _write_payload(conv, pl)
+                reply = _ai_respond(db, conv, text, media_note)
+                path = "orchestrator"
+            elif verdict["route"] == "unconfirmed":
+                # Unconfirmed → free chat (count 0, 1)
+                pl["free_chat_count"] = int(verdict.get("free_count", 0)) + 1
+                _write_payload(conv, pl)
+                if free_chat_enabled(db):
+                    reply = free_chat_reply(db, conv, text, lang, media_note)
+                else:
+                    reply = t(lang, "greet")
+                path = "free_chat"
+            else:
+                # 3rd unconfirmed → show InfraDealer options
+                pl["free_chat_count"] = 0
+                _write_payload(conv, pl)
+                reply = t(lang, "infradealer_options")
+                path = "options"
+
             if not simple:
                 pl = _payload(conv)
                 if pl.get("active_card_id"):

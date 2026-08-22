@@ -1,9 +1,20 @@
-feat: WhatsApp interactive buttons for listing + website forwarding
+feat: AI understanding + routing layer (confirmed/unconfirmed/options)
 
-- send_whatsapp_button() in services.py: interactive button message
-  via WhatsApp Business API (type: interactive, URL buttons)
-- confirm.py: after listing push, sends "Listing Dekhein" + "Aur Listings" buttons
-- account.py: after account onboarding, sends "Website Par Jayein" button
-- 4 new i18n keys: listing_live_button, btn_view_listing,
-  btn_browse, btn_visit_website (hinglish/hi/en)
-- 8 unit tests
+Fixes:
+- detect_intent regex: Devanagari \b bug fixed
+  "बेचना" now matches SELL (was stuck in loop before)
+  "खरीदना" now matches BUY
+  All Devanagari intent words added without \b boundary
+
+New flow:
+  User msg → AI Understanding → classify → route
+    ├── Confirmed → Agent (detect_intent → collect → reply)
+    ├── Unconfirmed → Free Chat (2 msgs)
+    └── 3rd unconfirmed → InfraDealer options menu
+
+- classify_message() in corrector.py: routes confirmed vs unconfirmed
+- runner.py: 3-way routing (agent / free_chat / options)
+- free_chat_count tracked in payload
+- reset_free_chat_count when confirmed flow starts
+- infradealer_options i18n string (1/2/3/4 menu)
+- 12 unit tests for routing

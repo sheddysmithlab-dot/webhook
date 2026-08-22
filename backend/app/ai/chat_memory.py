@@ -84,26 +84,34 @@ RM_STATES = {
     "DATA_CONFLICT_PENDING_USER_DECISION",
 }
 
-_SELL = re.compile(r"\b(bech|sell|bikau|bechna|bechni|dena|बेच)\b", re.I)
-_BUY = re.compile(r"\b(buy|kharid|lena|lene|chahiye|खरीद)\b", re.I)
+_SELL = re.compile(
+    r"\b(bech|sell|bikau|bechna|bechni|dena|bechn|bechne|bechani)\b"
+    r"|बेचना|बेचनी|बेच|बिक्री|बिकाऊ|बिक|बेच्ना|बेच्नी",
+    re.I,
+)
+_BUY = re.compile(
+    r"\b(buy|kharid|kharidna|lena|lene|chahiye|chahiye|khareedna|khareed)\b"
+    r"|खरीद|खरीदना|खरीदनी|खरीद",
+    re.I,
+)
 _CANCEL = re.compile(
-    r"\b(cancel|rehne\s*do|baad\s*me|later|pause|mat\s*dalna|nahi\s*dalna|"
-    r"रहने\s*दो|बाद\s*में|रद्द)\b",
+    r"\b(cancel|rehne\s*do|baad\s*me|later|pause|mat\s*dalna|nahi\s*dalna)\b"
+    r"|रहने\s*दो|बाद\s*में|रद्द|मत\s*करो|नहीं\s*डालना",
     re.I,
 )
 _RESUME = re.compile(
-    r"\b(continue|resume|puro\s*kar|poori\s*kar|wahi\s*listing| वो\s*listing|"
-    r"listing\s*poori|जारी|पूरी\s*कर)\b",
+    r"\b(continue|resume|puro\s*kar|poori\s*kar|wahi\s*listing|listing\s*poori|जारी|पूरी\s*कर)\b"
+    r"|जारी\s*रख|पूरी\s*कर|वो\s*listing",
     re.I,
 )
 _HUMAN = re.compile(
-    r"\b(human|agent|support|customer\s*care|헬프|बात\s*करनी|"
-    r"insan|insaan|call\s*me|complaint)\b",
+    r"\b(human|agent|support|customer\s*care|insan|insaan|call\s*me|complaint)\b"
+    r"|बात\s*करनी|इंसान|सहायता|मदद",
     re.I,
 )
 _STATUS = re.compile(
-    r"\b(status|live\s*hui|approve|rejected|listing\s*kahan|"
-    r"लिस्टिंग\s*(कहाँ|स्टेटस)|live\s*हुई)\b",
+    r"\b(status|live\s*hui|approve|rejected|listing\s*kahan)\b"
+    r"|लिस्टिंग\s*(कहाँ|स्टेटस)|live\s*हुई|स्टेटस|अप्रूव|अस्वीकृत",
     re.I,
 )
 _LINK = re.compile(r"\b(link|url|permalink)\b|link\s*(do|bhejo|chahiye)", re.I)
