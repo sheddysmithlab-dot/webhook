@@ -33,9 +33,25 @@ from .tools import _draft_for, _payload, _write_payload, execute_tool
 
 log = logging.getLogger("infradealer.ai.chat_memory")
 
-AGENT_VERSION = "chat-memory-2.1"
+AGENT_VERSION = "chat-memory-2.2"
 PROMPT_VERSION = "RM-18"
 WORKFLOW_VERSION = "4"
+
+# Module-level cache of i18n template keys (avoids rebuilding the set on every question).
+_TEMPLATE_KEYS_CACHE: set | None = None
+
+
+def _template_keys() -> set:
+    global _TEMPLATE_KEYS_CACHE
+    if _TEMPLATE_KEYS_CACHE is None:
+        from .i18n import TEMPLATES
+
+        _TEMPLATE_KEYS_CACHE = set(TEMPLATES["hinglish"].keys())
+    return _TEMPLATE_KEYS_CACHE
+
+
+# WhatsApp reply hard cap (chars). Truncation happens at a safe boundary (see _safe_truncate).
+REPLY_MAX_CHARS = 1200
 
 # Relationship-manager workflow states (mapped onto conv.state where possible)
 RM_STATES = {
@@ -185,13 +201,19 @@ def conv_state_fallback(payload: dict) -> str:
 
 
 def load_account_context(db: Session, conv: AiConversation) -> dict:
-    """Trusted identity/account context via account_filter — never invented from user text."""
-    from .account_filter import sync_conversation_account
+    """Trusted identity/account context via account_filter — never invented from user text.
 
-    verdict = sync_conversation_account(db, conv)
+    Reuses the context already persisted by the orchestrator's account_filter pass
+    instead of re-running sync_conversation_account on every turn.
+    """
     payload = _payload(conv)
-    ctx = payload.get("account_context") if isinstance(payload.get("account_context"), dict) else {}
-    if not ctx:
+    ctx = payload.get("account_context") if isinstance(payload.get("account_context"), dict) else None
+
+    if ctx is None:
+        from .account_filter import sync_conversation_account
+
+        verdict = sync_conversation_account(db, conv)
+        payload = _payload(conv)
         ctx = {
             "identity": {
                 "phone": conv.mobile,
@@ -212,9 +234,10 @@ def load_account_context(db: Session, conv: AiConversation) -> dict:
             },
         }
         payload["account_context"] = ctx
+
     payload["workflow_id"] = payload.get("workflow_id") or f"WF-{conv.id}"
     if not _rm_state(payload):
-        _set_rm_state(payload, "ACCOUNT_CONTEXT_LOADED" if verdict.found else "IDENTITY_PENDING")
+        _set_rm_state(payload, "ACCOUNT_CONTEXT_LOADED")
     _write_payload(conv, payload)
     return ctx
 
@@ -559,24 +582,27 @@ def build_next_question(payload: dict, lang: str) -> str:
     key = _next_ask_key(payload)
     if not key:
         return ""
-    ask = t(lang, key if key in TEMPLATES_KEYS() else "unclear")
+    ask = t(lang, key if key in _template_keys() else "unclear")
     # uncertain year confirmation
     if payload.get("confidence", {}).get("year") == "UNCERTAIN" and payload.get("year"):
-        return f"Year {payload.get('year')} confirm kar doon?"
+        return t(lang, "year_confirm", year=payload.get("year"))
     facts = _facts_line(payload)
     if facts and key not in {"intent"}:
         return t(lang, "ack", facts=facts) + ask
     return ask
 
 
-def TEMPLATES_KEYS() -> set:
-    from .i18n import TEMPLATES
-
-    return set(TEMPLATES["hinglish"].keys())
-
-
-def build_confirmation_summary(db: Session, conv: AiConversation, lang: str = "hinglish") -> str:
-    result = filter_memory(db, conv)
+def build_confirmation_summary(
+    db: Session,
+    conv: AiConversation,
+    lang: str = "hinglish",
+    *,
+    filter_result=None,
+) -> str:
+    """Build the confirmation summary. Pass ``filter_result`` from a prior
+    ``filter_memory`` call to avoid running the Data Filter twice on the hot path.
+    """
+    result = filter_result if filter_result is not None else filter_memory(db, conv)
     payload = handle_data_filter_result(db, conv, result)
     payload["awaiting_confirm"] = True
     payload["customer_confirmed"] = False
@@ -598,29 +624,28 @@ def build_confirmation_summary(db: Session, conv: AiConversation, lang: str = "h
     _write_payload(conv, payload)
     execute_tool(db, conv, "save_conversation", {"state": "AWAITING_CONFIRMATION"})
 
-    lines = [
-        "Aapki listing ki details:" if lang != "english" else "Your listing details:",
-        str(vehicle),
-    ]
-    if nd.get("category") or payload.get("category"):
-        lines.append(f"Category: {nd.get('category') or payload.get('category')}")
-    if nd.get("year") or payload.get("year"):
-        lines.append(f"Year: {nd.get('year') or payload.get('year')}")
+    lines = [t(lang, "summary_header"), str(vehicle)]
+    cat = nd.get("category") or payload.get("category")
+    if cat:
+        lines.append(t(lang, "summary_category", value=cat))
+    yr = nd.get("year") or payload.get("year")
+    if yr:
+        lines.append(t(lang, "summary_year", value=yr))
     km = nd.get("km") or payload.get("running_km")
     if km:
-        lines.append(f"KM: {km}")
+        lines.append(t(lang, "summary_km", value=km))
     hours = nd.get("operating_hours") or payload.get("operating_hours")
     if hours:
-        lines.append(f"Hours: {hours}")
+        lines.append(t(lang, "summary_hours", value=hours))
     loc = nd.get("city") or nd.get("state") or payload.get("city") or payload.get("state")
     if loc:
-        lines.append(f"Location: {loc}")
+        lines.append(t(lang, "summary_location", value=loc))
     price = nd.get("price") or nd.get("expected_price") or payload.get("expected_price")
     if price:
-        lines.append(f"Price: {price}")
+        lines.append(t(lang, "summary_price", value=price))
     photos = len(payload.get("media_ids") or [])
     if photos:
-        lines.append(f"Photos: {photos}")
+        lines.append(t(lang, "summary_photos", value=photos))
     if result.readiness == "DUPLICATE_WARNING":
         lines.append(t(lang, "duplicate"))
     if result.conflicts:
@@ -647,6 +672,13 @@ def interpret_confirmation(text: str, payload: dict) -> str:
 
 def submit_confirmed_listing(db: Session, conv: AiConversation) -> dict:
     payload = _payload(conv)
+
+    # Defense-in-depth: re-check eligibility right before submitting.
+    if str(payload.get("account_eligibility") or "").upper() == "NOT_ELIGIBLE" or payload.get("account_gate") == "ELIGIBILITY_BLOCKED":
+        _set_rm_state(payload, "WAITING_FOR_MISSING_DATA")
+        _write_payload(conv, payload)
+        return {"ok": False, "error": "account_not_eligible", "status": "SUBMISSION_BLOCKED"}
+
     version = int(payload.get("draft_version") or 1)
     payload["customer_confirmed"] = True
     payload["awaiting_confirm"] = False
@@ -768,6 +800,73 @@ def _maybe_attach_media(payload: dict, media_note: str) -> None:
         _set_rm_state(payload, "WAITING_FOR_PHOTOS")
 
 
+def _photo_count(payload: dict) -> int:
+    return len(payload.get("media_ids") or [])
+
+
+def _photos_satisfied(payload: dict, minimum: int = 2) -> bool:
+    return _photo_count(payload) >= minimum
+
+
+def _mark_photos_complete(payload: dict, minimum: int = 2) -> bool:
+    if _photos_satisfied(payload, minimum):
+        payload["photos_complete"] = True
+        return True
+    return False
+
+
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def _safe_truncate(text: str, limit: int = REPLY_MAX_CHARS) -> str:
+    """Truncate at a word boundary, never cutting a URL mid-way."""
+    if len(text) <= limit:
+        return text
+    # Find URLs in the tail that would be cut; preserve the last full URL if possible.
+    cut = text[:limit]
+    # If a URL starts before the cut and extends past it, drop the partial URL.
+    m = _URL_RE.search(cut)
+    if m and m.start() < len(cut) < (m.end() if m.end() <= len(text) else len(text)):
+        url_end_in_full = text.find(" ", m.start())
+        if url_end_in_full == -1 or url_end_in_full > limit:
+            cut = text[:m.start()].rstrip()
+    # Trim to last whitespace to avoid splitting a word.
+    if len(cut) > limit:
+        last_space = cut.rfind(" ")
+        if last_space > limit * 0.6:
+            cut = cut[:last_space]
+    return cut.rstrip() + "…" if len(cut) < len(text) else cut
+
+
+def _is_eligible_to_post(payload: dict) -> bool:
+    """True if the account is allowed to proceed with listing creation."""
+    if str(payload.get("master_workflow_state") or "") == "INVALID_IDENTITY":
+        return False
+    if payload.get("account_gate") == "ELIGIBILITY_BLOCKED":
+        return False
+    if str(payload.get("account_eligibility") or "").upper() == "NOT_ELIGIBLE":
+        return False
+    return True
+
+
+def _reset_listing_fields(payload: dict) -> None:
+    """Wipe listing-specific fields when intent changes SELL to BUY."""
+    for key in (
+        "category", "brand", "model", "year", "expected_price", "budget",
+        "running_km", "operating_hours", "missing_fields", "summary_json",
+        "awaiting_confirm", "customer_confirmed", "photos_complete",
+        "confirmation", "confirmed_json", "field_history",
+    ):
+        if key == "missing_fields":
+            payload[key] = []
+        elif key in {"awaiting_confirm", "customer_confirmed", "photos_complete"}:
+            payload[key] = False
+        else:
+            payload[key] = None
+    payload["media_ids"] = []
+    payload["draft_version"] = int(payload.get("draft_version") or 1) + 1
+
+
 def handle_message(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str:
     """Main Relationship Manager turn — state → intent → collect → filter → ask/confirm."""
     started = time.perf_counter()
@@ -881,6 +980,9 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                 if result.get("ok") is False and result.get("error") == "listing_not_ready":
                     reply = build_next_question(_payload(conv), lang) or t(lang, "unclear")
                     response_type = "ASK_QUESTION"
+                elif result.get("ok") is False and result.get("error") == "account_not_eligible":
+                    reply = t(lang, "account_not_eligible")
+                    response_type = "ERROR_MESSAGE"
                 else:
                     reply = t(lang, "submitted")
             else:
@@ -888,114 +990,114 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                 reply = t(lang, "confirm_prompt")
 
         elif intent in {"REJECT_CORRECTION", "PROVIDE_FIELD", "SELL", "BUY", "UPLOAD_PHOTO", "OTHER", "RESOLVE_CONFLICT"}:
-            # Intent change SELL ↔ BUY: reset listing fields, keep account
-            if intent in {"SELL", "BUY"}:
-                payload = _payload(conv)
-                prev = (payload.get("intent") or "").upper()
-                if prev and prev != intent and prev in {"BUY", "SELL"}:
-                    for key in (
-                        "category", "brand", "model", "year", "expected_price", "budget",
-                        "running_km", "operating_hours", "missing_fields", "summary_json",
-                        "awaiting_confirm", "customer_confirmed",
-                    ):
-                        payload[key] = [] if key == "missing_fields" else (False if key in {"awaiting_confirm", "customer_confirmed"} else None)
-                    payload["media_ids"] = []
-                    payload["draft_version"] = int(payload.get("draft_version") or 1) + 1
+            # Eligibility gate — block listing flow for not-eligible accounts.
+            if intent in {"SELL", "BUY"} and not _is_eligible_to_post(payload):
+                response_type = "ERROR_MESSAGE"
+                reply = t(lang, "account_not_eligible")
+                _set_rm_state(payload, "IDENTITY_PENDING")
+                _write_payload(conv, payload)
+            else:
+                # Intent change SELL to BUY: reset listing fields, keep account
+                if intent in {"SELL", "BUY"}:
+                    prev = (payload.get("intent") or "").upper()
+                    if prev and prev != intent and prev in {"BUY", "SELL"}:
+                        _reset_listing_fields(payload)
+                        _write_payload(conv, payload)
+                    execute_tool(db, conv, "save_customer_data", {"intent": intent})
+                    payload = _payload(conv)
+                    _set_rm_state(payload, "LISTING_CREATION")
                     _write_payload(conv, payload)
-                execute_tool(db, conv, "save_customer_data", {"intent": intent})
+
+                if intent == "REJECT_CORRECTION" or confirmation_has_modification(msg):
+                    payload = _payload(conv)
+                    payload["awaiting_confirm"] = False
+                    payload["customer_confirmed"] = False
+                    payload["draft_version"] = int(payload.get("draft_version") or 1) + 1
+                    _set_rm_state(payload, "DATA_COLLECTION")
+                    _write_payload(conv, payload)
+
+                # Collect from this turn
+                collect_message(db, conv, msg)
+                if media_note:
+                    payload = _payload(conv)
+                    _maybe_attach_media(payload, media_note)
+                    _mark_photos_complete(payload)
+                    _write_payload(conv, payload)
+
                 payload = _payload(conv)
-                _set_rm_state(payload, "LISTING_CREATION")
-                _write_payload(conv, payload)
+                if not payload.get("intent") and intent in {"SELL", "BUY"}:
+                    payload["intent"] = intent
+                    _write_payload(conv, payload)
 
-            if intent == "REJECT_CORRECTION" or confirmation_has_modification(msg):
-                payload = _payload(conv)
-                payload["awaiting_confirm"] = False
-                payload["customer_confirmed"] = False
-                payload["draft_version"] = int(payload.get("draft_version") or 1) + 1
-                _set_rm_state(payload, "DATA_COLLECTION")
-                _write_payload(conv, payload)
+                # Coordinate with Data Filter when we have something to validate
+                if (payload.get("intent") or "").upper() in {"BUY", "SELL"}:
+                    result = filter_memory(db, conv)
+                    payload = handle_data_filter_result(db, conv, result)
 
-            # Collect from this turn
-            collect_message(db, conv, msg)
-            if media_note:
-                payload = _payload(conv)
-                _maybe_attach_media(payload, media_note)
-                n = len(payload.get("media_ids") or [])
-                if n >= 2:
-                    payload["photos_complete"] = True
-                _write_payload(conv, payload)
-
-            payload = _payload(conv)
-            if not payload.get("intent") and intent in {"SELL", "BUY"}:
-                payload["intent"] = intent
-                _write_payload(conv, payload)
-
-            # Coordinate with Data Filter when we have something to validate
-            if (payload.get("intent") or "").upper() in {"BUY", "SELL"}:
-                result = filter_memory(db, conv)
-                payload = handle_data_filter_result(db, conv, result)
-
-                if result.conflicts:
-                    c = result.conflicts[0]
-                    response_type = "ASK_QUESTION"
-                    reply = t(lang, "conflict_year", user=c.get("user_value"), document=c.get("document_value"))
-                elif result.readiness == "INVALID_DATA":
-                    err = (result.validation_errors or [{}])[0]
-                    response_type = "ASK_QUESTION"
-                    code = err.get("code") or ""
-                    if code == "FUTURE_YEAR":
-                        reply = t(lang, "year")
-                    else:
-                        reply = build_next_question(payload, lang) or t(lang, "unclear")
-                elif is_collection_ready(payload):
-                    photo_required = any(
-                        (m["field"] if isinstance(m, dict) else m) == "photos"
-                        for m in (result.missing_fields or [])
-                    )
-                    if photo_required and len(payload.get("media_ids") or []) < 2:
+                    if result.conflicts:
+                        c = result.conflicts[0]
                         response_type = "ASK_QUESTION"
-                        n = len(payload.get("media_ids") or [])
-                        reply = t(lang, "photo_need_min", count=n) if n else t(lang, "photos")
-                    elif result.readiness in {"READY_FOR_CONFIRMATION", "DUPLICATE_WARNING"} or not photo_required:
-                        response_type = "CONFIRMATION_REQUEST"
-                        reply = build_confirmation_summary(db, conv, lang)
+                        reply = t(lang, "conflict_year", user=c.get("user_value"), document=c.get("document_value"))
+                    elif result.readiness == "INVALID_DATA":
+                        err = (result.validation_errors or [{}])[0]
+                        response_type = "ASK_QUESTION"
+                        code = err.get("code") or ""
+                        if code == "FUTURE_YEAR":
+                            reply = t(lang, "year")
+                        else:
+                            reply = build_next_question(payload, lang) or t(lang, "unclear")
+                    elif is_collection_ready(payload):
+                        photo_required = any(
+                            (m["field"] if isinstance(m, dict) else m) == "photos"
+                            for m in (result.missing_fields or [])
+                        )
+                        if photo_required and not _photos_satisfied(payload):
+                            response_type = "ASK_QUESTION"
+                            n = _photo_count(payload)
+                            reply = t(lang, "photo_need_min", count=n) if n else t(lang, "photos")
+                        elif result.readiness in {"READY_FOR_CONFIRMATION", "DUPLICATE_WARNING"} or not photo_required:
+                            response_type = "CONFIRMATION_REQUEST"
+                            reply = build_confirmation_summary(db, conv, lang, filter_result=result)
+                        else:
+                            response_type = "ASK_QUESTION"
+                            reply = build_next_question(payload, lang) or t(lang, "photos")
                     else:
                         response_type = "ASK_QUESTION"
-                        reply = build_next_question(payload, lang) or t(lang, "photos")
+                        reply = build_next_question(payload, lang)
+                        if not reply:
+                            if (payload.get("intent") or "").upper() == "SELL" and not _photos_satisfied(payload) and is_collection_ready(payload):
+                                reply = t(lang, "photos")
+                            else:
+                                reply = t(lang, "unclear")
                 else:
                     response_type = "ASK_QUESTION"
-                    reply = build_next_question(payload, lang)
-                    if not reply:
-                        if (payload.get("intent") or "").upper() == "SELL" and len(payload.get("media_ids") or []) < 2 and is_collection_ready(payload):
-                            reply = t(lang, "photos")
-                        else:
-                            reply = t(lang, "unclear")
-            else:
-                response_type = "ASK_QUESTION"
-                reply = t(lang, "intent")
+                    reply = t(lang, "intent")
 
         else:
             response_type = "ASK_QUESTION"
-            payload_now = _payload(conv)
-            if not payload_now.get("intent"):
+            if not payload.get("intent"):
                 try:
                     from .free_chat import free_chat_enabled, free_chat_reply, has_business_context
 
-                    if free_chat_enabled(db) and not has_business_context(payload_now):
+                    if free_chat_enabled(db) and not has_business_context(payload):
                         reply = free_chat_reply(db, conv, msg, lang, media_note)
                         response_type = "FREE_CHAT"
                     else:
-                        reply = build_next_question(payload_now, lang) or t(lang, "greet")
+                        reply = build_next_question(payload, lang) or t(lang, "greet")
                 except Exception:
                     log.exception("free_chat fallback failed")
-                    reply = build_next_question(payload_now, lang) or t(lang, "greet")
+                    reply = build_next_question(payload, lang) or t(lang, "greet")
             else:
-                reply = build_next_question(payload_now, lang) or t(lang, "greet")
+                reply = build_next_question(payload, lang) or t(lang, "greet")
 
     except Exception:
         log.exception("chat_memory handle_message failed")
-        _set_rm_state(_payload(conv), "ERROR_RECOVERY")
-        _write_payload(conv, _payload(conv))
+        try:
+            err_payload = _payload(conv)
+            _set_rm_state(err_payload, "ERROR_RECOVERY")
+            _write_payload(conv, err_payload)
+        except Exception:
+            log.exception("failed to persist ERROR_RECOVERY state")
         reply = t(lang, "unclear")
         response_type = "ERROR_MESSAGE"
 
@@ -1022,8 +1124,4 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
         pass
 
     reply = (reply or t(lang, "saving")).strip()
-    # Never claim live without backend URL
-    if re.search(r"\blive\b", reply, re.I) and "http" not in reply and response_type != "LISTING_APPROVED":
-        if "approve" not in reply.lower() and "लिस्टिंग" not in reply:
-            pass
-    return reply[:1200]
+    return _safe_truncate(reply)

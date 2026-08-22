@@ -363,7 +363,7 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
                 conv.state = "BUY_DATA_COLLECTION"
         # Data Filter quality gate — normalize/validate without inventing values
         try:
-            from .data_filter import apply_filter_to_payload, filter_payload
+            from .data_filteration import apply_filter_to_payload, filter_payload
 
             apply_filter_to_payload(payload)
             fr = filter_payload(payload)
@@ -471,13 +471,13 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
         return {"ok": True, "verified": True, "profile_id": user.id, "created": created}
 
     if name == "validate_listing_data":
-        from .data_filter import filter_memory
+        from .data_filteration import filter_memory
 
         result = filter_memory(db, conv)
         return result.as_dict()
 
     if name == "submit_for_review":
-        from .data_filter import final_validation
+        from .data_filteration import final_validation
         from .data_push import push_listing
 
         gate = final_validation(db, conv)

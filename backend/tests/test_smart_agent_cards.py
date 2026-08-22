@@ -154,11 +154,19 @@ def test_account_filter_types():
     v = verify_account(db, "9000000002")
     assert v.account_type == "office" and v.can_post and v.eligibility == "ELIGIBLE"
 
-    u2 = User(name="Free", mobile="9000000003", role="user")
+    u2 = User(name="Free", mobile="9000000003", role="user", account_ready=True)
     db.add(u2)
     db.flush()
     v = verify_account(db, "9000000003")
     assert v.account_type == "free" and v.can_post and v.eligibility == "ELIGIBLE"
+
+    # Free user without onboarding must NOT be eligible.
+    u2b = User(name="FreeNotReady", mobile="9000000013", role="user")
+    db.add(u2b)
+    db.flush()
+    v = verify_account(db, "9000000013")
+    assert v.account_type == "free" and v.can_post is False and v.eligibility == "NOT_ELIGIBLE"
+    assert v.reason == "FREE_NOT_ONBOARDED"
 
     u3 = User(name="Token", mobile="9000000004", role="token")
     st = InfraDealerAccountState(mobile="9000000004", account_status="ACCOUNT_FOUND", meta_json='{"credits":0}')

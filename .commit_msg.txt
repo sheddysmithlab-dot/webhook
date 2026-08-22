@@ -1,0 +1,13 @@
+refactor: merge data_filter into data_filteration + harden error handling
+
+- Delete data_filter.py shim; consolidate into single data_filteration.py
+- Update all imports (orchestrator, tools, data_push, tests) to use data_filteration
+- Add top-level import json; remove lazy local _json imports
+- Fix 2 broad except handlers → specific exceptions with logging
+- Add 19 new unit tests covering validate_ranges, validate_cross_fields,
+  validate_field_types, calculate_confidence, calculate_quality_score,
+  check_master_data, check_duplicates, build_canonical_listing,
+  resolve_category, build_missing_fields
+- Include previously uncommitted AI improvements (account_filter conflict
+  detection, chat_memory workflow updates, orchestrator eligibility gate,
+  data_push blocked-account checks, i18n additions)

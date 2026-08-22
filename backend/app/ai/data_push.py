@@ -706,10 +706,28 @@ def handle_failure(payload: dict, *, retry: bool, error_code: str, message: str)
 
 def push_listing(db: Session, conv: AiConversation) -> PushResult:
     """Submit confirmed draft to Admin via InfraDealer integration (idempotent)."""
-    from .data_filter import final_validation
+    from .data_filteration import final_validation
     from .tools import _draft_for, _payload, _write_payload
 
     payload = _payload(conv)
+
+    # Eligibility gate — block submission for blocked / not-eligible accounts.
+    if str(payload.get("master_workflow_state") or "") == "INVALID_IDENTITY":
+        _audit(db, conv, "data_push_blocked", {"reason": "BLOCKED_ACCOUNT"})
+        return PushResult(
+            ok=False,
+            status="SUBMISSION_BLOCKED",
+            reason_code="BLOCKED_ACCOUNT",
+            message="Account is blocked — submission refused.",
+        )
+    if payload.get("account_gate") == "ELIGIBILITY_BLOCKED" or str(payload.get("account_eligibility") or "") == "NOT_ELIGIBLE":
+        _audit(db, conv, "data_push_blocked", {"reason": "ACCOUNT_NOT_ELIGIBLE"})
+        return PushResult(
+            ok=False,
+            status="SUBMISSION_BLOCKED",
+            reason_code="ACCOUNT_NOT_ELIGIBLE",
+            message="Account is not eligible to post — submission refused.",
+        )
 
     # Gate: confirmation + version + safety
     ok, reason = validate_submission(payload, conv)

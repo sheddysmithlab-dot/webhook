@@ -85,6 +85,8 @@ EVENT_TYPES = {
     "USER_MESSAGE_RECEIVED",
     "IDENTITY_RESOLVED",
     "ACCOUNT_NOT_FOUND",
+    "ACCOUNT_BLOCKED",
+    "ACCOUNT_NOT_ELIGIBLE",
     "ACCOUNT_CREATED",
     "ACCOUNT_VERIFIED",
     "INTENT_DETECTED",
@@ -300,27 +302,48 @@ def sync_master_from_rm(db: Session, conv: AiConversation) -> str:
 
 
 def run_account_filter(db: Session, conv: AiConversation, request: dict) -> dict:
-    from .account_filter import resolve_identity, sync_conversation_account
+    from .account_filter import normalize_phone, resolve_identity, sync_conversation_account
 
-    sync_conversation_account(db, conv)
+    verdict = sync_conversation_account(db, conv)
     resolved = resolve_identity(
         db,
         conv,
         request_id=str(request.get("request_id") or ""),
         event_id=str(request.get("correlation_id") or ""),
+        verdict=verdict,
     )
     payload = _payload(conv)
     ensure_correlation(payload, conv)
     payload["account_context"] = resolved.get("account_context_compact") or payload.get("account_context")
-    if resolved.get("account", {}).get("found"):
-        commit_workflow_state(db, conv, "IDENTITY_RESOLVED", source_agent="account_filter")
-        emit_event(db, conv, "IDENTITY_RESOLVED", source_agent="account_filter", detail={
-            "eligibility": resolved.get("account", {}).get("eligibility"),
-            "type": resolved.get("account", {}).get("type"),
+
+    account = resolved.get("account", {})
+    security = resolved.get("security", {})
+    blocked = bool(security.get("blocked"))
+    found = bool(account.get("found"))
+    eligible = bool(account.get("can_post"))
+
+    if blocked:
+        commit_workflow_state(db, conv, "INVALID_IDENTITY", source_agent="account_filter")
+        emit_event(db, conv, "ACCOUNT_BLOCKED", source_agent="account_filter", detail={
+            "mobile": normalize_phone(conv.mobile),
         })
-    else:
+    elif not found:
         commit_workflow_state(db, conv, "ACCOUNT_CREATION_REQUIRED", source_agent="account_filter")
         emit_event(db, conv, "ACCOUNT_NOT_FOUND", source_agent="account_filter")
+    elif not eligible:
+        # Found but not eligible to post — gate the listing flow here.
+        commit_workflow_state(db, conv, "IDENTITY_RESOLVED", source_agent="account_filter")
+        emit_event(db, conv, "ACCOUNT_NOT_ELIGIBLE", source_agent="account_filter", detail={
+            "eligibility": account.get("eligibility"),
+            "type": account.get("type"),
+            "reason": resolved.get("verdict", {}).get("reason"),
+        })
+    else:
+        commit_workflow_state(db, conv, "IDENTITY_RESOLVED", source_agent="account_filter")
+        emit_event(db, conv, "IDENTITY_RESOLVED", source_agent="account_filter", detail={
+            "eligibility": account.get("eligibility"),
+            "type": account.get("type"),
+        })
     _write_payload(conv, payload)
     return handshake_response(
         request,
@@ -332,7 +355,7 @@ def run_account_filter(db: Session, conv: AiConversation, request: dict) -> dict
 
 
 def run_data_filter(db: Session, conv: AiConversation, request: dict) -> dict:
-    from .data_filter import filter_memory
+    from .data_filteration import filter_memory
 
     emit_event(db, conv, "DATA_FILTER_REQUESTED", source_agent="orchestrator")
     commit_workflow_state(db, conv, "DATA_VALIDATION", source_agent="Data_filter")
@@ -505,6 +528,25 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     except Exception:
         log.exception("account_filter failed — continuing to chat_memory")
         emit_event(db, conv, "SYSTEM_ERROR", source_agent="account_filter", detail={"stage": "identity"})
+
+    # Eligibility gate — block listing flow for blocked / not-eligible accounts.
+    af_payload = _payload(conv)
+    af_state = str(af_payload.get("master_workflow_state") or "")
+    af_eligibility = str(af_payload.get("account_eligibility") or "")
+    if af_state == "INVALID_IDENTITY":
+        # Blocked number — refuse and stop the workflow.
+        from .account_filter import normalize_phone as _norm_phone
+        emit_event(db, conv, "HUMAN_HANDOFF_REQUIRED", source_agent="orchestrator", detail={
+            "reason": "BLOCKED_ACCOUNT",
+            "mobile": _norm_phone(conv.mobile),
+        })
+        reply = t(lang, "account_blocked")
+        sync_master_from_rm(db, conv)
+        return reply
+    if af_eligibility == "NOT_ELIGIBLE" and af_payload.get("account_type") not in ("", "missing"):
+        # Found but cannot post — let chat_memory explain, but do NOT advance to data_push.
+        af_payload["account_gate"] = "ELIGIBILITY_BLOCKED"
+        _write_payload(conv, af_payload)
 
     # Agent 2 — WHAT / WHAT NEXT?
     from .chat_memory import handle_message as rm_handle

@@ -32,6 +32,9 @@ log = logging.getLogger("infradealer.ai.account_filter")
 
 AGENT_VERSION = "account-filter-2.0"
 
+# Stale threshold for cached InfraDealer account state before forcing a webhook refresh.
+REMOTE_REFRESH_TTL_SECONDS = 300
+
 
 def normalize_phone(raw: str | None) -> str:
     """Canonical last-10 Indian mobile digits (channel identity storage)."""
@@ -82,6 +85,8 @@ class AccountVerdict:
     details: AccountDetails | None = None
     reason: str = ""
     buy_link: str = "https://infradealer.com"
+    conflict: bool = False  # local vs remote account_type mismatch
+    onboarded: bool = False  # local User.account_ready flag
 
     def as_dict(self) -> dict:
         return {
@@ -95,6 +100,8 @@ class AccountVerdict:
             "status": self.status,
             "reason": self.reason,
             "buy_link": self.buy_link,
+            "conflict": self.conflict,
+            "onboarded": self.onboarded,
             "agent_version": AGENT_VERSION,
         }
 
@@ -133,6 +140,7 @@ def verify_account(db: Session, mobile: str) -> AccountVerdict:
     if db.query(BlockedNumber).filter(BlockedNumber.mobile == phone).first():
         verdict.status = "BLOCKED"
         verdict.reason = "BLOCKED"
+        verdict.account_type = "blocked"
         return verdict
 
     user = db.query(User).filter(User.mobile == phone).first()
@@ -149,22 +157,37 @@ def verify_account(db: Session, mobile: str) -> AccountVerdict:
         verdict.reason = "ACCOUNT_NOT_FOUND"
         return verdict
 
+    local_type = "missing"
     if user:
         verdict.found = True
         verdict.account_id = user.id
         verdict.name = user.name or ""
+        verdict.onboarded = bool(user.account_ready)
         verdict.status = "ACTIVE" if user.account_ready else "FOUND"
-        atype = _role_to_type(user.role)
+        local_type = _role_to_type(user.role)
     else:
         verdict.found = bool(state and (state.infradealer_user_id or state.account_status))
         verdict.account_id = state.infradealer_user_id if state else None
         verdict.name = str(meta.get("name") or "")
+        verdict.onboarded = bool(state and state.account_status in {"ACCOUNT_FOUND", "ACCOUNT_EXISTS", "VERIFIED"})
         verdict.status = (state.account_status if state else "NOT_FOUND") or "NOT_FOUND"
-        atype = _role_to_type(remote_type) if remote_type else "missing"
+        local_type = _role_to_type(remote_type) if remote_type else "missing"
 
-    # Prefer remote account_type when present (webhook truth)
+    # Conflict detection: local vs remote account_type disagree (excluding unknowns)
+    if (
+        remote_type
+        and remote_type not in {"missing", "user"}
+        and local_type not in {"missing"}
+        and remote_type != local_type
+        and remote_type != "user"
+    ):
+        verdict.conflict = True
+
+    # Prefer remote account_type when present (webhook truth) unless conflict unresolved
     if remote_type in {"token", "broker", "office", "free", "user"}:
         atype = "free" if remote_type == "user" else remote_type
+    else:
+        atype = local_type
 
     verdict.account_type = atype if atype != "missing" or user else "missing"
 
@@ -173,9 +196,10 @@ def verify_account(db: Session, mobile: str) -> AccountVerdict:
         verdict.eligibility = "ELIGIBLE"
         verdict.reason = "OFFICE"
     elif verdict.account_type == "free":
-        verdict.can_post = True
-        verdict.eligibility = "ELIGIBLE"
-        verdict.reason = "FREE_USER"
+        # Free users must have completed onboarding (account_ready)
+        verdict.can_post = bool(verdict.onboarded)
+        verdict.eligibility = "ELIGIBLE" if verdict.can_post else "NOT_ELIGIBLE"
+        verdict.reason = "FREE_USER" if verdict.can_post else "FREE_NOT_ONBOARDED"
     elif verdict.account_type == "token":
         credits = meta.get("credits")
         try:
@@ -335,20 +359,70 @@ def connect_webhook_account(
     )
 
 
+def _remote_state_age_seconds(state: InfraDealerAccountState | None) -> float:
+    """Seconds since the InfraDealer account state was last updated."""
+    if not state or not state.updated_at:
+        return float("inf")
+    from datetime import datetime, timezone
+
+    updated = state.updated_at
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - updated).total_seconds()
+
+
+def refresh_account_if_stale(
+    db: Session,
+    conv: AiConversation,
+    *,
+    force: bool = False,
+) -> InfraDealerAccountState | None:
+    """Best-effort remote refresh when cached InfraDealer state is older than TTL."""
+    phone = normalize_phone(conv.mobile)
+    if not phone:
+        return None
+    state = (
+        db.query(InfraDealerAccountState)
+        .filter(InfraDealerAccountState.mobile == phone)
+        .first()
+    )
+    if force or _remote_state_age_seconds(state) >= REMOTE_REFRESH_TTL_SECONDS:
+        return connect_webhook_account(db, conv, refresh=True)
+    return state
+
+
 def sync_conversation_account(db: Session, conv: AiConversation) -> AccountVerdict:
     """Resolve identity + eligibility onto conversation payload (shared state)."""
     wa = collect_whatsapp_user(db, conv, persist=True)
     verdict = verify_account(db, conv.mobile)
     verdict.wa_user = wa
+
+    # If eligibility failed on a token/broker account whose remote state may be stale,
+    # force a best-effort refresh and re-evaluate before persisting a hard NOT_ELIGIBLE.
+    if (
+        verdict.eligibility == "NOT_ELIGIBLE"
+        and verdict.account_type in {"token", "broker"}
+        and verdict.reason in {"TOKEN_NO_CREDITS", "BROKER_INACTIVE"}
+    ):
+        try:
+            refresh_account_if_stale(db, conv, force=True)
+            verdict = verify_account(db, conv.mobile)
+            verdict.wa_user = wa
+        except Exception:
+            log.exception("stale refresh failed mobile=***%s", normalize_phone(conv.mobile)[-4:])
+
     details = read_account_details(db, conv.mobile)
     verdict.details = details
 
+    risk_level = "HIGH" if verdict.status == "BLOCKED" else ("MEDIUM" if verdict.conflict else "LOW")
     payload = _payload(conv)
-    payload["account_type"] = verdict.account_type
+    payload["account_type"] = verdict.account_type.upper()
     payload["account_label"] = verdict.account_type
     payload["account_can_post"] = verdict.can_post
     payload["account_eligibility"] = verdict.eligibility
     payload["account_reason"] = verdict.reason
+    payload["account_conflict"] = verdict.conflict
+    payload["account_onboarded"] = verdict.onboarded
     payload["account_buy_link"] = verdict.buy_link
     if details.infradealer_user_id:
         payload["infradealer_user_id"] = details.infradealer_user_id
@@ -376,6 +450,7 @@ def sync_conversation_account(db: Session, conv: AiConversation) -> AccountVerdi
             "status": verdict.status,
             "eligibility": verdict.eligibility,
             "can_post": verdict.can_post,
+            "onboarded": verdict.onboarded,
         },
         "workflow": {
             "workflow_id": payload["workflow_id"],
@@ -383,7 +458,7 @@ def sync_conversation_account(db: Session, conv: AiConversation) -> AccountVerdi
             "conversation_id": conv.conversation_id,
             "draft_id": conv.draft_id,
         },
-        "security": {"conflict": False, "risk_level": "LOW"},
+        "security": {"conflict": verdict.conflict, "risk_level": risk_level},
     }
     _write_payload(conv, payload)
     return verdict
@@ -395,14 +470,20 @@ def resolve_identity(
     *,
     request_id: str = "",
     event_id: str = "",
+    verdict: AccountVerdict | None = None,
 ) -> dict:
-    """Full account_filter output contract for orchestrator / chat_memory."""
+    """Full account_filter output contract for orchestrator / chat_memory.
+
+    Pass ``verdict`` from ``sync_conversation_account`` to avoid re-querying the DB
+    when the two are called back-to-back (orchestrator hot path).
+    """
     rid = request_id or f"REQ-{uuid.uuid4().hex[:12]}"
     eid = event_id or f"EVT-{uuid.uuid4().hex[:10]}"
-    wa = collect_whatsapp_user(db, conv, persist=True)
-    verdict = verify_account(db, conv.mobile)
+    if verdict is None:
+        verdict = sync_conversation_account(db, conv)
+    wa = verdict.wa_user or collect_whatsapp_user(db, conv, persist=True)
     verdict.wa_user = wa
-    details = read_account_details(db, conv.mobile)
+    details = verdict.details or read_account_details(db, conv.mobile)
 
     drafts = (
         db.query(AiListingDraft)
@@ -441,6 +522,7 @@ def resolve_identity(
             "status": verdict.status,
             "eligibility": verdict.eligibility,
             "can_post": verdict.can_post,
+            "onboarded": verdict.onboarded,
             "infradealer_user_id": details.infradealer_user_id,
         },
         "relationship": {
@@ -456,8 +538,8 @@ def resolve_identity(
             "draft_id": conv.draft_id,
         },
         "security": {
-            "conflict": False,
-            "risk_level": "HIGH" if blocked else "LOW",
+            "conflict": verdict.conflict,
+            "risk_level": "HIGH" if blocked else ("MEDIUM" if verdict.conflict else "LOW"),
             "blocked": blocked,
         },
         "next_action": {
@@ -475,15 +557,18 @@ def resolve_identity(
         "security": out["security"],
     }
 
+    event_type = "IDENTITY_RESOLVED" if found else ("ACCOUNT_BLOCKED" if blocked else "ACCOUNT_NOT_FOUND")
     db.add(AiEvent(
         wamid=conv.last_wamid or "",
         mobile=conv.mobile,
-        event_type="IDENTITY_RESOLVED" if found else "ACCOUNT_NOT_FOUND",
+        event_type=event_type,
         detail=json.dumps({
             "request_id": rid,
             "event_id": eid,
             "eligibility": verdict.eligibility,
             "account_type": verdict.account_type,
+            "conflict": verdict.conflict,
+            "blocked": blocked,
         }, ensure_ascii=False)[:2000],
     ))
     return out

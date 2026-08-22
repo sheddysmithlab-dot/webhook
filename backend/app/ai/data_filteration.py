@@ -9,6 +9,7 @@ Does NOT chat with users, publish listings, or invent missing values.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -1221,10 +1222,10 @@ def filter_memory(db: Session, conv: AiConversation) -> FilterResult:
     try:
         meta = {}
         if draft.confirmed_json:
-            import json as _json
-            meta = _json.loads(draft.confirmed_json or "{}") if isinstance(draft.confirmed_json, str) else {}
+            meta = json.loads(draft.confirmed_json or "{}") if isinstance(draft.confirmed_json, str) else {}
         draft_version = int((meta or {}).get("_draft_version") or 1) + 1
-    except Exception:
+    except (json.JSONDecodeError, TypeError, ValueError, AttributeError) as exc:
+        log.warning("data_filter draft_version parse failed: %s", exc)
         draft_version = 1
 
     result = filter_payload(
@@ -1281,10 +1282,9 @@ def filter_memory(db: Session, conv: AiConversation) -> FilterResult:
     if result.ready and draft.status not in {"POSTED", "READY_FOR_REVIEW", "CONFIRMED"}:
         draft.status = "COLLECTING"
     try:
-        import json as _json
-        draft.confirmed_json = _json.dumps(summary, ensure_ascii=False)
-    except Exception:
-        pass
+        draft.confirmed_json = json.dumps(summary, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        log.warning("data_filter confirmed_json dump failed: %s", exc)
 
     # Attach listing object on result.data for callers
     if "vehicle" not in result.data:

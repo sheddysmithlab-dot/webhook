@@ -11,12 +11,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
-from app.models import AiConversation, Chat, Contact, InfraDealerAccountState, User
+from app.models import AiConversation, BlockedNumber, Chat, Contact, InfraDealerAccountState, User
 from app.ai.account_filter import (
     apply_remote_account,
     collect_whatsapp_user,
     normalize_phone,
     read_account_details,
+    resolve_identity,
     sync_conversation_account,
     verify_account,
 )
@@ -56,10 +57,16 @@ def test_account_filter_types():
     v = verify_account(db, "9000000002")
     assert v.account_type == "office" and v.can_post and v.eligibility == "ELIGIBLE"
 
-    db.add(User(name="Free", mobile="9000000003", role="user"))
+    db.add(User(name="Free", mobile="9000000003", role="user", account_ready=True))
     db.flush()
     v = verify_account(db, "9000000003")
     assert v.account_type == "free" and v.can_post and v.eligibility == "ELIGIBLE"
+
+    # Free user without onboarding must NOT be eligible.
+    db.add(User(name="FreeNotReady", mobile="9000000013", role="user"))
+    db.flush()
+    v = verify_account(db, "9000000013")
+    assert v.account_type == "free" and v.can_post is False and v.eligibility == "NOT_ELIGIBLE"
 
     db.add(User(name="Token", mobile="9000000004", role="token"))
     db.add(InfraDealerAccountState(mobile="9000000004", account_status="ACCOUNT_FOUND", meta_json='{"credits":0}'))
@@ -79,6 +86,70 @@ def test_account_filter_types():
     v = verify_account(db, "9000000005")
     assert v.account_type == "broker" and v.can_post and v.eligibility == "ELIGIBLE"
     print("OK account filter types")
+
+
+def test_blocked_account_path():
+    """Blocked numbers must be refused and never reach ACCOUNT_CREATION_REQUIRED."""
+    db = _session()
+    db.add(BlockedNumber(mobile="9000000099"))
+    db.flush()
+    v = verify_account(db, "9000000099")
+    assert v.status == "BLOCKED"
+    assert v.account_type == "blocked"
+    assert v.eligibility == "NOT_ELIGIBLE"
+    assert v.can_post is False
+    assert v.reason == "BLOCKED"
+
+    conv = AiConversation(mobile="9000000099", conversation_id="CONV_BLK", state="NEW", payload_json="{}")
+    db.add(conv)
+    db.flush()
+    verdict = sync_conversation_account(db, conv)
+    assert verdict.status == "BLOCKED"
+    resolved = resolve_identity(db, conv, verdict=verdict)
+    assert resolved["security"]["blocked"] is True
+    assert resolved["security"]["risk_level"] == "HIGH"
+    assert resolved["next_action"]["state"] == "BLOCKED_ACCOUNT"
+    print("OK blocked account path")
+
+
+def test_local_remote_type_conflict():
+    """Local role disagreeing with remote account_type must flag a conflict."""
+    db = _session()
+    db.add(User(name="BrokerLocal", mobile="9000000077", role="broker", account_ready=True))
+    db.add(InfraDealerAccountState(
+        mobile="9000000077",
+        account_status="ACCOUNT_FOUND",
+        meta_json='{"account_type":"token","credits":5}',
+    ))
+    db.flush()
+    v = verify_account(db, "9000000077")
+    # Remote token wins for type, but conflict flag must be set.
+    assert v.account_type == "token"
+    assert v.conflict is True
+    assert v.eligibility == "ELIGIBLE"  # token has credits
+    print("OK local/remote type conflict")
+
+
+def test_stale_token_refresh_recheck():
+    """NOT_ELIGIBLE token with stale state triggers refresh + recheck in sync."""
+    db = _session()
+    db.add(User(name="TokenUser", mobile="9000000088", role="token", account_ready=True))
+    db.add(InfraDealerAccountState(
+        mobile="9000000088",
+        account_status="ACCOUNT_FOUND",
+        meta_json='{"account_type":"token","credits":0}',
+    ))
+    db.flush()
+    conv = AiConversation(mobile="9000000088", conversation_id="CONV_STALE", state="NEW", payload_json="{}")
+    db.add(conv)
+    db.flush()
+    # sync will attempt a refresh (best-effort); without a real webhook it stays NOT_ELIGIBLE,
+    # but the path must not raise and must persist the verdict.
+    verdict = sync_conversation_account(db, conv)
+    assert verdict.account_type == "token"
+    assert verdict.eligibility == "NOT_ELIGIBLE"
+    assert _payload(conv).get("account_eligibility") == "NOT_ELIGIBLE"
+    print("OK stale token refresh recheck")
 
 
 def test_whatsapp_collect_and_remote():
@@ -175,6 +246,9 @@ def test_orchestrator_handle_message_chain():
 if __name__ == "__main__":
     test_phone_normalize()
     test_account_filter_types()
+    test_blocked_account_path()
+    test_local_remote_type_conflict()
+    test_stale_token_refresh_recheck()
     test_whatsapp_collect_and_remote()
     test_orchestrator_correlation_and_handshake()
     test_orchestrator_handle_message_chain()
