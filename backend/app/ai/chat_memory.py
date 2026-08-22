@@ -332,6 +332,7 @@ def collect_message(db: Session, conv: AiConversation, text: str) -> dict:
     """Harvest a user turn into structured fields via Data Filter extract + tools."""
     msg = (text or "").strip()
     low = msg.lower()
+    payload = _payload(conv)
     seed: dict = {}
     if _SELL.search(low) and not _BUY.search(low):
         seed["intent"] = "SELL"
@@ -342,7 +343,42 @@ def collect_message(db: Session, conv: AiConversation, text: str) -> dict:
     if cat:
         seed["category"] = cat
 
+    # Keep existing place fields so later turns (price/year/km) cannot wipe location
+    for key in ("city", "state", "location"):
+        if payload.get(key) not in (None, ""):
+            seed[key] = payload.get(key)
+
     extracted = extract_fields([{"text": msg, "source": "USER"}], seed)
+
+    # Explicit place in this turn can override seeded location
+    named_city = _fuzzy_city_safe(msg)
+    named_state = extract_state_safe(msg)
+    loc_intent = bool(
+        re.search(
+            r"\b(location|city|state|rajya|jagah|place|me\s+hai|mein\s+hai|"
+            r"badlo|change|update)\b|लोकेशन|शहर|राज्य|जगह",
+            low,
+        )
+    ) or bool(named_city or named_state)
+    if loc_intent and (named_city or named_state):
+        if named_city:
+            extracted["city"] = named_city
+            extracted["location"] = named_city
+            st = named_state
+            if not st:
+                try:
+                    from .extract import infer_state_from_city
+
+                    st = infer_state_from_city(named_city)
+                except Exception:
+                    st = None
+            if st:
+                extracted["state"] = st
+        elif named_state:
+            extracted["state"] = named_state
+            # Don't invent a city from state-only correction
+            if not extracted.get("city"):
+                extracted["location"] = named_state
 
     if not extracted.get("brand"):
         m = re.search(
@@ -380,6 +416,19 @@ def collect_message(db: Session, conv: AiConversation, text: str) -> dict:
     if "km" in veh and "running_km" not in veh:
         veh["running_km"] = veh.pop("km")
 
+    existing_place = any(payload.get(k) not in (None, "") for k in ("city", "state", "location"))
+    if existing_place and not loc_intent:
+        for key in ("city", "state", "location"):
+            veh.pop(key, None)
+    else:
+        # Drop non-place garbage even on first fill
+        from .data_filteration import _looks_like_place
+
+        for key in ("city", "state", "location"):
+            val = veh.get(key)
+            if val and not _looks_like_place(str(val)) and not extract_state_safe(str(val)) and not _fuzzy_city_safe(str(val)):
+                veh.pop(key, None)
+
     if veh:
         if "expected_price" in veh and isinstance(veh["expected_price"], (int, float)):
             if re.search(r"lakh|lac|crore", low):
@@ -399,6 +448,24 @@ def collect_message(db: Session, conv: AiConversation, text: str) -> dict:
             payload.setdefault("confidence", {})["year"] = "UNCERTAIN"
             _write_payload(conv, payload)
     return _payload(conv)
+
+
+def _fuzzy_city_safe(text: str) -> str | None:
+    try:
+        from .extract import _fuzzy_city
+
+        return _fuzzy_city(text)
+    except Exception:
+        return None
+
+
+def extract_state_safe(text: str) -> str | None:
+    try:
+        from .extract import extract_state
+
+        return extract_state(text)
+    except Exception:
+        return None
 
 
 def build_data_filter_payload(conv: AiConversation, payload: dict) -> dict:

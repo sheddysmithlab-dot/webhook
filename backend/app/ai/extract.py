@@ -27,37 +27,28 @@ def extract_role(text: str) -> str | None:
 
 
 def extract_state(text: str) -> str | None:
-    low = (text or "").lower()
-    states = {
-        "madhya pradesh": "Madhya Pradesh",
-        "mp": "Madhya Pradesh",
-        "maharashtra": "Maharashtra",
-        "rajasthan": "Rajasthan",
-        "gujarat": "Gujarat",
-        "delhi": "Delhi",
-        "up": "Uttar Pradesh",
-        "uttar pradesh": "Uttar Pradesh",
-        "karnataka": "Karnataka",
-        "telangana": "Telangana",
-        "tamil nadu": "Tamil Nadu",
-        "west bengal": "West Bengal",
-    }
-    for cue, label in sorted(states.items(), key=lambda x: len(x[0]), reverse=True):
-        if re.search(rf"(?<![a-z]){re.escape(cue)}(?![a-z])", low):
-            return label
-    return None
+    """Detect Indian state names. Avoid false hits like 'price up' → Uttar Pradesh."""
+    from .data_filteration import _match_state_name
+
+    return _match_state_name(text or "")
 
 
 def infer_state_from_city(city: str) -> str | None:
     mapping = {
         "indore": "Madhya Pradesh",
         "bhopal": "Madhya Pradesh",
+        "ujjain": "Madhya Pradesh",
+        "jabalpur": "Madhya Pradesh",
+        "gwalior": "Madhya Pradesh",
         "mumbai": "Maharashtra",
         "pune": "Maharashtra",
+        "nagpur": "Maharashtra",
         "jaipur": "Rajasthan",
         "ahmedabad": "Gujarat",
+        "surat": "Gujarat",
         "delhi": "Delhi",
         "lucknow": "Uttar Pradesh",
+        "kanpur": "Uttar Pradesh",
         "hyderabad": "Telangana",
         "chennai": "Tamil Nadu",
         "bengaluru": "Karnataka",
@@ -69,19 +60,20 @@ def infer_state_from_city(city: str) -> str | None:
 
 def _fuzzy_city(text: str) -> str | None:
     cities = (
-        "Indore", "Bhopal", "Mumbai", "Pune", "Jaipur", "Ahmedabad",
-        "Delhi", "Lucknow", "Hyderabad", "Chennai", "Bengaluru", "Kolkata",
+        "Indore", "Bhopal", "Ujjain", "Jabalpur", "Gwalior",
+        "Mumbai", "Pune", "Nagpur", "Jaipur", "Ahmedabad", "Surat",
+        "Delhi", "Lucknow", "Kanpur", "Hyderabad", "Chennai", "Bengaluru", "Kolkata",
     )
     low = (text or "").lower()
     for city in cities:
-        if city.lower() in low:
+        if re.search(rf"(?<![a-z]){re.escape(city.lower())}(?![a-z])", low):
             return city
     return None
 
 
 def extract_from_text(text: str, extra_reps=None) -> dict:
     """Minimal NL harvest used by legacy engine paths."""
-    from .data_filteration import extract_fields, resolve_category
+    from .data_filteration import extract_fields, resolve_category, _looks_like_place
 
     out = extract_fields([{"text": text or "", "source": "USER"}], {})
     cat = resolve_category(text)
@@ -90,8 +82,15 @@ def extract_from_text(text: str, extra_reps=None) -> dict:
     st = extract_state(text or "")
     if st:
         out["state"] = st
+        if not out.get("location") and _looks_like_place(text or ""):
+            out["location"] = st
     city = _fuzzy_city(text or "")
     if city:
         out["city"] = city
         out["location"] = city
+    # Drop garbage location/state left by older extract paths
+    for key in ("location", "state", "city"):
+        val = out.get(key)
+        if val and not _looks_like_place(str(val)) and not extract_state(str(val)) and not _fuzzy_city(str(val)):
+            out.pop(key, None)
     return out

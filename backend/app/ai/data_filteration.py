@@ -294,6 +294,9 @@ def normalize_year(raw: Any) -> dict | None:
         if year > _current_year():
             status = "INVALID"
         return {"value": year, "status": status, "original": text}
+    # Don't treat price amounts ("18 lakh") as two-digit model years
+    if re.search(r"lakh|lac|crore|\bcr\b|₹|rs\.?", text, re.I):
+        return None
     m2 = re.search(r"\b(\d{2})\s*(?:model|ka|की|का)?\b", text, re.I)
     if m2 and not re.search(r"(?:19|20)\d{2}", text):
         yy = int(m2.group(1))
@@ -320,6 +323,80 @@ def normalize_brand_model(brand: Any = None, model: Any = None) -> dict:
     return out
 
 
+_STATE_ALIASES = {
+    "madhya pradesh": "Madhya Pradesh",
+    "m.p.": "Madhya Pradesh",
+    "m.p": "Madhya Pradesh",
+    "mp": "Madhya Pradesh",
+    "maharashtra": "Maharashtra",
+    "mh": "Maharashtra",
+    "rajasthan": "Rajasthan",
+    "rj": "Rajasthan",
+    "gujarat": "Gujarat",
+    "gj": "Gujarat",
+    "delhi": "Delhi",
+    "ncr": "Delhi",
+    "uttar pradesh": "Uttar Pradesh",
+    "u.p.": "Uttar Pradesh",
+    "u.p": "Uttar Pradesh",
+    "up": "Uttar Pradesh",
+    "karnataka": "Karnataka",
+    "telangana": "Telangana",
+    "tamil nadu": "Tamil Nadu",
+    "west bengal": "West Bengal",
+    "bihar": "Bihar",
+    "chhattisgarh": "Chhattisgarh",
+    "haryana": "Haryana",
+    "punjab": "Punjab",
+    "मध्य प्रदेश": "Madhya Pradesh",
+    "मप्र": "Madhya Pradesh",
+    "महाराष्ट्र": "Maharashtra",
+    "राजस्थान": "Rajasthan",
+    "गुजरात": "Gujarat",
+    "दिल्ली": "Delhi",
+    "उत्तर प्रदेश": "Uttar Pradesh",
+}
+
+
+def _looks_like_place(text: str) -> bool:
+    """Reject prices, years, vehicle dumps, and long sentences as locations."""
+    raw = (text or "").strip()
+    if not raw or len(raw) > 48:
+        return False
+    low = raw.lower()
+    if re.search(
+        r"lakh|lac|crore|\bcr\b|₹|rs\.?|\bkm\b|hour|hrs?|bech|sell|buy|kharid|"
+        r"\btata\b|\bjcb\b|\beicher\b|tipper|dumper|truck|photo|otp|password|"
+        r"model|price|rate|budget|year|saal",
+        low,
+    ):
+        return False
+    # Digits usually mean price/year/km — allow only sector/NH style
+    if re.search(r"\d", raw) and not re.search(r"(?:sector|sec\.?|phase|nh)\s*\d", low):
+        return False
+    if len(raw.split()) > 5:
+        return False
+    return True
+
+
+def _match_state_name(text: str) -> str | None:
+    low = (text or "").strip().lower()
+    if not low:
+        return None
+    for cue, label in sorted(_STATE_ALIASES.items(), key=lambda x: len(x[0]), reverse=True):
+        # Bare "up"/"mp"/"mh" only as whole token — still risky in "price up";
+        # require short place-like text for abbreviations.
+        if cue in {"up", "mp", "mh", "rj", "gj"}:
+            if not re.fullmatch(rf"{re.escape(cue)}", low) and not re.search(
+                rf"(?:state|location|city|rajya|in)\s+{re.escape(cue)}\b|\b{re.escape(cue)}\s+(?:state|me|mein)\b",
+                low,
+            ):
+                continue
+        if re.search(rf"(?<![a-z]){re.escape(cue)}(?![a-z])", low):
+            return label
+    return None
+
+
 def normalize_location(city: Any = None, state: Any = None, location: Any = None) -> dict:
     city_s = str(city or "").strip()
     state_s = str(state or "").strip()
@@ -329,19 +406,28 @@ def normalize_location(city: Any = None, state: Any = None, location: Any = None
     for cue, (c, s) in _CITY_STATE.items():
         if re.search(rf"(?<![a-z]){re.escape(cue)}(?![a-z])", low):
             return {"city": c, "state": s, "country": "India", "location": c}
+    known_state = _match_state_name(blob) or _match_state_name(state_s) or _match_state_name(loc_s)
     result: dict[str, Any] = {"country": "India"}
-    if city_s:
+    if city_s and _looks_like_place(city_s):
         result["city"] = city_s[:80]
-    if state_s:
-        result["state"] = state_s[:80]
-    elif loc_s and not city_s:
-        # loc may be state name
-        result["location"] = loc_s[:80]
-        result["state"] = loc_s[:80]
-    elif loc_s:
-        result["location"] = loc_s[:80]
-    if city_s and "city" not in result:
-        result["city"] = city_s[:80]
+        result["location"] = city_s[:80]
+    if state_s and (_looks_like_place(state_s) or _match_state_name(state_s)):
+        result["state"] = (_match_state_name(state_s) or state_s)[:80]
+    elif known_state:
+        result["state"] = known_state
+    if loc_s and _looks_like_place(loc_s):
+        # Free-text place only when it looks like a location (not a full chat turn)
+        if not result.get("city"):
+            result["city"] = loc_s[:80]
+        result["location"] = (result.get("city") or loc_s)[:80]
+        if not result.get("state"):
+            st = _match_state_name(loc_s)
+            if st:
+                result["state"] = st
+    elif loc_s and known_state and not result.get("city") and not result.get("location"):
+        # Explicit state-only answer ("Madhya Pradesh" / "MP")
+        result["state"] = known_state
+        result["location"] = known_state
     if not result.get("city") and not result.get("state") and not result.get("location"):
         return {}
     return result

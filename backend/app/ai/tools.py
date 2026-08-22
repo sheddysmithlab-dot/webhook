@@ -298,6 +298,27 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
                 continue
             if key == "state" and clean.lower() in {"hor", "he", "hai", "or", "and", "the", "yes", "han", "haan"}:
                 continue
+            if key in {"location", "city", "state"}:
+                from .data_filteration import _looks_like_place
+                from .extract import _fuzzy_city, extract_state
+
+                if (
+                    not _looks_like_place(clean)
+                    and not extract_state(clean)
+                    and not _fuzzy_city(clean)
+                ):
+                    continue
+                # Never overwrite a confirmed place with a different value unless
+                # this turn looks like an explicit place (already filtered above).
+                conf_map = payload.get("confidence") if isinstance(payload.get("confidence"), dict) else {}
+                prev = payload.get(key)
+                if (
+                    prev not in (None, "")
+                    and str(prev).strip().lower() != clean.lower()
+                    and conf_map.get(key) == "CONFIRMED_BY_CUSTOMER"
+                    and origin == "inferred"
+                ):
+                    continue
             if key == "condition" and (len(clean) > 80 or re.search(r"\b(nahi|नहीं|tata|jcb|1613)\b", clean, re.I)):
                 continue
             bucket[key] = clean
@@ -316,12 +337,14 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
             new_st = str(args.get("state") or "").strip()
             city = str(payload.get("city") or payload.get("location") or "").strip()
             city_st = infer_state_from_city(city) if city else None
-            if new_st and city_st and city_st != new_st:
-                payload["city"] = ""
-                if (payload.get("location") or "").strip().lower() == city.lower():
-                    payload["location"] = new_st
+            # Never wipe a known city just because a conflicting state arrived
+            if new_st and city_st and city_st != new_st and conf.get("city") == "CONFIRMED_BY_CUSTOMER":
+                payload["state"] = city_st
+                bucket["state"] = city_st
         if payload.get("location") and not payload.get("city"):
-            payload["city"] = payload["location"]
+            from .data_filteration import _looks_like_place
+            if _looks_like_place(str(payload.get("location") or "")):
+                payload["city"] = payload["location"]
         if payload.get("city") and not payload.get("state"):
             from .extract import infer_state_from_city
             inferred = infer_state_from_city(str(payload.get("city") or ""))

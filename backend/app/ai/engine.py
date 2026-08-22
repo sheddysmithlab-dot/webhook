@@ -530,22 +530,42 @@ def apply_followup(db, conv: AiConversation, text: str) -> None:
     loc_hit = key in {"location", "state"} or "location" in last_l or "kahan" in last_l or "khadi" in last_l or "state" in last_l
     loc_in_msg = bool(re.search(r"\b(location|state|city|rajya)\b|मध्य|प्रदेश|महाराष्ट्र", msg, re.I))
     if (loc_hit or (key.startswith("confirm") and loc_in_msg)) and len(msg.split()) <= 12:
+        from .data_filteration import _looks_like_place
         from .extract import _fuzzy_city, extract_state, infer_state_from_city
         st = extract_state(msg.lower()) or extract_state(msg)
         guess = _fuzzy_city(msg) or _fuzzy_city(msg.split()[0] if msg.split() else "")
         city = (guess or "") if guess else ""
         if not st and city:
             st = infer_state_from_city(city)
-        if st or city or (loc_hit and not payload.get("state")):
+        # Never treat price/year answers as a new location
+        if not city and not st and not _looks_like_place(msg):
+            pass
+        elif payload.get("city") or payload.get("location") or payload.get("state"):
+            # Location already known — only update on explicit place / loc question
+            if loc_hit and (city or st or (_looks_like_place(msg) and loc_in_msg)):
+                data = {"source": "customer"}
+                if st:
+                    data["state"] = st
+                if city:
+                    data["city"] = city.title() if city != "new delhi" else "New Delhi"
+                    data["location"] = data["city"]
+                elif loc_hit and _looks_like_place(msg) and not st:
+                    data["location"] = msg[:80]
+                    data["city"] = msg[:80]
+                if len(data) > 1:
+                    execute_tool(db, conv, "save_vehicle_data", data)
+        elif st or city or (loc_hit and not payload.get("state") and _looks_like_place(msg)):
             data = {"source": "customer"}
             if st:
                 data["state"] = st
             if city:
                 data["city"] = city.title() if city != "new delhi" else "New Delhi"
                 data["location"] = data["city"]
-            elif loc_hit and not st and not payload.get("state"):
+            elif loc_hit and not st and not payload.get("state") and _looks_like_place(msg):
                 data["state"] = msg[:80]
-            execute_tool(db, conv, "save_vehicle_data", data)
+                data["location"] = msg[:80]
+            if len(data) > 1:
+                execute_tool(db, conv, "save_vehicle_data", data)
     cat_hit = key == "category" or any(
         w in last_l
         for w in (
