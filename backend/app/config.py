@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     redis_url: str = ""
 
     # --- OTP via India DLT SMS (never WhatsApp) ---
-    # SMS_PROVIDER: log | msg91 | http
+    # SMS_PROVIDER: log | msg91 | http | textguru
     sms_provider: str = "log"
     sms_api_key: str = ""
     sms_api_url: str = ""
@@ -59,7 +59,22 @@ class Settings(BaseSettings):
     sms_dlt_template_id: str = ""
     sms_dlt_entity_id: str = ""
     # Must match DLT-registered template; use {otp} placeholder.
-    sms_otp_template: str = "Your InfraDealer OTP is {otp}. Valid for 5 minutes. Do not share with anyone."
+    sms_otp_template: str = (
+        "Your OTP for InfraDealer is {otp}. The OTP is valid for 10 minutes. "
+        "Please do not share this OTP with anyone. Regards, AREANS"
+    )
+    # TextGuru (same as api.infradealer.com OTP)
+    textguru_api_url: str = "https://www.textguru.in/api/v22.0/"
+    textguru_username: str = ""
+    textguru_password: str = ""
+    textguru_sender_id: str = "AREANS"
+    textguru_dlt_template_id: str = "1777178540657949209"
+    textguru_service: str = "OTP"
+    textguru_message_template: str = (
+        "Your OTP for InfraDealer is {OTP}. The OTP is valid for 10 minutes. "
+        "Please do not share this OTP with anyone. Regards, AREANS"
+    )
+    sms_enabled: bool = True
 
 
 settings = Settings()

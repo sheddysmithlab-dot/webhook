@@ -1,13 +1,16 @@
 """India DLT SMS delivery for OTP (never WhatsApp).
 
 Supports:
-  - msg91  — MSG91 Flow / SendOTP style
-  - http   — generic JSON/form POST (custom DLT gateway)
-  - log    — dev fallback (logs code; no SMS)
+  - textguru — InfraDealer production TextGuru v22.0 + DLT (preferred)
+  - msg91    — MSG91 Flow / SendOTP style
+  - http     — generic JSON/form POST (custom DLT gateway)
+  - log      — dev fallback (logs code; no SMS)
 
 Env (see config.py):
   SMS_PROVIDER, SMS_API_KEY, SMS_API_URL, SMS_SENDER_ID,
-  SMS_DLT_TEMPLATE_ID, SMS_DLT_ENTITY_ID, SMS_OTP_TEMPLATE
+  SMS_DLT_TEMPLATE_ID, SMS_DLT_ENTITY_ID, SMS_OTP_TEMPLATE,
+  TEXTGURU_USERNAME, TEXTGURU_PASSWORD, TEXTGURU_SENDER_ID,
+  TEXTGURU_DLT_TEMPLATE_ID, TEXTGURU_API_URL, TEXTGURU_MESSAGE_TEMPLATE
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -35,12 +39,22 @@ def _digits_msisdn(mobile: str) -> str:
     return d
 
 
+def _digits_10(mobile: str) -> str:
+    return re.sub(r"\D", "", mobile or "")[-10:]
+
+
 def _otp_message(code: str) -> str:
-    tmpl = (getattr(settings, "sms_otp_template", None) or "").strip()
+    tmpl = (
+        (getattr(settings, "textguru_message_template", None) or "").strip()
+        or (getattr(settings, "sms_otp_template", None) or "").strip()
+    )
     if tmpl:
         return tmpl.replace("{otp}", code).replace("{OTP}", code)
-    # Keep under typical DLT approved length; exact text must match registered template.
-    return f"Your InfraDealer OTP is {code}. Valid for 5 minutes. Do not share with anyone."
+    # Exact DLT-registered InfraDealer template (AREANS).
+    return (
+        f"Your OTP for InfraDealer is {code}. The OTP is valid for 10 minutes. "
+        "Please do not share this OTP with anyone. Regards, AREANS"
+    )
 
 
 def send_dlt_sms(mobile: str, code: str) -> str:
@@ -50,6 +64,10 @@ def send_dlt_sms(mobile: str, code: str) -> str:
     is configured; returns ``log`` when provider is ``log`` or unset in a way
     that allows local/dev without credentials.
     """
+    if getattr(settings, "sms_enabled", True) is False:
+        log.warning("SMS_ENABLED=false — OTP not sent mobile=***%s", (mobile or "")[-4:])
+        raise RuntimeError("SMS OTP disabled (SMS_ENABLED=false)")
+
     provider = (getattr(settings, "sms_provider", None) or "log").strip().lower()
     msisdn = _digits_msisdn(mobile)
     if len(msisdn) < 12:
@@ -59,12 +77,74 @@ def send_dlt_sms(mobile: str, code: str) -> str:
         log.info("OTP SMS (log-only) mobile=***%s code=%s", msisdn[-4:], code)
         return "log"
 
+    if provider in {"textguru", "stpl"}:
+        return _send_textguru(msisdn, code)
     if provider in {"msg91", "msg91_flow"}:
         return _send_msg91(msisdn, code)
     if provider in {"http", "generic", "dlt"}:
         return _send_http(msisdn, code)
 
-    raise RuntimeError(f"Unknown SMS_PROVIDER={provider!r} (use msg91|http|log)")
+    raise RuntimeError(f"Unknown SMS_PROVIDER={provider!r} (use textguru|msg91|http|log)")
+
+
+def _send_textguru(msisdn: str, code: str) -> str:
+    """TextGuru Developer API v22.0 — same as api.infradealer.com OTP."""
+    username = (getattr(settings, "textguru_username", None) or "").strip()
+    password = (getattr(settings, "textguru_password", None) or "").strip()
+    # Allow SMS_API_KEY as "username:password" fallback
+    if (not username or not password) and (getattr(settings, "sms_api_key", None) or "").strip():
+        raw = settings.sms_api_key.strip()
+        if ":" in raw:
+            username, password = raw.split(":", 1)
+    if not username or not password:
+        raise RuntimeError("TEXTGURU_USERNAME/PASSWORD missing for TextGuru DLT OTP")
+
+    sender = (
+        (getattr(settings, "textguru_sender_id", None) or "").strip()
+        or (getattr(settings, "sms_sender_id", None) or "").strip()
+        or "AREANS"
+    )
+    template_id = (
+        (getattr(settings, "textguru_dlt_template_id", None) or "").strip()
+        or (getattr(settings, "sms_dlt_template_id", None) or "").strip()
+        or "1777178540657949209"
+    )
+    base = (
+        (getattr(settings, "textguru_api_url", None) or "").strip()
+        or (getattr(settings, "sms_api_url", None) or "").strip()
+        or "https://www.textguru.in/api/v22.0/"
+    )
+    if not base.endswith("/"):
+        base += "/"
+
+    digits10 = _digits_10(msisdn)
+    if not re.fullmatch(r"[6-9]\d{9}", digits10):
+        raise RuntimeError("Invalid 10-digit Indian mobile for TextGuru")
+
+    message = _otp_message(code)
+    params = {
+        "username": username,
+        "password": password,
+        "source": sender,
+        "dmobile": digits10,
+        "dlttempid": template_id,
+        "message": message,
+    }
+    url = f"{base}?{urlencode(params)}"
+    with httpx.Client(timeout=20.0) as client:
+        resp = client.get(url, headers={"Accept": "application/json, text/plain, */*"})
+    body = (resp.text or "").strip()
+    ok = resp.status_code < 400 and (
+        body.upper().startswith("MSGID:")
+        or "success" in body.lower()
+        or '"status":"success"' in body.lower()
+        or re.search(r"MsgID\s*:", body, re.I) is not None
+    )
+    if not ok:
+        log.warning("TextGuru OTP HTTP %s %s", resp.status_code, body[:240])
+        raise RuntimeError("SMS OTP send failed (TextGuru)")
+    log.info("OTP SMS via TextGuru DLT mobile=***%s", digits10[-4:])
+    return "sms_textguru"
 
 
 def _send_msg91(msisdn: str, code: str) -> str:
