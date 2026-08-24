@@ -446,9 +446,9 @@ MESSAGES = {
         "en": "Please set a password for your account (at least 6 characters).",
     },
     "account_not_eligible": {
-        "hinglish": "Aapka account abhi listing ke liye ready nahi hai. Kripya InfraDealer par account complete karein.",
-        "hi": "आपका अकाउंट अभी लिस्टिंग के लिए तैयार नहीं है। कृपया InfraDealer पर अकाउंट पूरा करें।",
-        "en": "Your account is not ready for listing yet. Please complete your account on InfraDealer.",
+        "hinglish": "Sir, is number se listing abhi block hai (token/broker credit ya account issue). InfraDealer par plan/credit check karein, ya dusra verified number use karein. Vehicle details abhi bhi bata sakte hain — main note kar lunga.",
+        "hi": "सर, इस नंबर से लिस्टिंग अभी ब्लॉक है (टोकन/ब्रोकर क्रेडिट या अकाउंट इश्यू)। InfraDealer पर प्लान/क्रेडिट चेक करें। गाड़ी की डिटेल फिर भी बता सकते हैं।",
+        "en": "Sir, posting is blocked on this number (token/broker credit or account issue). Please check your plan/credits on InfraDealer. You can still share vehicle details.",
     },
     "otp_ask": {
         "hinglish": "OTP bhej diya hai. 6-digit OTP type kijiye.",

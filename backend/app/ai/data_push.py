@@ -777,6 +777,13 @@ def _preflight_eligibility(payload: dict) -> PushResult | None:
             ok=False, status="SUBMISSION_BLOCKED", reason_code="BLOCKED_ACCOUNT",
             message="Account is blocked — submission refused.",
         )
+    atype = str(payload.get("account_type") or "").strip().lower()
+    reason = str(payload.get("account_reason") or "").strip().upper()
+    # Missing / free-not-onboarded: allow push path (account OTP/create can run alongside).
+    if atype in {"", "missing"} or reason in {
+        "ACCOUNT_NOT_FOUND", "ACCOUNT_MISSING", "FREE_NOT_ONBOARDED", "INVALID_PHONE",
+    }:
+        return None
     if payload.get("account_gate") == "ELIGIBILITY_BLOCKED" or str(payload.get("account_eligibility") or "") == "NOT_ELIGIBLE":
         return PushResult(
             ok=False, status="SUBMISSION_BLOCKED", reason_code="ACCOUNT_NOT_ELIGIBLE",
