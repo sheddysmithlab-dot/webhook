@@ -860,6 +860,29 @@ def _is_eligible_to_post(payload: dict) -> bool:
     return True
 
 
+def _wa_account_unmatched(payload: dict) -> bool:
+    """True when this WhatsApp number is not linked to a DB / InfraDealer account."""
+    reason = str(payload.get("account_reason") or "").upper()
+    atype = str(payload.get("account_type") or "").upper()
+    if reason in {"ACCOUNT_NOT_FOUND", "NOT_FOUND"}:
+        return True
+    if atype in {"MISSING", "ACCOUNT_TYPE_UNKNOWN", ""}:
+        ctx = payload.get("account_context") if isinstance(payload.get("account_context"), dict) else {}
+        acct = ctx.get("account") if isinstance(ctx.get("account"), dict) else {}
+        if "found" in acct and not acct.get("found"):
+            return True
+        if not payload.get("profile_id") and not payload.get("infradealer_user_id") and not payload.get("account_onboarded"):
+            return True
+    return False
+
+
+def _account_block_reply(lang: str, payload: dict) -> str:
+    """User-facing account block copy — prefer WA-mismatch wording when number not found."""
+    if _wa_account_unmatched(payload):
+        return t(lang, "account_wa_not_matched")
+    return t(lang, "account_not_eligible")
+
+
 def _reset_listing_fields(payload: dict) -> None:
     """Wipe listing-specific fields when intent changes SELL to BUY."""
     for key in (
@@ -879,12 +902,20 @@ def _reset_listing_fields(payload: dict) -> None:
 
 
 def handle_message(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str:
-    """Main Relationship Manager turn — state → intent → collect → filter → ask/confirm."""
+    """Main Relationship Manager turn — state → intent → collect → filter → ask/confirm.
+
+    Phase-2 soft mode (``ai_prompt_chat``): skip greeting/intent re-ask loops when
+    listing context already exists; ask one missing field and move on.
+    """
     started = time.perf_counter()
     lang = _lang(db, conv, text)
     load_account_context(db, conv)
     payload = _payload(conv)
     msg = (text or "").strip()
+
+    from .prompt import soft_rules_fallback
+
+    soft = soft_rules_fallback(db)
 
     # Ensure draft isolation for listing workflows
     if (payload.get("intent") or "").upper() == "SELL" or media_note:
@@ -893,6 +924,16 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     intent = detect_intent(msg, payload, media_note=media_note)
     response_type = "ACKNOWLEDGEMENT"
     reply = ""
+
+    # Phase-2 soft: greeting while listing already active → continue collection, not greet loop
+    if soft and intent == "GREETING" and (payload.get("intent") or media_note or payload.get("brand")):
+        intent = "PROVIDE_FIELD" if (payload.get("intent") or "").upper() in {"BUY", "SELL"} else intent
+
+    # Phase-2 soft: SELL/BUY re-stated but intent already set → treat as field provide
+    if soft and intent in {"SELL", "BUY"}:
+        prev = (payload.get("intent") or "").upper()
+        if prev == intent:
+            intent = "PROVIDE_FIELD"
 
     try:
         if intent == "PROMPT_INJECTION":
@@ -992,7 +1033,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                     reply = build_next_question(_payload(conv), lang) or t(lang, "unclear")
                     response_type = "ASK_QUESTION"
                 elif result.get("ok") is False and result.get("error") == "account_not_eligible":
-                    reply = t(lang, "account_not_eligible")
+                    reply = _account_block_reply(lang, _payload(conv))
                     response_type = "ERROR_MESSAGE"
                 else:
                     reply = t(lang, "submitted")
@@ -1004,7 +1045,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
             # Eligibility gate — block listing flow for not-eligible accounts.
             if intent in {"SELL", "BUY"} and not _is_eligible_to_post(payload):
                 response_type = "ERROR_MESSAGE"
-                reply = t(lang, "account_not_eligible")
+                reply = _account_block_reply(lang, payload)
                 _set_rm_state(payload, "IDENTITY_PENDING")
                 _write_payload(conv, payload)
             else:
@@ -1016,7 +1057,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                         _write_payload(conv, payload)
                     execute_tool(db, conv, "save_customer_data", {"intent": intent})
                     payload = _payload(conv)
-                    _set_rm_state(payload, "LISTING_CREATION")
+                    _set_rm_state(payload, "LISTING_CREATION" if not soft else "DATA_COLLECTION")
                     _write_payload(conv, payload)
 
                 if intent == "REJECT_CORRECTION" or confirmation_has_modification(msg):
@@ -1040,8 +1081,30 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                     payload["intent"] = intent
                     _write_payload(conv, payload)
 
+                # Soft: jump straight to one next question after collect when filter clean
+                if soft and (payload.get("intent") or "").upper() in {"BUY", "SELL"}:
+                    result = filter_memory(db, conv)
+                    payload = handle_data_filter_result(db, conv, result)
+                    if result.conflicts:
+                        c = result.conflicts[0]
+                        response_type = "ASK_QUESTION"
+                        reply = t(lang, "conflict_year", user=c.get("user_value"), document=c.get("document_value"))
+                    elif result.readiness == "INVALID_DATA":
+                        response_type = "ASK_QUESTION"
+                        reply = build_next_question(payload, lang) or t(lang, "unclear")
+                    elif result.readiness == "READY_FOR_USER_CONFIRMATION" or is_collection_ready(payload):
+                        if not _photos_satisfied(payload) and (payload.get("intent") or "").upper() == "SELL":
+                            response_type = "ASK_QUESTION"
+                            n = _photo_count(payload)
+                            reply = t(lang, "photo_need_min", count=n) if n else t(lang, "photos")
+                        else:
+                            response_type = "CONFIRMATION_REQUEST"
+                            reply = build_confirmation_summary(db, conv, lang, filter_result=result)
+                    else:
+                        response_type = "ASK_QUESTION"
+                        reply = build_next_question(payload, lang) or t(lang, "unclear")
                 # Coordinate with Data Filter when we have something to validate
-                if (payload.get("intent") or "").upper() in {"BUY", "SELL"}:
+                elif (payload.get("intent") or "").upper() in {"BUY", "SELL"}:
                     result = filter_memory(db, conv)
                     payload = handle_data_filter_result(db, conv, result)
 

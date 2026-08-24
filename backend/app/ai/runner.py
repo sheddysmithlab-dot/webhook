@@ -30,8 +30,7 @@ log = logging.getLogger("infradealer.ai")
 
 
 def _ai_respond(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str:
-    """Hot path: four-agent orchestrator (account_filter -> chat_memory <-> filter/push)."""
-    # ai_simple_chat mode used the legacy simple_chat.py module (now removed); always use orchestrator.
+    """Hot path: four-agent orchestrator (account_filter → prompt_chat|chat_memory)."""
     from .orchestrator import handle_message
 
     return handle_message(db, conv, text, media_note)
@@ -237,30 +236,18 @@ def process_inbound(
         # Do not store full message body in logs/events beyond truncate — already capped
         db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="inbound", detail=(text or "")[:200]))
 
-        simple = getattr(settings, "ai_simple_chat", False)
-        if simple:
-            # Do not create drafts / Card photo pipelines in plain chat mode
-            media_note = ""
-            if media and media.get("kind"):
-                kind = (media.get("kind") or "image").lower()
-                media_note = kind
-                if kind == "image":
-                    text = text or "[photo]"
-                elif kind == "audio":
-                    text = text or "[voice note]"
-                elif kind == "video":
-                    text = text or "[video]"
-                elif kind == "document":
-                    text = text or "[document]"
-        else:
-            media_note = attach_media(db, conv, wamid, media)
+        # Media always attaches to draft/card pipeline (legacy ai_simple_chat removed).
+        media_note = attach_media(db, conv, wamid, media)
 
         t_ai0 = time.perf_counter()
+        path = "orchestrator"
+        verdict: dict = {}
         try:
             # AI Understanding: correct typos + classify routing
             from .corrector import correct_user_message, classify_message, reset_free_chat_count
             from .free_chat import free_chat_reply, free_chat_enabled
             from .i18n import pick_language, t
+            from .prompt import prompt_chat_enabled
 
             lang = pick_language(text, getattr(conv, "language", "") or "", "auto")
             conv.language = lang
@@ -275,17 +262,36 @@ def process_inbound(
                 log.exception("corrector failed, using original text")
 
             # Step 2: Classify and route
+            # Phase-3 unified prompt chat: almost all routes → orchestrator (LLM).
+            # free_chat / static options only when prompt chat is off (legacy).
             pl = _payload(conv)
             verdict = classify_message(text, pl, media_note)
+            use_prompt = prompt_chat_enabled(db)
 
-            if verdict["route"] == "confirmed":
-                # Confirmed → agent handles it
+            if use_prompt:
+                # Soft options: after 2 free turns, hint LLM to offer menu (not static dump)
+                if verdict["route"] == "options":
+                    pl["offer_menu"] = True
+                    pl["route_hint"] = "options"
+                    pl["free_chat_count"] = 0
+                elif verdict["route"] == "unconfirmed":
+                    pl["free_chat_count"] = int(verdict.get("free_count", 0)) + 1
+                    pl["offer_menu"] = False
+                    pl["route_hint"] = "small_talk"
+                else:
+                    pl = reset_free_chat_count(pl)
+                    pl["offer_menu"] = False
+                    pl["route_hint"] = "confirmed"
+                _write_payload(conv, pl)
+                reply = _ai_respond(db, conv, text, media_note)
+                path = "orchestrator"
+            elif verdict["route"] == "confirmed":
                 pl = reset_free_chat_count(pl)
                 _write_payload(conv, pl)
                 reply = _ai_respond(db, conv, text, media_note)
                 path = "orchestrator"
             elif verdict["route"] == "unconfirmed":
-                # Unconfirmed → free chat (count 0, 1)
+                # Legacy: unconfirmed → free chat (count 0, 1)
                 pl["free_chat_count"] = int(verdict.get("free_count", 0)) + 1
                 _write_payload(conv, pl)
                 if free_chat_enabled(db):
@@ -294,16 +300,15 @@ def process_inbound(
                     reply = t(lang, "greet")
                 path = "free_chat"
             else:
-                # 3rd unconfirmed → show InfraDealer options
+                # Legacy: 3rd unconfirmed → static InfraDealer options
                 pl["free_chat_count"] = 0
                 _write_payload(conv, pl)
                 reply = t(lang, "infradealer_options")
                 path = "options"
 
-            if not simple:
-                pl = _payload(conv)
-                if pl.get("active_card_id"):
-                    set_active_card(mobile, pl["active_card_id"])
+            pl = _payload(conv)
+            if pl.get("active_card_id"):
+                set_active_card(mobile, pl["active_card_id"])
         except Exception as exc:
             log.exception("ai respond failed mobile=***%s", mobile[-4:] if mobile else "")
             db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="error", detail=str(exc)[:300]))
@@ -312,14 +317,29 @@ def process_inbound(
 
         # LLM connectivity failure — reply is None or empty
         if not reply or not reply.strip():
-            log.warning("ai empty reply mobile=***%s", mobile[-4:] if mobile else "")
+            log.warning("ai empty reply mobile=***%s path=%s", mobile[-4:] if mobile else "", path)
             db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="error", detail="empty_reply"))
             reply = t(lang, "ai_error_retry")
             path = "error"
         t_ai = (time.perf_counter() - t_ai0) * 1000
 
-        db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="ai_reply", detail=(reply or "")[:200]))
-
+        # Phase-4 observability: structured reply_path + latency
+        obs = {
+            "reply_path": path,
+            "ai_ms": int(t_ai),
+            "route": verdict.get("route") if isinstance(verdict, dict) else None,
+            "preview": (reply or "")[:160],
+        }
+        db.add(AiEvent(
+            wamid=wamid or "",
+            mobile=mobile,
+            event_type="ai_reply",
+            detail=json.dumps(obs, ensure_ascii=False)[:400],
+        ))
+        log.info(
+            "ai.reply_path path=%s ai_ms=%d route=%s mobile=***%s",
+            path, int(t_ai), obs.get("route") or "-", mobile[-4:] if mobile else "",
+        )
         if send and reply and not _is_latest_inbound(db, conv.conversation_id, wamid, mobile=mobile):
             stale = True
             log.info("skip stale AI reply mobile=***%s", mobile[-4:] if mobile else "")

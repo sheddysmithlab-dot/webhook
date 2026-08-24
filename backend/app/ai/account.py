@@ -301,6 +301,19 @@ def start_account(db: Session, conv: AiConversation, lang: str, prefix: str = ""
 def _local_otp_then(db, conv, payload, lang, prefix, infra_create=False) -> str:
     payload["account_step"] = "otp"
     _write_payload(conv, payload)
+    # Prefer InfraDealer otp.request (backend DLT SMS) when registration exists.
+    svc = _infra(db)
+    st = _state(db, conv.mobile)
+    if svc and st and st.registration_id:
+        try:
+            item = svc.request_otp(conv)
+            if item:
+                svc.process_outbox_item(item)
+                db.flush()
+                head = prefix or t(lang, "confirm_ok")
+                return head + "\n\n" + t(lang, "account_otp")
+        except Exception:
+            log.exception("InfraDealer OTP request failed; falling back to local DLT SMS")
     otp = execute_tool(db, conv, "send_otp", {})
     if not otp.get("ok"):
         return t(lang, "otp_send_fail")

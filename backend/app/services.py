@@ -502,9 +502,12 @@ def create_otp(db: Session, mobile: str) -> Otp:
 
 
 def deliver_otp(meta: MetaSettings, mobile: str, code: str) -> str:
-    body = f"infradealer OTP: {code}. 5 minute mein expire hoga. Kisi ke saath share na karein."
-    if meta.phone_number_id and meta.system_user_token:
-        send_whatsapp_text(meta, mobile, body)
-        return "whatsapp"
-    log.info("OTP for %s (Meta token missing — server log only): %s", mobile, code)
-    return "log"
+    """Send OTP by DLT SMS only — never WhatsApp.
+
+    ``meta`` is kept for call-site compatibility; SMS uses env/settings.
+    Returns channel: sms_msg91 | sms_dlt | log.
+    """
+    from .sms_dlt import send_dlt_sms
+
+    # Never put OTP on WhatsApp — DLT SMS (or log in dev) only.
+    return send_dlt_sms(mobile, code)

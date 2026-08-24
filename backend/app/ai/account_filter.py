@@ -430,6 +430,12 @@ def sync_conversation_account(db: Session, conv: AiConversation) -> AccountVerdi
         payload["profile_id"] = verdict.account_id
         conv.profile_id = int(verdict.account_id) if str(verdict.account_id).isdigit() else conv.profile_id
         conv.profile_status = "found" if verdict.found else conv.profile_status
+    elif not verdict.found:
+        payload.pop("profile_id", None)
+        conv.profile_status = "missing"
+        payload["wa_account_matched"] = False
+    if verdict.found:
+        payload["wa_account_matched"] = True
     if verdict.name and not usable_person_name(payload.get("customer_name")):
         payload["customer_name"] = verdict.name
 

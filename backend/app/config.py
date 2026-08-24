@@ -25,13 +25,17 @@ class Settings(BaseSettings):
     ai_api_base: str = "https://api.z.ai/api/paas/v4"
     ai_model: str = "glm-4.5-flash"
     ai_reply_language: str = "auto"
-    # True = plain Z.AI chat only (no listing agent). False = InfraDealer listing agent.
+    # True = plain Z.AI chat only (removed; kept False for env compat, ignored by runner).
     ai_simple_chat: bool = False
-    # Scoped free-chat for non-business messages (greetings, general queries, small talk).
-    # Known listing/account/OTP/confirm flows still use hard rules + tools.
+    # Scoped free-chat secondary fallback when prompt_chat LLM fails (no listing context).
+    # With ai_prompt_chat=True, primary path is unified prompt chat (Phase 3).
     ai_free_chat: bool = True
     # AI Corrector: fix user message typos/spelling before agent processes it.
     ai_corrector: bool = True
+    # Phase-1/3/4 prompt chat: LLM-first (tools + SYSTEM_PROMPT) with chat_memory fallback.
+    # Phase-3: free_chat + static options merge into orchestrator when True.
+    # Phase-4: reply_path + ai_ms logged on every turn. Rollback: AI_PROMPT_CHAT=false.
+    ai_prompt_chat: bool = True
     ai_media_dir: str = "./data/media"
     infradealer_base_url: str = ""
     infradealer_api_key: str = ""
@@ -45,6 +49,17 @@ class Settings(BaseSettings):
     # Set to False in production with a configured secret for strict HMAC verification.
     allow_unsigned_admin_events: bool = True
     redis_url: str = ""
+
+    # --- OTP via India DLT SMS (never WhatsApp) ---
+    # SMS_PROVIDER: log | msg91 | http
+    sms_provider: str = "log"
+    sms_api_key: str = ""
+    sms_api_url: str = ""
+    sms_sender_id: str = ""
+    sms_dlt_template_id: str = ""
+    sms_dlt_entity_id: str = ""
+    # Must match DLT-registered template; use {otp} placeholder.
+    sms_otp_template: str = "Your InfraDealer OTP is {otp}. Valid for 5 minutes. Do not share with anyone."
 
 
 settings = Settings()

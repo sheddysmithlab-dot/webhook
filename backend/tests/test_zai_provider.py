@@ -39,11 +39,13 @@ def test_normalize_model_glm_only():
 
 
 def test_prompt_has_criteria_priority():
-    from app.ai.prompt import LEGACY_LISTING_SYSTEM_PROMPT, SIMPLE_SYSTEM_PROMPT
+    from app.ai.prompt import SYSTEM_PROMPT
 
-    assert "InfraDealer WhatsApp AI assistant" in SIMPLE_SYSTEM_PROMPT
-    assert "CARD-001" not in SIMPLE_SYSTEM_PROMPT
-    assert "TRAINED CRITERIA" in LEGACY_LISTING_SYSTEM_PROMPT or "Z.AI" in LEGACY_LISTING_SYSTEM_PROMPT
+    low = SYSTEM_PROMPT.lower()
+    assert "never invent" in low or "otp" in low
+    assert "tool" in low
+    assert "haan" in low or "confirm" in low
+    assert "CARD" in SYSTEM_PROMPT or "card" in low
     print("OK prompt criteria")
 
 

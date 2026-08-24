@@ -123,11 +123,17 @@ def test_listing_push_idempotent_request_id(db_session):
 
 def test_post_ad_card_mapping():
     from app.ai.schema import listing_title
-    from app.infradealer.payloads import map_post_ad_category, seller_contact_digits, strip_contact_from_text
+    from app.infradealer.payloads import (
+        POST_AD_CATEGORY_LABEL,
+        map_post_ad_category,
+        seller_contact_digits,
+        strip_contact_from_text,
+    )
 
-    assert map_post_ad_category("JCB") == "JCB / Backhoe Loaders"
-    assert map_post_ad_category("Tipper") == "Dumpers / Tippers"
-    assert map_post_ad_category("Poclain") == "Excavators / Pockland"
+    assert map_post_ad_category("JCB") == "jcb"
+    assert POST_AD_CATEGORY_LABEL["jcb"] == "JCB / Backhoe Loaders"
+    assert map_post_ad_category("Tipper") == "dumpers"
+    assert map_post_ad_category("Poclain") == "excavator"
     assert listing_title({"brand": "JCB", "model": "3DX Super", "category": "Excavator"}) == "JCB 3DX Super Excavator"
     assert "9876543210" not in strip_contact_from_text("Cabin theek hai 9876543210 photos bhejunga")
     assert seller_contact_digits("+919876543210") == "9876543210"

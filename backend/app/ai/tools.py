@@ -32,7 +32,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "send_otp",
-            "description": "Send OTP to the current WhatsApp number via backend. Never invent a code.",
+            "description": "Send OTP by DLT SMS to the customer's mobile (never WhatsApp, never invent a code).",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
@@ -412,7 +412,7 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
         payload["verification_status"] = "otp_pending"
         _write_payload(conv, payload)
         _log(db, conv, "tool", {"tool": "send_otp", "channel": channel})
-        return {"ok": True, "channel": channel, "message": "OTP sent by backend. Do not mention any code."}
+        return {"ok": True, "channel": channel, "message": "OTP sent by SMS (DLT). Do not mention any code. Tell user to check SMS."}
 
     if name == "verify_otp":
         code = str(args.get("code") or "").strip()

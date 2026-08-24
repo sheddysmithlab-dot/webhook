@@ -459,9 +459,9 @@ def handle_admin_status_event(db: Session, conv: AiConversation, event: dict) ->
 
 def handle_message(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str:
     """
-    Master turn:
-      USER → (10-min memory / last-listing) → account_filter → chat_memory ↔ filter/push
-    Last-listing updates resume from DB and use the listing engine.
+    Master turn (Phase 2):
+      USER → session prep → account_filter → prepare state → prompt_chat | chat_memory
+    Last-listing updates resume from DB; prefer prompt_chat when flag on.
     """
     started = time.perf_counter()
     ids = new_ids()
@@ -496,17 +496,28 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
             source_agent="orchestrator",
             detail={"reason": "LAST_LISTING_UPDATE", "card_id": prep.get("card_id")},
         )
-        from .engine import respond as engine_respond
-
         card = prep.get("card_id") or ""
         head = t(lang, "last_listing_loaded", card=card) if card else ""
-        try:
-            body = engine_respond(db, conv, text, media_note)
-        except Exception:
-            log.exception("engine update path failed — falling back to chat_memory")
-            from .chat_memory import handle_message as rm_handle
+        body = ""
+        from .prompt import prompt_chat_enabled
 
-            body = rm_handle(db, conv, text, media_note)
+        if prompt_chat_enabled(db):
+            try:
+                from .engine import prompt_chat_turn
+
+                body = prompt_chat_turn(db, conv, text, media_note) or ""
+            except Exception:
+                log.exception("prompt_chat on last-listing update failed")
+        if not body:
+            try:
+                from .engine import respond as engine_respond
+
+                body = engine_respond(db, conv, text, media_note)
+            except Exception:
+                log.exception("engine update path failed — falling back to chat_memory")
+                from .chat_memory import handle_message as rm_handle
+
+                body = rm_handle(db, conv, text, media_note)
         reply = (head + "\n\n" + (body or "")).strip() if head else (body or "")
         sync_master_from_rm(db, conv)
         return reply
@@ -548,10 +559,50 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
         af_payload["account_gate"] = "ELIGIBILITY_BLOCKED"
         _write_payload(conv, af_payload)
 
-    # Agent 2 — WHAT / WHAT NEXT?
-    from .chat_memory import handle_message as rm_handle
+    # Agent 2 — Phase-3: unified prompt_chat; free_chat then soft chat_memory on fail.
+    reply = ""
+    path = "chat_memory"
+    from .prompt import prompt_chat_enabled
 
-    reply = rm_handle(db, conv, text, media_note)
+    if prompt_chat_enabled(db):
+        try:
+            from .engine import prompt_chat_turn
+
+            emit_event(
+                db,
+                conv,
+                "PROMPT_CHAT_ATTEMPT",
+                source_agent="orchestrator",
+                detail={"phase": "prompt_chat_v3"},
+            )
+            llm_out = prompt_chat_turn(db, conv, text, media_note)
+            if llm_out and str(llm_out).strip():
+                reply = str(llm_out).strip()
+                path = "prompt_chat"
+        except Exception:
+            log.exception("prompt_chat failed — trying free_chat / chat_memory")
+
+    if not reply:
+        # Phase-3 secondary: scoped free_chat when no listing context
+        try:
+            from .free_chat import free_chat_enabled, free_chat_reply, has_business_context
+            from .tools import _payload as _pl
+
+            pl_fb = _pl(conv)
+            if free_chat_enabled(db) and not has_business_context(pl_fb):
+                fc = free_chat_reply(db, conv, text, lang, media_note)
+                if fc and str(fc).strip():
+                    reply = str(fc).strip()
+                    path = "free_chat"
+        except Exception:
+            log.exception("free_chat secondary fallback failed")
+
+    if not reply:
+        from .chat_memory import handle_message as rm_handle
+
+        reply = rm_handle(db, conv, text, media_note)
+        path = "chat_memory"
+
     if prep.get("mode") == "new_chat" and prep.get("reset"):
         # Soft intro so it feels like a fresh conversation after 10-min memory reset
         intro = t(lang, "memory_reset_new_chat")
@@ -564,6 +615,12 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     sync_master_from_rm(db, conv)
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
+    log.info(
+        "orchestrator.reply_path path=%s elapsed_ms=%d mobile=***%s",
+        path,
+        elapsed_ms,
+        (conv.mobile or "")[-4:],
+    )
     emit_event(
         db,
         conv,
@@ -574,6 +631,9 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
             "master_state": _payload(conv).get("master_workflow_state"),
             "rm_state": _payload(conv).get("rm_state"),
             "prep_mode": prep.get("mode"),
+            "reply_path": path,
+            "phase": "prompt_chat_v3" if path == "prompt_chat" else path,
+            "next_ask": _payload(conv).get("next_ask"),
         },
     )
     return reply

@@ -70,14 +70,25 @@ def recent_outbound_bodies(db: Session, conversation_id: str, limit: int = 6) ->
     return [r.body or "" for r in rows]
 
 
-def too_similar(a: str, b: str, threshold: float = 0.86) -> bool:
+def too_similar(a: str, b: str, threshold: float = 0.92) -> bool:
+    """True when two WhatsApp lines are near-duplicates (not mere field updates)."""
     if not a or not b:
         return False
-    return _SequenceMatcher(None, a.lower(), b.lower()).ratio() >= threshold
+    al, bl = a.strip().lower(), b.strip().lower()
+    if al == bl:
+        return True
+    ratio = _SequenceMatcher(None, al, bl).ratio()
+    # Updated card summary (e.g. location change) still scores ~0.94 — not a repeat
+    if ratio < 0.985:
+        return False
+    return ratio >= threshold
 
 
-def is_repeat_outbound(db: Session, conversation_id: str, text: str) -> bool:
-    bodies = recent_outbound_bodies(db, conversation_id, 3)
+def is_repeat_outbound(text: str, recents: list[str] | None = None, *, db: Session | None = None, conversation_id: str = "") -> bool:
+    """True if ``text`` matches a recent outbound. Accepts list OR db lookup."""
+    bodies = list(recents or [])
+    if not bodies and db is not None and conversation_id:
+        bodies = recent_outbound_bodies(db, conversation_id, 3)
     return any(too_similar(text, b) for b in bodies)
 
 FREE_CHAT_SYSTEM = (
