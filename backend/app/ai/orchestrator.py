@@ -543,16 +543,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
         reply = t(lang, "account_blocked")
         sync_master_from_rm(db, conv)
         return reply
-    af_type = str(af_payload.get("account_type") or "").strip().lower()
-    af_reason = str(af_payload.get("account_reason") or "").strip().upper()
-    # MISSING was stored uppercase and incorrectly tripped this gate — only hard-block
-    # token/broker/blocked. Missing/free-not-onboarded may still collect listing details.
-    _soft = {"ACCOUNT_NOT_FOUND", "ACCOUNT_MISSING", "FREE_NOT_ONBOARDED", "INVALID_PHONE"}
-    if (
-        af_eligibility == "NOT_ELIGIBLE"
-        and af_type not in ("", "missing")
-        and af_reason not in _soft
-    ):
+    if af_eligibility == "NOT_ELIGIBLE" and af_payload.get("account_type") not in ("", "missing"):
         # Found but cannot post — let chat_memory explain, but do NOT advance to data_push.
         af_payload["account_gate"] = "ELIGIBILITY_BLOCKED"
         _write_payload(conv, af_payload)

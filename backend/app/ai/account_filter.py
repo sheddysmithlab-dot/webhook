@@ -166,23 +166,12 @@ def verify_account(db: Session, mobile: str) -> AccountVerdict:
         verdict.status = "ACTIVE" if user.account_ready else "FOUND"
         local_type = _role_to_type(user.role)
     else:
-        # Remote NOT_FOUND with no user_id = missing account (allow listing collect).
-        has_remote_id = bool(state and (state.infradealer_user_id or "").strip())
-        st_status = (state.account_status if state else "") or ""
-        if state and not has_remote_id and st_status.upper() in {"NOT_FOUND", "ACCOUNT_NOT_FOUND", "CHECKING", "NOT_REQUESTED", ""}:
-            verdict.found = False
-            verdict.account_id = None
-            verdict.name = str(meta.get("name") or "")
-            verdict.onboarded = False
-            verdict.status = "NOT_FOUND"
-            local_type = "missing"
-        else:
-            verdict.found = bool(state and (has_remote_id or st_status))
-            verdict.account_id = state.infradealer_user_id if state else None
-            verdict.name = str(meta.get("name") or "")
-            verdict.onboarded = bool(state and st_status.upper() in {"ACCOUNT_FOUND", "ACCOUNT_EXISTS", "VERIFIED", "ACCOUNT_CREATED"})
-            verdict.status = st_status or "NOT_FOUND"
-            local_type = _role_to_type(remote_type) if remote_type else "missing"
+        verdict.found = bool(state and (state.infradealer_user_id or state.account_status))
+        verdict.account_id = state.infradealer_user_id if state else None
+        verdict.name = str(meta.get("name") or "")
+        verdict.onboarded = bool(state and state.account_status in {"ACCOUNT_FOUND", "ACCOUNT_EXISTS", "VERIFIED"})
+        verdict.status = (state.account_status if state else "NOT_FOUND") or "NOT_FOUND"
+        local_type = _role_to_type(remote_type) if remote_type else "missing"
 
     # Conflict detection: local vs remote account_type disagree (excluding unknowns)
     if (
@@ -435,12 +424,6 @@ def sync_conversation_account(db: Session, conv: AiConversation) -> AccountVerdi
     payload["account_conflict"] = verdict.conflict
     payload["account_onboarded"] = verdict.onboarded
     payload["account_buy_link"] = verdict.buy_link
-    # Do not keep a stale hard gate when account is merely missing / not onboarded yet.
-    if (
-        str(verdict.account_type or "").lower() in {"", "missing"}
-        or str(verdict.reason or "").upper() in {"ACCOUNT_NOT_FOUND", "ACCOUNT_MISSING", "FREE_NOT_ONBOARDED"}
-    ):
-        payload.pop("account_gate", None)
     if details.infradealer_user_id:
         payload["infradealer_user_id"] = details.infradealer_user_id
     if verdict.account_id:

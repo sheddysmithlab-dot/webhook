@@ -682,15 +682,7 @@ def submit_confirmed_listing(db: Session, conv: AiConversation) -> dict:
     payload = _payload(conv)
 
     # Defense-in-depth: re-check eligibility right before submitting.
-    # Missing / free-not-onboarded may still submit (account flow can complete in parallel).
-    atype = str(payload.get("account_type") or "").lower()
-    reason = str(payload.get("account_reason") or "").upper()
-    soft = reason in {"ACCOUNT_NOT_FOUND", "ACCOUNT_MISSING", "FREE_NOT_ONBOARDED", "INVALID_PHONE"} or atype in {"", "missing"}
-    if not soft and (
-        not _is_eligible_to_post(payload)
-        or payload.get("account_gate") == "ELIGIBILITY_BLOCKED"
-        or str(payload.get("account_eligibility") or "").upper() == "NOT_ELIGIBLE"
-    ):
+    if str(payload.get("account_eligibility") or "").upper() == "NOT_ELIGIBLE" or payload.get("account_gate") == "ELIGIBILITY_BLOCKED":
         _set_rm_state(payload, "WAITING_FOR_MISSING_DATA")
         _write_payload(conv, payload)
         return {"ok": False, "error": "account_not_eligible", "status": "SUBMISSION_BLOCKED"}
@@ -854,38 +846,12 @@ def _safe_truncate(text: str, limit: int = REPLY_MAX_CHARS) -> str:
     return cut.rstrip() + "…" if len(cut) < len(text) else cut
 
 
-# Soft reasons: user may still collect sell/buy details; OTP/onboard happens later.
-# Hard reasons: token/broker/blocked — do not start listing until fixed.
-_SOFT_ACCOUNT_REASONS = {
-    "ACCOUNT_NOT_FOUND",
-    "ACCOUNT_MISSING",
-    "FREE_NOT_ONBOARDED",
-    "INVALID_PHONE",
-}
-_HARD_ACCOUNT_REASONS = {
-    "TOKEN_NO_CREDITS",
-    "BROKER_INACTIVE",
-    "BLOCKED",
-}
-
-
 def _is_eligible_to_post(payload: dict) -> bool:
-    """True if the account may continue listing conversation (collect fields/photos).
-
-    Missing / not-yet-onboarded free accounts must NOT get a dead-end
-    'account not ready' reply — collect listing, onboard at confirm/push.
-    """
+    """True if the account is allowed to proceed with listing creation."""
+    # Trust local onboarding state — if account_onboarded is True, allow posting
     if payload.get("account_onboarded"):
         return True
     if str(payload.get("master_workflow_state") or "") == "INVALID_IDENTITY":
-        return False
-    atype = str(payload.get("account_type") or "").strip().lower()
-    reason = str(payload.get("account_reason") or "").strip().upper()
-    if atype == "blocked" or reason == "BLOCKED":
-        return False
-    if atype in {"", "missing"} or reason in _SOFT_ACCOUNT_REASONS:
-        return True
-    if reason in _HARD_ACCOUNT_REASONS:
         return False
     if payload.get("account_gate") == "ELIGIBILITY_BLOCKED":
         return False
