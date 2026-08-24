@@ -239,6 +239,66 @@ def process_inbound(
         # Media always attaches to draft/card pipeline (legacy ai_simple_chat removed).
         media_note = attach_media(db, conv, wamid, media)
 
+        # Phase 2: transcribe voice notes via Groq Whisper before the agent runs,
+        # so the transcript replaces the dead "[voice note]" placeholder and the
+        # corrector / classifier / orchestrator see real text. Gated on ai_voice_enabled.
+        if media and (media.get("kind") == "audio"):
+            from .media_config import voice_enabled
+            if voice_enabled(db):
+                from .voice import transcribe_audio
+                try:
+                    voice_row = (
+                        db.query(AiMedia)
+                        .filter(AiMedia.wamid == (wamid or ""))
+                        .order_by(AiMedia.id.desc())
+                        .first()
+                    ) if wamid else None
+                    if voice_row and voice_row.local_path:
+                        transcript = transcribe_audio(db, conv, voice_row)
+                        if transcript:
+                            voice_row.extracted_text = transcript
+                            voice_row.extract_kind = "transcription"
+                            text = transcript
+                            log.info("voice.transcribed mobile=***%s len=%d",
+                                     conv.mobile[-4:] if conv.mobile else "", len(transcript))
+                        else:
+                            media_note = (media_note or "") + " voice_transcribe_failed"
+                    elif voice_row and not voice_row.local_path:
+                        media_note = (media_note or "") + " voice_no_file"
+                except Exception:
+                    log.exception("voice.transcribe failed mobile=***%s",
+                                   conv.mobile[-4:] if conv.mobile else "")
+                    media_note = (media_note or "") + " voice_transcribe_failed"
+
+        # Phase 3: OCR document images (RC/insurance/fitness) via Z.AI glm-4.6v-flash.
+        # Only runs on document-like images (heuristic) to spare the free-tier rate
+        # limit on casual vehicle photos. Gated on ai_vision_enabled.
+        if media and (media.get("kind") in {"image", "document"}):
+            from .media_config import vision_enabled
+            if vision_enabled(db):
+                from .vision import extract_text_from_image, is_document_media
+                try:
+                    vis_row = (
+                        db.query(AiMedia)
+                        .filter(AiMedia.wamid == (wamid or ""))
+                        .order_by(AiMedia.id.desc())
+                        .first()
+                    ) if wamid else None
+                    if vis_row and vis_row.local_path and is_document_media(vis_row, text or ""):
+                        ocr = extract_text_from_image(db, conv, vis_row)
+                        if ocr:
+                            vis_row.extracted_text = ocr
+                            vis_row.extract_kind = "ocr"
+                            media_note = (media_note or "") + f" ocr={ocr[:80]}"
+                            log.info("vision.ocr mobile=***%s len=%d",
+                                     conv.mobile[-4:] if conv.mobile else "", len(ocr))
+                        else:
+                            media_note = (media_note or "") + " ocr_failed"
+                except Exception:
+                    log.exception("vision.ocr failed mobile=***%s",
+                                   conv.mobile[-4:] if conv.mobile else "")
+                    media_note = (media_note or "") + " ocr_failed"
+
         t_ai0 = time.perf_counter()
         path = "orchestrator"
         verdict: dict = {}

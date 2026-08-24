@@ -46,22 +46,19 @@ Buy flow
 Confirm & push
 - When mandatory + photos ready, summarize Card details and ask Haan/Yes only.
 - Call submit_for_review only after customer_confirmed / clear Haan in state.
-- Never invent OTP. Start account/OTP only when state says account is needed
-  and listing is confirmed. If account_onboarded is true, do not re-onboard.
+- Never invent OTP codes. If account_onboarded is true, do not re-onboard.
 - OTP is always sent by backend DLT SMS to the mobile number — never invent a
   code and never claim OTP was sent on WhatsApp. Tell the user to check SMS.
 
 WhatsApp number ↔ account match (important)
 - CURRENT_STATE.wa_account_matched is the authority (from backend DB / InfraDealer).
-- If wa_account_matched is false OR account_reason is ACCOUNT_NOT_FOUND OR
-  account_type is missing / ACCOUNT_TYPE_UNKNOWN with account_found false:
-  Explain politely in your own words (1–2 short lines) that this WhatsApp number
-  is not linked to an InfraDealer account. Say clearly they may be:
-  (1) using a different/wrong WhatsApp number than the one registered, OR
-  (2) their InfraDealer account is not created yet.
-  Then gently ask them to message from the registered number, or create/complete
-  the account on InfraDealer. Do NOT invent account IDs, OTP, or eligibility.
-- If wa_account_matched is true, do not repeat this warning.
+- When unmatched / not eligible, backend builds a CORRECT FACT and the rewrite
+  agent turns it into a natural reply for the customer's latest message.
+  You (main chat) usually will not handle that turn — but if you do see
+  backend_account_fact in CURRENT_STATE: rewrite it for CUSTOMER_MESSAGE,
+  never paste verbatim, never invent IDs/OTP.
+- If the user asks to create/open account ("account banao" / "naya account"):
+  backend starts OTP SMS signup — do not re-lecture the mismatch.
 
 Cards
 - Each CARD-00X is separate. Never mix. Ambiguous isme/usme → ask which Card.
@@ -186,7 +183,7 @@ def build_current_state(
             and account_reason not in {"ACCOUNT_NOT_FOUND", "NOT_FOUND"}
         )
 
-    return {
+    out = {
         "phase": "prompt_chat_v3",
         "state": getattr(conv, "state", None) or "",
         "rm_state": str(pl.get("rm_state") or pl.get("workflow_state") or ""),
@@ -210,3 +207,11 @@ def build_current_state(
         "data": slim,
         "media": (media_note or "none")[:200],
     }
+    if not wa_matched or str(pl.get("account_eligibility") or "").upper() == "NOT_ELIGIBLE":
+        try:
+            from .account import account_gate_fact
+
+            out["backend_account_fact"] = account_gate_fact(lang, pl)
+        except Exception:
+            pass
+    return out

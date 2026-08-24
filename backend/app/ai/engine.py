@@ -4,9 +4,22 @@ import re
 
 import httpx
 
-from ..models import AiConversation, AiListingDraft, Chat
+from ..models import AiConversation, AiListingDraft, AiMedia, Chat
 from ..services import resolve_ai_config
-from .account import account_busy, handle_account, should_intercept_account, wants_clear_conversation, wants_delete_listing, wants_last_post, wants_listing_link, wants_new_chat
+from .account import (
+    account_busy,
+    adapt_account_gate_reply,
+    handle_account,
+    needs_account_gate,
+    should_intercept_account,
+    start_account,
+    wants_clear_conversation,
+    wants_create_account,
+    wants_delete_listing,
+    wants_last_post,
+    wants_listing_link,
+    wants_new_chat,
+)
 from .confirm import handle_confirmation, handle_vehicle_slot, is_no, is_yes, collection_ready, sync_posted_product
 from .extract import extract_from_text
 from .i18n import _GREET, _WEAK, language_instruction, pick_language, t
@@ -356,10 +369,9 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
         "ANSWER ONLY THE LATEST CUSTOMER MESSAGE below. Do not answer an older question. "
         "If they ask account → answer account. If they ask vehicle/price → answer that. Never mix.\n"
         "If offer_menu is true, briefly offer sell / buy / status / account help in natural WhatsApp tone.\n"
-        "If wa_account_matched is false: politely explain in your own words that this WhatsApp "
-        "number does not match an InfraDealer account — they may be on the wrong number OR "
-        "their account is not created yet. Ask them to use the registered number or create/complete "
-        "the account. Do not invent IDs/OTP.\n"
+        "If backend_account_fact is present: rewrite that CORRECT fact for the latest "
+        "CUSTOMER_MESSAGE (acknowledge what they asked first). Never paste the fact verbatim; "
+        "never invent IDs/OTP. "
         "CURRENT_STATE: "
         + json.dumps(state_block, ensure_ascii=False)
         + "\nCUSTOMER_MESSAGE_START\n"
@@ -367,8 +379,7 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
         + "\nCUSTOMER_MESSAGE_END\n"
         + "Rules: 1 short WhatsApp reply. Sir/Ma'am only — never greet with random WA profile names. "
         "Ask only next_ask if set; do not re-ask fields already in data. "
-        "Do not start account/OTP unless customer_confirmed is true and account_onboarded is false "
-        "AND they just confirmed. Never invent OTP/password. "
+        "Never invent OTP/password. "
         f"Reply in {lang}."
     )
     # prompt_block was a legacy memory.py stub that returned "" — inlined as no-op.
@@ -513,6 +524,18 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         post = handle_post_listing_query(db, conv, text, lang)
         if post:
             return post
+
+    # Hard: "naya account ban do" → WhatsApp OTP signup (do not loop mismatch lecture)
+    if wants_create_account(msg, payload) and not payload.get("account_onboarded"):
+        return _sanitize_reply(start_account(db, conv, lang), posted=False, lang=lang)
+
+    # Hard: corrected account fact → AI rewrite for THIS user message → outbound
+    if needs_account_gate(payload):
+        return _sanitize_reply(
+            adapt_account_gate_reply(db, conv, msg, lang, payload),
+            posted=False,
+            lang=lang,
+        )
 
     # Hard: OTP digits while pending
     if conv.state == "OTP_PENDING" or payload.get("verification_status") == "otp_pending":
@@ -752,6 +775,30 @@ def attach_intro(db, conv: AiConversation, lang: str, reply: str) -> str:
     return intro + "\n\n" + body
 
 
+def _ocr_extracted_fields(db, conv: AiConversation) -> dict:
+    """Pull the latest OCR'd AiMedia row for this conv and extract vehicle fields.
+
+    Returns {} if no OCR row exists or extraction yields nothing. Used to merge
+    RC/insurance text → year/state/brand so the agent doesn't re-ask what the
+    document already shows.
+    """
+    try:
+        row = (
+            db.query(AiMedia)
+            .filter(
+                AiMedia.conversation_id == conv.id,
+                AiMedia.extract_kind == "ocr",
+            )
+            .order_by(AiMedia.id.desc())
+            .first()
+        )
+    except Exception:
+        return {}
+    if not row or not (row.extracted_text or "").strip():
+        return {}
+    return extract_from_text(row.extracted_text) or {}
+
+
 def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
     from .cards import (
         card_clarification_prompt,
@@ -801,6 +848,15 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
     lang = _conv_lang(db, conv, text)
     extra = []
     fields = extract_turn(text, extra_reps=extra, media_note=media_note)
+    # Phase 3: merge fields inferred from document OCR (RC/insurance/fitness) so
+    # RC number → year/state/brand can fill in what the user's text didn't say.
+    # Only fills gaps — never overrides what the user explicitly typed.
+    if "ocr=" in (media_note or ""):
+        ocr_fields = _ocr_extracted_fields(db, conv)
+        if ocr_fields:
+            for k, v in ocr_fields.items():
+                if v and not fields.get(k):
+                    fields[k] = v
     recents = recent_outbound_bodies(db, conv.conversation_id, 6)
     payload0 = _payload(conv)
 
@@ -823,6 +879,18 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
 
         reset_ai_conversation(db, conv)
         return t(lang, "chat_cleared")
+
+    # 1c) Create account from WhatsApp when user asks (or short "naya bana do" after mismatch)
+    if wants_create_account(text, payload0) and not payload0.get("account_onboarded"):
+        return _sanitize_reply(start_account(db, conv, lang), posted=False, lang=lang)
+
+    # 1d) Corrected account fact → AI rewrite for this user message
+    if needs_account_gate(payload0):
+        return _sanitize_reply(
+            adapt_account_gate_reply(db, conv, text or "", lang, payload0),
+            posted=False,
+            lang=lang,
+        )
 
     if wants_new_chat(text):
         from .confirm import start_new_listing

@@ -187,6 +187,11 @@ class MetaSettings(Base):
     ai_api_base: Mapped[str] = mapped_column(String(300), default="https://api.z.ai/api/paas/v4")
     ai_model: Mapped[str] = mapped_column(String(80), default="glm-4.5-flash")
     ai_reply_language: Mapped[str] = mapped_column(String(16), default="auto")
+    # Phase 1: Vision (Z.AI glm-4.6v-flash) + Voice (Groq Whisper) config.
+    ai_vision_model: Mapped[str] = mapped_column(String(80), default="glm-4.6v-flash")
+    ai_vision_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    ai_voice_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    groq_api_key: Mapped[str] = mapped_column(String(1024), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -243,6 +248,9 @@ class AiMedia(Base):
     mime: Mapped[str] = mapped_column(String(80), default="")
     caption: Mapped[str] = mapped_column(Text, default="")
     local_path: Mapped[str] = mapped_column(String(400), default="")
+    # Phase 1: extracted content from vision OCR (documents) or Whisper (voice notes).
+    extracted_text: Mapped[str] = mapped_column(Text, default="")
+    extract_kind: Mapped[str] = mapped_column(String(20), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

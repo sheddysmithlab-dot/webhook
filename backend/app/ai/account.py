@@ -103,6 +103,164 @@ def wants_last_post(text: str) -> bool:
     return bool(_ASK_LAST_POST.search(text or ""))
 
 
+# Explicit: create / open InfraDealer account from WhatsApp (OTP flow).
+_CREATE_ACCOUNT = re.compile(
+    r"("
+    r"(naya|new|nayi)\s+(account|akount|accnt|अकाउंट|अकाउन्ट|खाता).{0,24}"
+    r"(bana|ban\s*do|banao|banwa|create|kar)"
+    r"|(account|akount|accnt|अकाउंट|अकाउन्ट|खाता).{0,28}"
+    r"(bana\s*do|banao|banwa\s*do|banwao|create|signup|sign\s*up|open\s*kar)"
+    r"|(create|make|start|open).{0,20}(new\s+)?(account|akount)"
+    r"|account\s*(chahiye|banana|banwana|bana\s*do)"
+    r"|signup|sign\s*up|register\s*(karo|kardo|kar\s*do)?"
+    r")",
+    re.I,
+)
+# Short follow-ups right after "account not found" (e.g. "Naya bana do")
+_CREATE_ACCOUNT_SHORT = re.compile(
+    r"^(naya|new|nayi)?\s*(bana|ban|banwa)\s*do\.?$"
+    r"|^(create|banao|banwao)\s*(do|karo)?\.?$"
+    r"|^(haan|han|yes|ji)\s*,?\s*(bana|ban|create).{0,12}$",
+    re.I,
+)
+
+
+def _wa_unmatched_payload(payload: dict | None) -> bool:
+    pl = payload or {}
+    if pl.get("wa_account_matched") is True:
+        return False
+    if pl.get("wa_account_matched") is False:
+        return True
+    reason = str(pl.get("account_reason") or "").upper()
+    if reason in {"ACCOUNT_NOT_FOUND", "NOT_FOUND"}:
+        return True
+    atype = str(pl.get("account_type") or "").upper()
+    if atype in {"MISSING", "ACCOUNT_TYPE_UNKNOWN", ""} and not pl.get("account_onboarded"):
+        if not pl.get("profile_id") and not pl.get("infradealer_user_id"):
+            return True
+    return False
+
+
+def wants_create_account(text: str, payload: dict | None = None) -> bool:
+    """User wants WhatsApp OTP account creation — not website-only redirect."""
+    msg = (text or "").strip()
+    if not msg:
+        return False
+    if wants_delete_listing(msg):
+        return False
+    if _CREATE_ACCOUNT.search(msg):
+        return True
+    # After mismatch warning, short "naya bana do" means create account here
+    if _wa_unmatched_payload(payload) and _CREATE_ACCOUNT_SHORT.search(msg):
+        return True
+    return False
+
+
+def account_gate_fact(lang: str, payload: dict | None = None) -> str:
+    """Canonical corrected mismatch / eligibility fact (backend truth)."""
+    pl = payload or {}
+    if _wa_unmatched_payload(pl):
+        return t(lang, "account_wa_not_matched")
+    return t(lang, "account_not_eligible")
+
+
+def needs_account_gate(payload: dict | None = None) -> bool:
+    """True when listing must wait — AI should only explain/adapt the account fact."""
+    pl = payload or {}
+    if pl.get("account_onboarded"):
+        return False
+    if account_busy(pl):
+        return False  # mid OTP/password/role — other hard gates own the turn
+    if _wa_unmatched_payload(pl):
+        return True
+    if pl.get("account_gate") == "ELIGIBILITY_BLOCKED":
+        return True
+    if str(pl.get("account_eligibility") or "").upper() == "NOT_ELIGIBLE":
+        return True
+    return False
+
+
+_ADAPT_FACT_SYSTEM = (
+    "You are InfraDealer WhatsApp AI. Backend gives you BACKEND_FACT (correct truth) "
+    "and the customer's latest message.\n"
+    "Your job: rewrite BACKEND_FACT into 1-2 short WhatsApp lines that fit THIS message.\n"
+    "Rules:\n"
+    "- Keep the same meaning as BACKEND_FACT. Never invent account IDs, OTP digits, "
+    "credits, passwords, or live links.\n"
+    "- Do NOT paste BACKEND_FACT word-for-word. Rephrase naturally (Sir/Ma'am, aap, ji).\n"
+    "- First address what they just said (bechna/kharidna/account/help), then the fact.\n"
+    "- If number is unmatched, mention both options briefly: registered number OR "
+    "type account banao for WhatsApp OTP signup.\n"
+    "- One short WhatsApp reply only. No markdown headings."
+)
+
+
+def adapt_account_gate_reply(
+    db: Session,
+    conv: AiConversation,
+    user_text: str,
+    lang: str,
+    payload: dict | None = None,
+) -> str:
+    """Correct fact → AI agent → reply adapted to user's message (fallback = fact)."""
+    from ..services import resolve_ai_config
+    from .i18n import language_instruction
+
+    pl = payload if isinstance(payload, dict) else _payload(conv)
+    fact = account_gate_fact(lang, pl)
+    cfg = resolve_ai_config(db)
+    if not cfg.get("enabled") or not cfg.get("api_key"):
+        return fact
+
+    user_block = (
+        "BACKEND_FACT (correct — keep this truth):\n"
+        + fact
+        + "\n\nCUSTOMER_MESSAGE_START\n"
+        + (user_text or "")[:600]
+        + "\nCUSTOMER_MESSAGE_END\n"
+        + "Rewrite BACKEND_FACT for this customer message. Do not paste it verbatim."
+    )
+    messages = [
+        {"role": "system", "content": _ADAPT_FACT_SYSTEM + "\n" + language_instruction(lang)},
+        {"role": "user", "content": user_block},
+    ]
+    url = cfg["api_base"].rstrip("/") + "/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {cfg['api_key']}",
+        "Content-Type": "application/json",
+        "Accept-Language": "en-US,en",
+    }
+    body = {
+        "model": cfg["model"],
+        "messages": messages,
+        "temperature": 0.45,
+        "max_tokens": 180,
+        "thinking": {"type": "disabled"},
+        "enable_thinking": False,
+    }
+    try:
+        import httpx
+
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(url, headers=headers, json=body)
+            data = resp.json() if resp.content else {}
+        if not isinstance(data, dict):
+            data = {}
+        choice = (data.get("choices") or [{}])[0]
+        content = str((choice.get("message") or {}).get("content") or "").strip()
+        content = re.sub(r"\s+", " ", content).strip()
+        if not content or len(content) < 12:
+            return fact
+        if re.search(r"(system prompt|api[_ ]?key|otp\s*\d{4,}|password\s*:)", content, re.I):
+            return fact
+        if len(content) > 420:
+            content = content[:420].rsplit(" ", 1)[0] + "…"
+        return content
+    except Exception:
+        log.exception("adapt_account_gate_reply failed — using canonical fact")
+        return fact
+
+
 def account_busy(payload: dict) -> bool:
     step = payload.get("account_step") or ""
     return bool(step) and step != "done" and not payload.get("account_onboarded")

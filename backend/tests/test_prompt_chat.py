@@ -45,15 +45,37 @@ def test_build_current_state_wa_unmatched():
 
 
 def test_account_block_reply_prefers_wa_mismatch():
+    from app.ai.account import account_gate_fact
     from app.ai.chat_memory import _account_block_reply
 
-    msg = _account_block_reply("hinglish", {
+    payload = {
         "account_reason": "ACCOUNT_NOT_FOUND",
         "account_type": "MISSING",
-    })
+        "wa_account_matched": False,
+    }
+    msg = _account_block_reply("hinglish", payload)
+    fact = account_gate_fact("hinglish", payload)
     low = (msg or "").lower()
-    assert "whatsapp" in low or "number" in low or "number" in low or "match" in low
+    assert msg == fact
+    assert "whatsapp" in low or "number" in low or "match" in low
     assert "account" in low
+
+
+def test_account_gate_fact_in_current_state():
+    conv = AiConversation(
+        conversation_id="wa:gate",
+        mobile="919900000099",
+        state="NEW",
+        payload_json="{}",
+    )
+    payload = {
+        "wa_account_matched": False,
+        "account_reason": "ACCOUNT_NOT_FOUND",
+        "account_type": "MISSING",
+    }
+    st = build_current_state(conv, payload, "hinglish")
+    assert st.get("backend_account_fact")
+    assert "account" in st["backend_account_fact"].lower()
 
 
 def test_build_current_state_phase3():

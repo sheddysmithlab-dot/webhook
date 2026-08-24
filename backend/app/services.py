@@ -151,6 +151,10 @@ def get_or_create_settings(db: Session) -> MetaSettings:
             ai_api_base=normalize_ai_api_base(settings.ai_api_base or ZAI_API_BASE),
             ai_model=normalize_ai_model(settings.ai_model or ZAI_MODEL, ZAI_API_BASE),
             ai_reply_language=getattr(settings, "ai_reply_language", None) or "auto",
+            ai_vision_model=settings.ai_vision_model or "glm-4.6v-flash",
+            ai_vision_enabled=settings.ai_vision_enabled,
+            ai_voice_enabled=settings.ai_voice_enabled,
+            groq_api_key=settings.groq_api_key or "",
         )
         db.add(row)
         db.flush()
@@ -186,6 +190,15 @@ def get_or_create_settings(db: Session) -> MetaSettings:
         row.ai_api_key = settings.ai_api_key
     if not (getattr(row, "ai_reply_language", None) or "").strip():
         row.ai_reply_language = getattr(settings, "ai_reply_language", None) or "auto"
+    # Phase 1: backfill vision + voice defaults from env when DB row is missing them.
+    if not (getattr(row, "ai_vision_model", None) or "").strip():
+        row.ai_vision_model = settings.ai_vision_model or "glm-4.6v-flash"
+    if getattr(row, "ai_vision_enabled", None) is None:
+        row.ai_vision_enabled = settings.ai_vision_enabled
+    if getattr(row, "ai_voice_enabled", None) is None:
+        row.ai_voice_enabled = settings.ai_voice_enabled
+    if not (getattr(row, "groq_api_key", None) or "").strip() and settings.groq_api_key:
+        row.groq_api_key = settings.groq_api_key
     return row
 
 
@@ -220,6 +233,13 @@ def resolve_ai_config(db: Session) -> dict:
         config_error = AI_CONFIG_ERROR_KEY
         log.error("ai.config_error: %s", config_error)
     enabled = bool(want_enabled and key)
+    # Phase 1: vision + voice config (vision reuses Z.AI key/base; voice uses Groq).
+    vision_model = (getattr(row, "ai_vision_model", None) or settings.ai_vision_model or "glm-4.6v-flash").strip()
+    vision_enabled = bool(getattr(row, "ai_vision_enabled", None)) if getattr(row, "ai_vision_enabled", None) is not None else settings.ai_vision_enabled
+    voice_enabled = bool(getattr(row, "ai_voice_enabled", None)) if getattr(row, "ai_voice_enabled", None) is not None else settings.ai_voice_enabled
+    groq_key = (getattr(row, "groq_api_key", None) or settings.groq_api_key or "").strip()
+    groq_base = (settings.groq_api_base or "https://api.groq.com/openai/v1").strip()
+    groq_whisper = (settings.groq_whisper_model or "whisper-large-v3-turbo").strip()
     return {
         "enabled": enabled,
         "api_key": key,
@@ -230,6 +250,14 @@ def resolve_ai_config(db: Session) -> dict:
         ),
         "config_error": config_error,
         "provider": "z.ai",
+        # Vision (Z.AI glm-4.6v-flash) — same account, different model slug.
+        "vision_enabled": bool(vision_enabled and key),
+        "vision_model": vision_model,
+        # Voice (Groq Whisper) — separate transcription service, not a chat provider.
+        "voice_enabled": bool(voice_enabled and groq_key),
+        "groq_api_key": groq_key,
+        "groq_api_base": groq_base,
+        "groq_whisper_model": groq_whisper,
     }
 
 
@@ -266,6 +294,12 @@ def settings_public(row: MetaSettings) -> dict:
         "ai_api_key_set": bool((getattr(row, "ai_api_key", None) or "").strip()),
         "ai_api_key_hint": _key_hint(getattr(row, "ai_api_key", None) or ""),
         "ai_provider": "z.ai",
+        # Phase 1: vision + voice public status (no secrets leaked).
+        "ai_vision_enabled": bool(getattr(row, "ai_vision_enabled", False)),
+        "ai_vision_model": getattr(row, "ai_vision_model", None) or settings.ai_vision_model or "glm-4.6v-flash",
+        "ai_voice_enabled": bool(getattr(row, "ai_voice_enabled", False)),
+        "groq_api_key_set": bool((getattr(row, "groq_api_key", None) or "").strip()),
+        "groq_whisper_model": settings.groq_whisper_model or "whisper-large-v3-turbo",
         "configured": {
             "callback_url": bool(row.callback_url),
             "verify_token": bool(row.verify_token),
@@ -275,6 +309,7 @@ def settings_public(row: MetaSettings) -> dict:
             "phone_number_id": bool(row.phone_number_id),
             "system_user_token": bool(row.system_user_token),
             "ai_api_key": bool((getattr(row, "ai_api_key", None) or "").strip()),
+            "groq_api_key": bool((getattr(row, "groq_api_key", None) or "").strip()),
         },
     }
 

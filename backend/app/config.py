@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     # Phase-4: reply_path + ai_ms logged on every turn. Rollback: AI_PROMPT_CHAT=false.
     ai_prompt_chat: bool = True
     ai_media_dir: str = "./data/media"
+    # --- Phase 1: Vision (Z.AI glm-4.6v-flash) + Voice (Groq Whisper) foundation ---
+    # Vision uses the SAME Z.AI account/key as text chat; only the model slug differs.
+    ai_vision_model: str = "glm-4.6v-flash"
+    ai_vision_enabled: bool = False
+    # Voice transcription is a separate service (Groq) — does NOT violate the Z.AI-only chat rule.
+    ai_voice_enabled: bool = False
+    groq_api_key: str = ""
+    groq_api_base: str = "https://api.groq.com/openai/v1"
+    groq_whisper_model: str = "whisper-large-v3-turbo"
     infradealer_base_url: str = ""
     infradealer_api_key: str = ""
     infradealer_api_secret: str = ""

@@ -451,9 +451,9 @@ MESSAGES = {
         "en": "Sir/Ma'am, your account is not ready to post a listing yet. Please check your account/credits on InfraDealer and try again.",
     },
     "account_wa_not_matched": {
-        "hinglish": "Sir/Ma'am, aapka ye WhatsApp number hamare database account se match nahi ho raha. Ya to aap registered number se alag/galat number use kar rahe hain, ya aapka InfraDealer account abhi bana nahi hai. Registered number se message kijiye, ya InfraDealer par account bana/complete kijiye.",
-        "hi": "सर/मैडम, आपका यह WhatsApp नंबर हमारे डेटाबेस अकाउंट से मैच नहीं हो रहा। या आप रजिस्टर्ड नंबर से अलग/गलत नंबर इस्तेमाल कर रहे हैं, या आपका InfraDealer अकाउंट अभी बना नहीं है। रजिस्टर्ड नंबर से मैसेज कीजिए, या InfraDealer पर अकाउंट बनाएँ/पूरा करें।",
-        "en": "Sir/Ma'am, this WhatsApp number does not match an account in our database. You may be using a different/wrong number than the one registered, or your InfraDealer account is not created yet. Please message from the registered number, or create/complete your account on InfraDealer.",
+        "hinglish": "Sir/Ma'am, ye WhatsApp number InfraDealer account se match nahi hua — galat/registered-se-alag number ho sakta hai, ya account abhi bana nahi. Registered number se message kijiye, ya yahi pe account banwane ke liye *account banao* likh dijiye.",
+        "hi": "सर/मैडम, यह WhatsApp नंबर InfraDealer अकाउंट से मैच नहीं हुआ — गलत/रजिस्टर्ड से अलग नंबर हो सकता है, या अकाउंट अभी बना नहीं। रजिस्टर्ड नंबर से मैसेज कीजिए, या यहीं अकाउंट बनवाने के लिए *account banao* लिख दीजिए।",
+        "en": "Sir/Ma'am, this WhatsApp number does not match an InfraDealer account — it may be the wrong/unregistered number, or the account is not created yet. Message from the registered number, or type *account banao* here to create one.",
     },
     "otp_ask": {
         "hinglish": "OTP aapke number pe SMS se bhej diya hai. 6-digit OTP type kijiye.",

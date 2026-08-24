@@ -20,7 +20,7 @@ from app.redis_cache import (
     reset_redis_client,
     set_latest_wamid,
 )
-from app.ai.account import should_intercept_account
+from app.ai.account import should_intercept_account, wants_create_account
 from app.ai.account_filter import verify_account
 from app.ai.cards import (
     card_photo_count,
@@ -83,6 +83,36 @@ def test_account_no_hijack():
     assert should_intercept_account({"account_step": "otp"}, "123456") is True
     assert should_intercept_account({"account_step": "otp"}, "price badlo") is False
     print("OK account no hijack")
+
+
+def test_wants_create_account():
+    unmatched = {"wa_account_matched": False, "account_reason": "ACCOUNT_NOT_FOUND"}
+    assert wants_create_account("Naya account ban do") is True
+    assert wants_create_account("account banao") is True
+    assert wants_create_account("create account please") is True
+    assert wants_create_account("Naya bana do", unmatched) is True
+    assert wants_create_account("Naya bana do", {"wa_account_matched": True}) is False
+    assert wants_create_account("Bechna hai", unmatched) is False
+    assert wants_create_account("JCB 3DX bechna hai") is False
+    print("OK wants_create_account")
+
+
+def test_adapt_account_gate_falls_back_to_fact():
+    """Without AI key, adapt returns canonical corrected fact."""
+    from app.ai.account import account_gate_fact, adapt_account_gate_reply
+    from app.models import AiConversation
+    from unittest.mock import patch
+
+    db = _session()
+    conv = AiConversation(mobile="9000111222", conversation_id="CONV_ADAPT", state="NEW")
+    db.add(conv)
+    db.flush()
+    payload = {"wa_account_matched": False, "account_reason": "ACCOUNT_NOT_FOUND"}
+    fact = account_gate_fact("hinglish", payload)
+    with patch("app.services.resolve_ai_config", return_value={"enabled": False}):
+        out = adapt_account_gate_reply(db, conv, "Bechna hai", "hinglish", payload)
+    assert out == fact
+    print("OK adapt_account_gate fallback")
 
 
 def test_photos_limits():

@@ -862,25 +862,29 @@ def _is_eligible_to_post(payload: dict) -> bool:
 
 def _wa_account_unmatched(payload: dict) -> bool:
     """True when this WhatsApp number is not linked to a DB / InfraDealer account."""
-    reason = str(payload.get("account_reason") or "").upper()
-    atype = str(payload.get("account_type") or "").upper()
-    if reason in {"ACCOUNT_NOT_FOUND", "NOT_FOUND"}:
-        return True
-    if atype in {"MISSING", "ACCOUNT_TYPE_UNKNOWN", ""}:
-        ctx = payload.get("account_context") if isinstance(payload.get("account_context"), dict) else {}
-        acct = ctx.get("account") if isinstance(ctx.get("account"), dict) else {}
-        if "found" in acct and not acct.get("found"):
-            return True
-        if not payload.get("profile_id") and not payload.get("infradealer_user_id") and not payload.get("account_onboarded"):
-            return True
-    return False
+    from .account import _wa_unmatched_payload
+
+    return _wa_unmatched_payload(payload)
 
 
 def _account_block_reply(lang: str, payload: dict) -> str:
-    """User-facing account block copy — prefer WA-mismatch wording when number not found."""
-    if _wa_account_unmatched(payload):
-        return t(lang, "account_wa_not_matched")
-    return t(lang, "account_not_eligible")
+    """Canonical account-gate fact (no AI). Prefer adapt_account_gate_reply on hot path."""
+    from .account import account_gate_fact
+
+    return account_gate_fact(lang, payload)
+
+
+def _account_gate_user_reply(
+    db: Session,
+    conv: AiConversation,
+    user_text: str,
+    lang: str,
+    payload: dict,
+) -> str:
+    """Correct mismatch/eligibility fact → AI rewrite for this user message → outbound."""
+    from .account import adapt_account_gate_reply
+
+    return adapt_account_gate_reply(db, conv, user_text, lang, payload)
 
 
 def _reset_listing_fields(payload: dict) -> None:
@@ -916,6 +920,12 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     from .prompt import soft_rules_fallback
 
     soft = soft_rules_fallback(db)
+
+    # Explicit create-account request — never loop the mismatch lecture
+    from .account import start_account, wants_create_account
+
+    if wants_create_account(msg, payload) and not payload.get("account_onboarded"):
+        return start_account(db, conv, lang)
 
     # Ensure draft isolation for listing workflows
     if (payload.get("intent") or "").upper() == "SELL" or media_note:
@@ -1033,7 +1043,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                     reply = build_next_question(_payload(conv), lang) or t(lang, "unclear")
                     response_type = "ASK_QUESTION"
                 elif result.get("ok") is False and result.get("error") == "account_not_eligible":
-                    reply = _account_block_reply(lang, _payload(conv))
+                    reply = _account_gate_user_reply(db, conv, msg, lang, _payload(conv))
                     response_type = "ERROR_MESSAGE"
                 else:
                     reply = t(lang, "submitted")
@@ -1045,7 +1055,13 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
             # Eligibility gate — block listing flow for not-eligible accounts.
             if intent in {"SELL", "BUY"} and not _is_eligible_to_post(payload):
                 response_type = "ERROR_MESSAGE"
-                reply = _account_block_reply(lang, payload)
+                # Save intent so next turns know they wanted sell/buy
+                try:
+                    execute_tool(db, conv, "save_customer_data", {"intent": intent})
+                    payload = _payload(conv)
+                except Exception:
+                    pass
+                reply = _account_gate_user_reply(db, conv, msg, lang, payload)
                 _set_rm_state(payload, "IDENTITY_PENDING")
                 _write_payload(conv, payload)
             else:
