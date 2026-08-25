@@ -1083,15 +1083,34 @@ def handle_post_listing_query(db: Session, conv: AiConversation, text: str, lang
 
     if re.search(r"\b(link|url)\b|listing\s*link", low):
         return t(lang, "approved", link=link) if link else t(lang, "link_missing")
-    if re.search(r"(last|pichhli|previous).{0,20}(post|listing)|listing\s*status|meri\s+listing", low):
+    # Count / "kitni listings" → account_info (human numbers), not DRAFT jargon
+    if re.search(r"\b(kitni|kitti|kitne|kitna|how\s+many|available)\b", low):
+        return None
+    if re.search(r"(last|pichhli|previous).{0,20}(post|listing)|listing\s*status|meri\s+last\s+listing", low):
         if st == "LIVE" and link:
             return t(lang, "approved", link=link)
         if st in {"PENDING_REVIEW", "UNDER_REVIEW", "SUBMITTED", "ADMIN_ACKNOWLEDGED", "APPROVED", "READY_FOR_REVIEW"}:
             return t(lang, "not_live")
-        return t(lang, "status_ask", status=st or "DRAFT")
+        if st in {"", "DRAFT", "NEW"}:
+            return t(lang, "account_info_listings_none")
+        return t(lang, "status_ask_human", status=_human_listing_status(st))
     if re.search(r"(delete|hata|mita).{0,24}(listing|post|ad)|(listing|post).{0,24}(delete|hata)", low):
         return t(lang, "handoff")  # listing delete is admin/human — never silent wipe
     return None
+
+
+def _human_listing_status(st: str) -> str:
+    s = (st or "").upper()
+    return {
+        "DRAFT": "abhi draft / incomplete",
+        "LIVE": "live website pe",
+        "PENDING_REVIEW": "admin review me",
+        "UNDER_REVIEW": "admin review me",
+        "SUBMITTED": "submit ho chuki, review pending",
+        "READY_FOR_REVIEW": "admin review ke liye ready",
+        "APPROVED": "approve / live hone wali",
+        "REJECTED": "reject hui",
+    }.get(s, s.lower().replace("_", " ") or "unknown")
 
 
 def has_recent_listing(db: Session, conv: AiConversation) -> bool:

@@ -61,8 +61,8 @@ _ASK_LAST_POST = re.compile(
     r"(last|pichhli|pichli|pehle|previous|akhir).{0,24}(post|listing|dali|bechi|card)|"
     r"(kya|kyaa)\s+(post|dali|becha)|"
     r"mene\s+(last\s+)?post|"
-    r"meri\s+(last\s+)?listing|"
-    r"listing\s*(status|kahan|kya)|"
+    r"meri\s+last\s+listing|"
+    r"listing\s*(status|kahan)|"
     r"jo\s+(maine|mene)\s+(dali|post)",
     re.I,
 )

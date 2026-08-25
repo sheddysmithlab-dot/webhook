@@ -1067,22 +1067,37 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                 reply = q
 
         elif intent == "CHECK_LISTING_STATUS":
-            from .data_push import get_submission_status, validate_live_url
+            from .account_info import handle_account_info as _acc_info
 
-            sub_status = get_submission_status(db, conv)
-            status = sub_status.get("status") or payload.get("listing_status") or conv.state or "DRAFT"
-            link = sub_status.get("live_url") or payload.get("listing_url") or ""
-            if link and not validate_live_url(link):
-                link = ""
-            response_type = "STATUS_UPDATE"
-            reply = t(lang, "status_ask", status=status)
-            if str(status).upper() in {"LIVE"} and link:
-                reply = t(lang, "approved", link=link)
-            elif str(status).upper() in {
-                "PENDING_REVIEW", "READY_FOR_REVIEW", "SUBMITTED",
-                "UNDER_REVIEW", "ADMIN_ACKNOWLEDGED", "APPROVED",
-            }:
-                reply = t(lang, "not_live")
+            pointed = _acc_info(db, conv, text, lang)
+            if pointed:
+                response_type = "STATUS_UPDATE"
+                reply = pointed
+            else:
+                from .data_push import get_submission_status, validate_live_url
+
+                sub_status = get_submission_status(db, conv)
+                status = sub_status.get("status") or payload.get("listing_status") or conv.state or ""
+                link = sub_status.get("live_url") or payload.get("listing_url") or ""
+                if link and not validate_live_url(link):
+                    link = ""
+                response_type = "STATUS_UPDATE"
+                st_up = str(status).upper()
+                if st_up in {"LIVE"} and link:
+                    reply = t(lang, "approved", link=link)
+                elif st_up in {"", "DRAFT", "NEW"}:
+                    reply = t(lang, "account_info_listings_none")
+                elif st_up in {
+                    "PENDING_REVIEW",
+                    "READY_FOR_REVIEW",
+                    "SUBMITTED",
+                    "UNDER_REVIEW",
+                    "ADMIN_ACKNOWLEDGED",
+                    "APPROVED",
+                }:
+                    reply = t(lang, "not_live")
+                else:
+                    reply = t(lang, "status_ask_human", status=st_up.lower().replace("_", " "))
 
         elif intent == "ASK_LISTING_LINK":
             from .data_push import get_submission_status, validate_live_url

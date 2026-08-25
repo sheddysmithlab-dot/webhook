@@ -1,6 +1,7 @@
 """Human-friendly WhatsApp replies for account / wallet / listing questions.
 
 Never expose backend jargon (FREE_USER, ELIGIBLE, onboarded, backend DB).
+Answer only what the user asked; bold the key numbers.
 """
 
 from __future__ import annotations
@@ -17,12 +18,12 @@ from .tools import _payload, _write_payload
 
 log = logging.getLogger("infradealer.ai.account_info")
 
-_ACCOUNT_INFO = re.compile(
+_ACCOUNT_DETAIL = re.compile(
     r"("
-    r"\b(account|akount|अकाउंट)\b.{0,40}\b(detail|details|info|jaankari|jankari|batao|bata|status|kya\s+hai)\b"
-    r"|\b(meri|mera|mujhe|mere)\b.{0,24}\b(account|akount)\b"
-    r"|account\s*(detail|details|info|status)"
-    r"|(database|db)\s*(mein|me|me)\s*(check|dekh|dekho)"
+    r"\b(account|akount|अकाउंट)\b.{0,40}\b(detail|details|info|jaankari|jankari|batao|bata|summary)\b"
+    r"|\b(meri|mera|mujhe|mere)\b.{0,24}\b(account|akount)\b.{0,20}\b(detail|details|info|batao|bata|kya\s+hai)?\b"
+    r"|account\s*(detail|details|info)"
+    r"|(database|db)\s*(mein|me)\s*(check|dekh|dekho)"
     r"|database\s*mein\s*check"
     r")",
     re.I,
@@ -30,7 +31,7 @@ _ACCOUNT_INFO = re.compile(
 _TOKEN_INFO = re.compile(
     r"("
     r"\b(token|tokens|wallet|credit|credits)\b"
-    r"|wallet.{0,20}(kitne|balance|mein|me)"
+    r"|wallet.{0,20}(kitne|kitna|balance|mein|me)"
     r"|(kitne|kitna).{0,20}(token|tokens|credit)"
     r")",
     re.I,
@@ -38,8 +39,9 @@ _TOKEN_INFO = re.compile(
 _LISTING_INFO = re.compile(
     r"("
     r"\b(meri|mere|mujhe)\b.{0,30}\b(listing|listings|post|ads?)\b"
-    r"|\b(listing|listings)\b.{0,30}\b(kitni|kitne|status|available|hai|hain|kahan)\b"
-    r"|listing\s*(status|check|batao|detail)"
+    r"|\b(listing|listings)\b.{0,30}\b(kitni|kitti|kitne|kitna|status|available|hai|hain|kahan|kitii)\b"
+    r"|listing\s*(status|check|batao|detail|kitni|kitti)"
+    r"|(kitni|kitti|kitne|kitna)\s+(listing|listings)"
     r")",
     re.I,
 )
@@ -47,7 +49,7 @@ _LISTING_INFO = re.compile(
 
 def wants_account_snapshot(text: str) -> bool:
     msg = text or ""
-    return bool(_ACCOUNT_INFO.search(msg) or _TOKEN_INFO.search(msg) or _LISTING_INFO.search(msg))
+    return bool(_ACCOUNT_DETAIL.search(msg) or _TOKEN_INFO.search(msg) or _LISTING_INFO.search(msg))
 
 
 def _human_plan(account_type: str) -> str:
@@ -100,7 +102,6 @@ def _refresh_snapshot(db: Session, conv: AiConversation) -> dict:
     except (TypeError, ValueError):
         live_i = pending_i = total_i = None
 
-    # Local draft fallback when remote counts missing
     if live_i is None and pending_i is None:
         st = str(payload.get("listing_status") or "").upper()
         local_pending = 1 if st in {"PENDING_REVIEW", "UNDER_REVIEW", "READY_FOR_REVIEW", "SUBMITTED", "DRAFT"} else 0
@@ -129,8 +130,26 @@ def _refresh_snapshot(db: Session, conv: AiConversation) -> dict:
     }
 
 
+def _token_line(lang: str, snap: dict) -> str:
+    tok = snap.get("tokens")
+    if tok is None:
+        return t(lang, "account_info_tokens_unknown", link=snap["buy_link"])
+    if tok <= 0:
+        return t(lang, "account_info_tokens_zero", link=snap["buy_link"])
+    return t(lang, "account_info_tokens", tokens=tok, link=snap["buy_link"])
+
+
+def _listing_line(lang: str, snap: dict) -> str:
+    live = int(snap.get("listings_live") or 0)
+    pending = int(snap.get("listings_pending") or 0)
+    total = int(snap.get("listings_total") or (live + pending))
+    if live == 0 and pending == 0:
+        return t(lang, "account_info_listings_none")
+    return t(lang, "account_info_listings", live=live, pending=pending, total=total)
+
+
 def handle_account_info(db: Session, conv: AiConversation, text: str, lang: str) -> str | None:
-    """Deterministic human reply for account/token/listing questions."""
+    """Deterministic human reply — only the asked point, key figures in *bold*."""
     msg = (text or "").strip()
     if not wants_account_snapshot(msg):
         return None
@@ -138,8 +157,7 @@ def handle_account_info(db: Session, conv: AiConversation, text: str, lang: str)
     snap = _refresh_snapshot(db, conv)
     want_tokens = bool(_TOKEN_INFO.search(msg))
     want_listings = bool(_LISTING_INFO.search(msg))
-    want_account = bool(_ACCOUNT_INFO.search(msg)) or (not want_tokens and not want_listings)
-    # "database mein check" → refresh wallet + summary
+    want_account = bool(_ACCOUNT_DETAIL.search(msg))
     if re.search(r"\b(database|db)\b", msg, re.I):
         want_tokens = True
         want_account = True
@@ -147,9 +165,18 @@ def handle_account_info(db: Session, conv: AiConversation, text: str, lang: str)
     if not snap.get("found") and not snap.get("onboarded"):
         return t(lang, "account_info_missing")
 
-    bits: list[str] = []
+    # Point answers: don't dump full account when user only asked tokens / listings
+    if want_tokens and not want_account and not want_listings:
+        return _token_line(lang, snap)
 
-    if want_account:
+    if want_listings and not want_account and not want_tokens:
+        return _listing_line(lang, snap)
+
+    if want_tokens and want_listings and not want_account:
+        return "\n".join([_token_line(lang, snap), _listing_line(lang, snap)])
+
+    bits: list[str] = []
+    if want_account or (not want_tokens and not want_listings):
         bits.append(
             t(
                 lang,
@@ -158,30 +185,9 @@ def handle_account_info(db: Session, conv: AiConversation, text: str, lang: str)
                 plan=snap["plan"],
             )
         )
-
     if want_tokens or want_account:
-        tok = snap.get("tokens")
-        if tok is None:
-            bits.append(t(lang, "account_info_tokens_unknown", link=snap["buy_link"]))
-        elif tok <= 0:
-            bits.append(t(lang, "account_info_tokens_zero", link=snap["buy_link"]))
-        else:
-            bits.append(t(lang, "account_info_tokens", tokens=tok, link=snap["buy_link"]))
-
+        bits.append(_token_line(lang, snap))
     if want_listings or want_account:
-        live = int(snap.get("listings_live") or 0)
-        pending = int(snap.get("listings_pending") or 0)
-        if live == 0 and pending == 0:
-            bits.append(t(lang, "account_info_listings_none"))
-        else:
-            bits.append(
-                t(
-                    lang,
-                    "account_info_listings",
-                    live=live,
-                    pending=pending,
-                )
-            )
+        bits.append(_listing_line(lang, snap))
 
-    bits.append(t(lang, "account_info_next"))
     return "\n".join(b for b in bits if b)

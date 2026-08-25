@@ -525,6 +525,10 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         reset_ai_conversation(db, conv)
         return t(lang, "chat_cleared")
     if wants_delete_listing(msg) or wants_listing_link(msg) or wants_last_post(msg):
+        # Account / token / listing-count questions first (human numbers, not DRAFT jargon)
+        info = handle_account_info(db, conv, text, lang)
+        if info:
+            return _sanitize_reply(info, posted=False, lang=lang)
         from .data_push import handle_post_listing_query
 
         post = handle_post_listing_query(db, conv, text, lang)
@@ -898,6 +902,9 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
 
     # 1) Website listing delete / link / last post — never wipe chat for these
     if wants_delete_listing(text) or wants_listing_link(text) or wants_last_post(text):
+        info_pre = handle_account_info(db, conv, text or "", lang)
+        if info_pre:
+            return _sanitize_reply(info_pre, posted=False, lang=lang)
         from .data_push import handle_post_listing_query
 
         post = handle_post_listing_query(db, conv, text, lang)
