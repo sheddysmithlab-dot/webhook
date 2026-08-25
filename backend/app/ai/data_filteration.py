@@ -434,6 +434,46 @@ def normalize_location(city: Any = None, state: Any = None, location: Any = None
     return result
 
 
+def _extract_bare_price(text: str, year: Any = None) -> int | None:
+    """Pick a bare integer price from text (not years / short model codes).
+
+    Prefers the largest plausible amount >= 10_000 so multiline dumps
+    ``Tata / 2567 / 2021 / 2000000`` keep 2000000, not 2567.
+    """
+    if not (text or "").strip():
+        return None
+    year_skip = set()
+    if not _blank(year):
+        try:
+            year_skip.add(str(int(year)))
+        except (TypeError, ValueError):
+            pass
+    candidates: list[int] = []
+    for raw in re.findall(r"\d[\d,]{3,}", text.replace(" ", "")):
+        digits = raw.replace(",", "")
+        if _YEAR_RE.match(digits) or digits in year_skip:
+            continue
+        if re.fullmatch(r"\d{3,4}", digits):
+            # Model codes (1613, 2567) — not rupee prices
+            continue
+        try:
+            val = int(float(digits))
+        except (TypeError, ValueError):
+            continue
+        if val < 10_000 or val > 50_00_00_000:
+            continue
+        if 1900 <= val <= 2035:
+            continue
+        candidates.append(val)
+    if not candidates:
+        # Lone message: "2000000" or "20,00,000"
+        cur = normalize_currency(text.strip())
+        if cur and int(cur["value"]) >= 10_000:
+            return int(cur["value"])
+        return None
+    return max(candidates)
+
+
 def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
     """Merge explicit fields with light NL extraction from latest messages."""
     out = dict(fields or {})
@@ -482,6 +522,13 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
                 out["expected_price"] = cur["value"]
                 out["price"] = cur["value"]
                 break
+        # Bare rupee amounts: multiline dumps like "Tata\n2567\n2021\n2000000"
+        # or a lone "2000000" when asking for price (no ₹/lakh marker).
+        if _blank(out.get("expected_price")) and _blank(out.get("price")):
+            bare = _extract_bare_price(blob, year=out.get("year"))
+            if bare:
+                out["expected_price"] = bare
+                out["price"] = bare
 
     if _blank(out.get("running_km")) and _blank(out.get("operating_hours")) and _blank(out.get("km")):
         for m in re.finditer(

@@ -125,6 +125,22 @@ _GREET = re.compile(
     r"क्या\s*haal|kaise\s*ho)[\s!?.]*$",
     re.I,
 )
+_POST_NOW = re.compile(
+    r"("
+    r"\b(post\s*(kar|kr|do|dena|karo|krdo|kardo)|submit\s*(kar|kr|do)|"
+    r"listing\s*(bana|banao|kar\s*do|post)|bas\s*(yahi|itna|post|submit)|"
+    r"sirf\s*(yahi|itna)|itni\s*detail|detail\s*h\s*bs|"
+    r"nahi\s*(malum|pata|patt)|mat\s*pooch|optional\s*skip|"
+    r"baaki\s*(mat|skip)|bas\s*post)\b"
+    r"|पोस्ट\s*कर|सिर्फ\s*इतना|नहीं\s*(मालूम|पता)"
+    r")",
+    re.I,
+)
+_SKIP_OPTIONAL = re.compile(
+    r"\b(skip|baad\s*me|baad\s*mein|nahi\s*(malum|pata|patt)|"
+    r"mat\s*pooch|optional|km\s*nahi|hours\s*nahi)\b",
+    re.I,
+)
 
 FIELD_ASK_ORDER = (
     "intent", "category", "brand", "model", "year",
@@ -289,6 +305,11 @@ def detect_intent(text: str, payload: dict, media_note: str = "") -> str:
     if media_note or "[photo]" in low or "photo" in low:
         return "UPLOAD_PHOTO"
 
+    if _POST_NOW.search(msg) and (payload.get("intent") or "").upper() in {"BUY", "SELL", ""}:
+        # Explicit "bas post kar do" / "nahi malum detail" during listing
+        if (payload.get("intent") or "").upper() in {"BUY", "SELL"} or payload.get("brand") or payload.get("category"):
+            return "SUBMIT_NOW"
+
     if _SELL.search(low) and not _BUY.search(low):
         return "SELL"
     if _BUY.search(low) and not _SELL.search(low):
@@ -380,6 +401,28 @@ def collect_message(db: Session, conv: AiConversation, text: str) -> dict:
             seed[key] = payload.get(key)
 
     extracted = extract_fields([{"text": msg, "source": "USER"}], seed)
+
+    # Slot-fill: when asking for price (or price still missing) and message is a
+    # bare amount, force expected_price even if NL regex was conservative.
+    next_ask = str(payload.get("next_ask") or "").lower()
+    miss = payload.get("missing_fields") or []
+    miss_keys = {
+        (m["field"] if isinstance(m, dict) else str(m)).lower()
+        for m in miss
+    }
+    price_needed = (
+        next_ask in {"expected_price", "price", "budget"}
+        or "expected_price" in miss_keys
+        or "price" in miss_keys
+        or not str(payload.get("expected_price") or "").strip()
+    )
+    if price_needed and not extracted.get("expected_price") and not extracted.get("price"):
+        from .data_filteration import _extract_bare_price
+
+        bare = _extract_bare_price(msg, year=extracted.get("year") or payload.get("year"))
+        if bare:
+            extracted["expected_price"] = bare
+            extracted["price"] = bare
 
     # Explicit place in this turn can override seeded location
     named_city = _fuzzy_city_safe(msg)
@@ -1143,6 +1186,35 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                     reply = (reply + "\n" + q) if q else reply
             else:
                 reply = t(lang, "otp_fail")
+
+        elif intent == "SUBMIT_NOW":
+            # User wants to skip optional fields and post/confirm with what they have.
+            skipped = list(payload.get("skipped_asks") or [])
+            for opt in ("km", "hours", "running_km", "operating_hours", "optional"):
+                if opt not in skipped:
+                    skipped.append(opt)
+            payload["skipped_asks"] = skipped
+            payload["photos_complete"] = payload.get("photos_complete") or _photos_satisfied(payload)
+            # Still harvest any price/year/brand in this same message
+            collect_message(db, conv, msg)
+            payload = _payload(conv)
+            payload["skipped_asks"] = skipped
+            _write_payload(conv, payload)
+            result = filter_memory(db, conv)
+            payload = handle_data_filter_result(db, conv, result)
+            payload["skipped_asks"] = skipped
+            _write_payload(conv, payload)
+            if is_collection_ready(payload) and (
+                (payload.get("intent") or "").upper() != "SELL" or _photos_satisfied(payload)
+            ):
+                response_type = "CONFIRMATION_REQUEST"
+                reply = build_confirmation_summary(db, conv, lang, filter_result=result)
+            else:
+                response_type = "ASK_QUESTION"
+                reply = build_next_question(payload, lang) or t(lang, "unclear")
+                if _SKIP_OPTIONAL.search(msg) and reply:
+                    # Soft nudge: only mandatory left
+                    pass
 
         elif intent == "CONFIRM_LISTING":
             decision = interpret_confirmation(msg, payload)

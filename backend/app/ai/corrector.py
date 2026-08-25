@@ -197,10 +197,15 @@ def _meaning_changed(original: str, corrected: str) -> bool:
             return True
         if word not in orig_lower and word in corr_lower:
             return True
-    # Check numbers changed
+    # Check numbers changed (years / prices / models must stay)
     orig_nums = set(re.findall(r"\d+", original))
     corr_nums = set(re.findall(r"\d+", corrected))
     if orig_nums != corr_nums:
+        return True
+    # Explicit year tokens must not flip (2021 → 2024)
+    orig_years = set(re.findall(r"\b(?:19|20)\d{2}\b", original))
+    corr_years = set(re.findall(r"\b(?:19|20)\d{2}\b", corrected))
+    if orig_years != corr_years:
         return True
     return False
 
@@ -209,6 +214,7 @@ _CLEAR_INTENT = re.compile(
     r"\b(bech|sell|bechna|bechni|bikau|kharid|buy|kharidna|dumper|tipper|gaadi|gadi)\b",
     re.I,
 )
+_MULTI_NUM_DUMP = re.compile(r"(?:\d[\d,]{2,}.+){2,}", re.S)
 
 
 def correct_user_message(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str:
@@ -233,16 +239,22 @@ def correct_user_message(db: Session, conv: AiConversation, text: str, media_not
     cfg = resolve_ai_config(db)
     llm_ready = bool(cfg.get("enabled") and cfg.get("api_key"))
     word_n = len(msg.split())
-    # Clear sell/buy / vehicle cues: prefer fast path — do not burn 8s on corrector LLM
+    # Clear sell/buy / vehicle cues: prefer fast path — do not burn time on corrector LLM
     clear_intent = bool(_CLEAR_INTENT.search(msg))
-    needs_llm = (not clear_intent) and ((fast_fixed != msg) or word_n > 5)
+    # Multi-line brand/model/year/price dumps — never let LLM invent a different year
+    multi_dump = bool(_MULTI_NUM_DUMP.search(msg)) or msg.count("\n") >= 2
+    needs_llm = (not clear_intent) and (not multi_dump) and ((fast_fixed != msg) or word_n > 5)
 
-    if fast_fixed != msg and (word_n <= 6 or clear_intent):
-        # Fast fix is enough for short / clear-intent messages
+    if fast_fixed != msg and (word_n <= 6 or clear_intent or multi_dump):
+        # Fast fix is enough for short / clear-intent / multi-number dumps
         corrected = fast_fixed
     elif needs_llm and llm_ready:
         corrected = _llm_correct(msg, lang, cfg)
-        corrected = _fast_correct(corrected)
+        if _meaning_changed(msg, corrected):
+            log.warning("corrector meaning change rejected: %s → %s", msg, corrected)
+            corrected = fast_fixed if fast_fixed != msg else msg
+        else:
+            corrected = _fast_correct(corrected)
     else:
         corrected = fast_fixed
 

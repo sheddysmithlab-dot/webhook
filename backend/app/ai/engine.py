@@ -603,6 +603,12 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         if not digits:
             return t(lang, "otp_ask")
 
+    # Hard: user asks to post / skip optionals — let chat_memory confirm path run
+    from .chat_memory import detect_intent as _detect_rm_intent
+
+    if _detect_rm_intent(msg, payload, media_note=media_note) == "SUBMIT_NOW":
+        return None
+
     # Hard: Haan / Yes confirmation only via confirm handler
     if payload.get("awaiting_confirm") or conv.state == "AWAITING_CONFIRMATION":
         hit = handle_confirmation(db, conv, text, lang)
