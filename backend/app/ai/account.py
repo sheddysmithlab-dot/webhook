@@ -324,9 +324,11 @@ _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", re.I)
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9._]{3,40}$")
 _PASSWORD_RESET = re.compile(
     r"("
-    r"(password|passwd|pass|पासवर्ड).{0,24}(badlo|change|reset|update|bhool|forgot|naya|new)"
-    r"|(change|reset|forgot|naya|new).{0,24}(password|passwd|pass|पासवर्ड)"
-    r"|password\s*(badlo|change|reset)"
+    r"\b(password|passwd|पासवर्ड)\b.{0,24}\b(badlo|change|reset|update|bhool|forgot|naya|new)\b"
+    r"|\b(change|reset|forgot|naya|new)\b.{0,24}\b(password|passwd|पासवर्ड)\b"
+    r"|\bpassword\s*(badlo|change|reset)\b"
+    r"|mera\s+account.{0,40}password"
+    r"|account.{0,40}password.{0,20}(change|badlo|reset)"
     r")",
     re.I,
 )
@@ -737,9 +739,12 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
             return t(lang, "account_reg_invalid_password")
         otp = str(payload.get("pw_reset_otp") or "")
         if len(otp) != 6:
+            # OTP was lost from session — ask again without auto-resending (avoids rate-limit noise)
             payload["account_step"] = "pw_otp"
+            payload.pop("pw_reset_otp", None)
+            conv.error_message = "ask:pw_otp"
             _write_payload(conv, payload)
-            return start_password_reset(db, conv, lang)
+            return t(lang, "account_pw_reset_otp_lost")
         svc = _infra(db)
         if not svc:
             return t(lang, "account_pw_reset_fail")
@@ -748,19 +753,34 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
             if item:
                 svc.process_outbox_item(item)
                 db.flush()
-            code = (item.business_status if item else "") or ""
-            if item and item.status == "DONE" and code.upper() in {"PASSWORD_UPDATED", "SUCCESS", ""}:
+            code = ((item.business_status if item else "") or (item.last_error if item else "") or "").upper()
+            ok = bool(
+                item
+                and item.status == "DONE"
+                and (code in {"PASSWORD_UPDATED", "SUCCESS", ""} or not code)
+            )
+            if not ok and item and item.status == "DONE":
+                # Some gateways return success with empty business_status
+                ok = not code or code in {"PASSWORD_UPDATED", "SUCCESS", "OTP_SENT"}
+            if ok:
                 user = _ensure_user(db, conv, payload)
                 user.password_hash = hash_user_password(msg.strip())
                 payload["account_step"] = "done" if payload.get("account_onboarded") else ""
                 payload.pop("pw_reset_otp", None)
                 _write_payload(conv, payload)
                 return t(lang, "account_pw_reset_done")
-            if code.upper() in {"OTP_INVALID", "OTP_EXPIRED", "OTP_ATTEMPTS_EXCEEDED"}:
+            if code in {"OTP_INVALID", "OTP_EXPIRED", "OTP_ATTEMPTS_EXCEEDED"}:
                 payload["account_step"] = "pw_otp"
                 payload.pop("pw_reset_otp", None)
                 _write_payload(conv, payload)
                 return t(lang, "otp_mismatch")
+            log.warning(
+                "password reset confirm failed mobile=***%s status=%s code=%s err=%s",
+                (conv.mobile or "")[-4:],
+                getattr(item, "status", None),
+                code,
+                getattr(item, "last_error", None),
+            )
         except Exception:
             log.exception("password reset confirm failed for %s", conv.mobile)
         return t(lang, "account_pw_reset_fail")

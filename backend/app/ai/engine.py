@@ -529,7 +529,7 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
             return post
 
     # Hard: password reset via WhatsApp OTP (existing accounts)
-    if wants_password_reset(msg):
+    if wants_password_reset(msg) and not str(payload.get("account_step") or "").startswith("pw_"):
         return _sanitize_reply(start_password_reset(db, conv, lang), posted=False, lang=lang)
 
     # Hard: mid-account form (registration / OTP / password reset) stays in account agent
@@ -888,7 +888,7 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
         return t(lang, "chat_cleared")
 
     # 1c) Password reset via WhatsApp OTP
-    if wants_password_reset(text or ""):
+    if wants_password_reset(text or "") and not str(payload0.get("account_step") or "").startswith("pw_"):
         return _sanitize_reply(start_password_reset(db, conv, lang), posted=False, lang=lang)
 
     # 1d) Mid registration / OTP / password form

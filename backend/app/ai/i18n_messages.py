@@ -530,6 +530,11 @@ MESSAGES = {
         "hi": "पासवर्ड बदलने के लिए OTP आपके मोबाइल पर SMS से भेज दिया है। 6 अंकों का OTP यहाँ टाइप कीजिए।",
         "en": "OTP for password change has been sent by SMS to your mobile. Type the 6-digit OTP here.",
     },
+    "account_pw_reset_otp_lost": {
+        "hinglish": "Session expire ho gayi. Dobara *password badlo* likh kar naya OTP lein, phir OTP aur password bhejiye.",
+        "hi": "सेशन समाप्त हो गई। दोबारा *password badlo* लिखकर नया OTP लें, फिर OTP और पासवर्ड भेजिए।",
+        "en": "Session expired. Type *password badlo* again for a new OTP, then send OTP and your new password.",
+    },
     "account_pw_reset_ask_new": {
         "hinglish": "OTP mil gaya. Ab naya password bhejiye (kam se kam 6 character).",
         "hi": "OTP मिल गया। अब नया पासवर्ड भेजिए (कम से कम 6 अक्षर)।",

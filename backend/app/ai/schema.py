@@ -213,6 +213,13 @@ def empty_payload() -> dict:
         "account_role": None,
         "account_password_set": False,
         "account_onboarded": False,
+        # WhatsApp registration / password-reset (must survive loads() between turns)
+        "reg_name": None,
+        "reg_username": None,
+        "reg_username_suggest": None,
+        "reg_email": None,
+        "reg_password": None,
+        "pw_reset_otp": None,
         "expected_price": None,
         "budget": None,
         "budget_max": None,
@@ -302,6 +309,9 @@ def loads(raw: str | None) -> dict:
             if key in base:
                 base[key] = val
             elif key in {"filter_result", "field_conflicts", "documents", "draft_version"}:
+                base[key] = val
+            elif key.startswith(("reg_", "pw_")):
+                # Preserve WhatsApp registration / password-reset session fields
                 base[key] = val
         src = data.get("source") if isinstance(data.get("source"), dict) else {}
         base["source"] = {

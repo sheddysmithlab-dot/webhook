@@ -975,7 +975,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
         wants_password_reset,
     )
 
-    if wants_password_reset(msg):
+    if wants_password_reset(msg) and not str(payload.get("account_step") or "").startswith("pw_"):
         return start_password_reset(db, conv, lang)
 
     if account_busy(payload) and should_intercept_account(payload, text):
