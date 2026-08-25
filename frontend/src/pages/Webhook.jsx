@@ -285,6 +285,7 @@ export default function Webhook() {
         field_messages: s.webhook_fields.messages,
         field_template_status: s.webhook_fields.message_template_status_update,
         field_account_alerts: s.webhook_fields.account_alerts,
+        field_phone_name_update: s.webhook_fields.phone_number_name_update !== false,
       });
       setS(saved);
       setFlash("Settings save ho gayi.");
@@ -657,6 +658,14 @@ export default function Webhook() {
           </label>
           <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
             <input className="wa-check" type="checkbox" checked={s.webhook_fields.account_alerts} onChange={(e) => setS({ ...s, webhook_fields: { ...s.webhook_fields, account_alerts: e.target.checked } })} /> account_alerts
+          </label>
+          <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+            <input
+              className="wa-check"
+              type="checkbox"
+              checked={s.webhook_fields.phone_number_name_update !== false}
+              onChange={(e) => setS({ ...s, webhook_fields: { ...s.webhook_fields, phone_number_name_update: e.target.checked } })}
+            /> phone_number_name_update
           </label>
           <div className="row"><button className="btn primary" type="button" onClick={save}>Save</button></div>
           {flash && <div className="wa-ok">{flash}</div>}

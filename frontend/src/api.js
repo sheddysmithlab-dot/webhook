@@ -116,6 +116,17 @@ export const api = {
   infraErrors: () => request("/api/admin/infradealer/errors"),
   infraCallbacks: () => request("/api/admin/infradealer/callbacks"),
   infraRetry: (requestId) => request(`/api/admin/infradealer/retry/${encodeURIComponent(requestId)}`, { method: "POST" }),
+  displayNameStatus: () => request("/api/admin/meta/display-name"),
+  displayNameSubmit: (new_display_name) =>
+    request("/api/admin/meta/display-name", {
+      method: "POST",
+      body: JSON.stringify({ new_display_name }),
+    }),
+  displayNameRegister: (pin) =>
+    request("/api/admin/meta/display-name/register", {
+      method: "POST",
+      body: JSON.stringify({ pin }),
+    }),
 };
 
 function parseIso(iso) {

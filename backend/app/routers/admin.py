@@ -28,13 +28,17 @@ from ..models import (
     User,
 )
 from ..services import (
+    apply_phone_number_name_update,
+    get_display_name_status,
     get_or_create_settings,
     next_ref,
     normalize_ai_api_base,
     normalize_ai_model,
     normalize_mobile,
+    register_display_name,
     resolve_ai_config,
     settings_public,
+    submit_display_name,
     valid_mobile,
     ZAI_API_BASE,
     ZAI_MODEL,
@@ -297,6 +301,7 @@ class SettingsIn(BaseModel):
     field_messages: bool = True
     field_template_status: bool = True
     field_account_alerts: bool = False
+    field_phone_name_update: bool = True
 
 
 @router.put("/settings")
@@ -314,9 +319,57 @@ def save_settings(body: SettingsIn, db: Session = Depends(get_db), _: None = Dep
     row.field_messages = body.field_messages
     row.field_template_status = body.field_template_status
     row.field_account_alerts = body.field_account_alerts
+    row.field_phone_name_update = body.field_phone_name_update
     db.commit()
     db.refresh(row)
     return settings_public(row)
+
+
+class DisplayNameIn(BaseModel):
+    new_display_name: str = "Infradealer"
+
+
+class DisplayNameRegisterIn(BaseModel):
+    pin: str
+
+
+@router.get("/meta/display-name")
+def meta_display_name_get(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    """Current WhatsApp display name + pending Meta review status (Graph API)."""
+    try:
+        return get_display_name_status(get_or_create_settings(db))
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/meta/display-name")
+def meta_display_name_submit(body: DisplayNameIn, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    """Submit display name to Meta for review."""
+    try:
+        meta = get_or_create_settings(db)
+        out = submit_display_name(meta, body.new_display_name)
+        db.commit()
+        return out
+    except RuntimeError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/meta/display-name/register")
+def meta_display_name_register(
+    body: DisplayNameRegisterIn,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """Re-register phone after Meta APPROVED the display name (applies name for customers)."""
+    try:
+        meta = get_or_create_settings(db)
+        out = register_display_name(meta, body.pin)
+        db.commit()
+        return out
+    except RuntimeError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc)) from exc
 
 
 class AiSettingsIn(BaseModel):

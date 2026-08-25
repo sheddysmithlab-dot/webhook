@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Navigate } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom";
 import { api, fmtTime, fmtTimeLong, isAdminAuthError } from "../api.js";
 
 const EVENT_LABELS = [
@@ -17,8 +17,17 @@ const TABS = [
   { id: "accounts", label: "Account Creation" },
   { id: "callbacks", label: "Callbacks" },
   { id: "docs", label: "API Docs" },
+  { id: "brand", label: "WhatsApp Brand" },
   { id: "settings", label: "Settings" },
 ];
+
+function statusTone(status) {
+  const s = String(status || "").toUpperCase();
+  if (s === "APPROVED") return "ok";
+  if (s.includes("PENDING") || s === "AVAILABLE_WITHOUT_REVIEW") return "warn";
+  if (s.includes("DECLIN") || s.includes("REJECT") || s === "EXPIRED") return "bad";
+  return "plain";
+}
 
 const ACCOUNT_EVENTS = new Set(["ACCOUNT_CHECK", "ACCOUNT_CREATE", "OTP_REQUEST", "OTP_VERIFY"]);
 
@@ -182,10 +191,24 @@ export default function InfraDealerIntegration() {
     integration_id: "",
   });
   const [paste, setPaste] = useState("");
+  const [brand, setBrand] = useState(null);
+  const [brandName, setBrandName] = useState("Infradealer");
+  const [brandMsg, setBrandMsg] = useState("");
+  const [brandAck, setBrandAck] = useState(false);
+  const [brandPin, setBrandPin] = useState("");
   const [filters, setFilters] = useState({
     phone: "", request_id: "", user_id: "", event: "",
     failed_only: false, pending_only: false, account_only: false, listing_only: false,
   });
+
+  const loadBrand = useCallback(async () => {
+    const data = await api.displayNameStatus();
+    setBrand(data);
+    if (data?.new_display_name) setBrandName(data.new_display_name);
+    else if (data?.last_webhook?.requested_name) setBrandName(data.last_webhook.requested_name);
+    else if (!data?.verified_name) setBrandName("Infradealer");
+    return data;
+  }, []);
 
   const refresh = useCallback(async () => {
     const [c, l, e, cb] = await Promise.all([
@@ -210,6 +233,76 @@ export default function InfraDealerIntegration() {
   useEffect(() => {
     refresh().catch((e) => setErr(e.message));
   }, [refresh]);
+
+  useEffect(() => {
+    if (tab !== "brand") return;
+    setBusy("brand");
+    setBrandMsg("");
+    loadBrand()
+      .catch((e) => setErr(e.message))
+      .finally(() => setBusy(""));
+  }, [tab, loadBrand]);
+
+  async function refreshBrand() {
+    setBusy("brand");
+    setErr("");
+    setBrandMsg("");
+    try {
+      await loadBrand();
+      setBrandMsg("Status Meta se refresh ho gaya.");
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function submitBrand() {
+    const name = brandName.trim();
+    if (!name) {
+      setErr("Display name likho (e.g. Infradealer).");
+      return;
+    }
+    if (!brandAck) {
+      setErr("Pehle Meta branding rules confirm karo.");
+      return;
+    }
+    if (!window.confirm(`"${name}" Meta review ke liye submit karein? Instant change nahi hota.`)) return;
+    setBusy("brand-submit");
+    setErr("");
+    setBrandMsg("");
+    try {
+      const data = await api.displayNameSubmit(name);
+      setBrand(data);
+      setBrandMsg(data.message || "Submit ho gaya.");
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function applyBrand() {
+    const pin = String(brandPin || "").replace(/\D/g, "");
+    if (pin.length !== 6) {
+      setErr("WhatsApp two-step verification PIN (6 digits) chahiye.");
+      return;
+    }
+    if (!window.confirm("Approve hone ke baad phone re-register hoga. Display name customers pe apply hoga. Continue?")) return;
+    setBusy("brand-register");
+    setErr("");
+    setBrandMsg("");
+    try {
+      const data = await api.displayNameRegister(pin);
+      setBrand(data);
+      setBrandPin("");
+      setBrandMsg(data.message || "Display name apply ho gaya.");
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy("");
+    }
+  }
 
   async function saveSettings() {
     setBusy("save");
@@ -522,6 +615,196 @@ export default function InfraDealerIntegration() {
                 </ul>
                 <p className="wh-label">Error codes</p>
                 <p className="lede" style={{ marginBottom: 0 }}>{API_CONTRACT.errorCodes.join(" · ")}</p>
+              </div>
+            )}
+
+            {tab === "brand" && (
+              <div className="wh-brand">
+                <div className="tbl-head">
+                  <h3>WhatsApp display name</h3>
+                  <button
+                    type="button"
+                    className="btn small"
+                    disabled={busy === "brand" || busy === "brand-submit" || busy === "brand-register"}
+                    onClick={refreshBrand}
+                  >
+                    {busy === "brand" ? "Refreshing…" : "Refresh status"}
+                  </button>
+                </div>
+                <p className="lede">
+                  Full flow: Submit → Meta review → PIN se Apply (re-register) → unsaved contacts ko{" "}
+                  <b>Infradealer</b> dikhega. Green verify badge alag process hai.
+                </p>
+
+                {brand?.steps?.length > 0 && (
+                  <ol className="wh-brand-steps">
+                    {brand.steps.map((s) => (
+                      <li key={s.id} className={`wh-brand-step ${s.state}`}>
+                        <span className="wh-brand-step-mark" aria-hidden />
+                        <span>{s.label}</span>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+
+                {!brand && busy === "brand" && <p className="lede">Meta status load ho raha hai…</p>}
+
+                {brand && !brand.configured && (
+                  <div className="err">
+                    {brand.message || "Meta credentials missing."}
+                    {" "}
+                    <Link to="/meta">/meta settings</Link> pe Phone Number ID + System User Token save karo.
+                    Phir Webhook fields mein <code>phone_number_name_update</code> on karke Subscribe karo.
+                  </div>
+                )}
+
+                {brand && brand.configured && (
+                  <dl className="wh-brand-meta">
+                    <div>
+                      <dt>Phone</dt>
+                      <dd>{brand.display_phone_number || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>Current name</dt>
+                      <dd>{brand.verified_name || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>Live status</dt>
+                      <dd>
+                        <span className={`wh-brand-badge ${statusTone(brand.name_status)}`}>
+                          {brand.name_status || "—"}
+                        </span>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Pending name</dt>
+                      <dd>{brand.new_display_name || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>Pending status</dt>
+                      <dd>
+                        <span className={`wh-brand-badge ${statusTone(brand.new_name_status)}`}>
+                          {brand.new_name_status || "NONE"}
+                        </span>
+                      </dd>
+                    </div>
+                    {brand.last_webhook?.decision ? (
+                      <div>
+                        <dt>Last webhook</dt>
+                        <dd>
+                          <span className={`wh-brand-badge ${statusTone(brand.last_webhook.decision)}`}>
+                            {brand.last_webhook.decision}
+                          </span>
+                          {brand.last_webhook.requested_name ? ` · ${brand.last_webhook.requested_name}` : ""}
+                        </dd>
+                      </div>
+                    ) : null}
+                    {brand.last_webhook?.rejection_reason ? (
+                      <div>
+                        <dt>Rejection</dt>
+                        <dd>{brand.last_webhook.rejection_reason}</dd>
+                      </div>
+                    ) : null}
+                    {brand.quality_rating ? (
+                      <div>
+                        <dt>Quality</dt>
+                        <dd>{brand.quality_rating}</dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                )}
+
+                {brandMsg && <div className="okbox">{brandMsg}</div>}
+
+                {brand?.configured && (
+                  <>
+                    <h3 className="h3" style={{ marginTop: 16 }}>1. Submit for Meta review</h3>
+                    <div className="field full">
+                      <label>New display name</label>
+                      <input
+                        value={brandName}
+                        onChange={(e) => setBrandName(e.target.value)}
+                        placeholder="Infradealer"
+                        maxLength={512}
+                        disabled={!brand.can_submit || busy === "brand-submit"}
+                      />
+                    </div>
+                    <label className="wh-brand-ack">
+                      <input
+                        type="checkbox"
+                        checked={brandAck}
+                        onChange={(e) => setBrandAck(e.target.checked)}
+                        disabled={!brand.can_submit}
+                      />
+                      <span>
+                        Naam brand/business se match karta hai (website / docs). Meta review karega —
+                        max ~10 changes / 30 days.
+                      </span>
+                    </label>
+                    <div className="infra-actions" style={{ marginTop: 12 }}>
+                      <button
+                        type="button"
+                        className="btn dash-primary"
+                        disabled={!brand.can_submit || busy === "brand-submit" || busy === "brand"}
+                        onClick={submitBrand}
+                      >
+                        {busy === "brand-submit" ? "Submitting…" : "Submit to Meta for review"}
+                      </button>
+                    </div>
+
+                    <h3 className="h3" style={{ marginTop: 20 }}>2. Apply approved name (re-register)</h3>
+                    {brand.needs_register ? (
+                      <div className="okbox" style={{ marginBottom: 10 }}>
+                        Meta ne naam approve kar diya. Ab 6-digit WhatsApp two-step PIN se Apply karo
+                        (14 din ke andar). PIN save nahi hota.
+                      </div>
+                    ) : (
+                      <p className="lede">
+                        Jab pending status <b>APPROVED</b> ho (ya webhook APPROVED aaye), yahan PIN se apply karoge.
+                      </p>
+                    )}
+                    <div className="field" style={{ maxWidth: 220 }}>
+                      <label>Two-step PIN</label>
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        value={brandPin}
+                        onChange={(e) => setBrandPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                        placeholder="••••••"
+                        disabled={!brand.needs_register || busy === "brand-register"}
+                      />
+                    </div>
+                    <div className="infra-actions" style={{ marginTop: 12 }}>
+                      <button
+                        type="button"
+                        className="btn dash-primary"
+                        disabled={!brand.needs_register || busy === "brand-register" || String(brandPin).length !== 6}
+                        onClick={applyBrand}
+                      >
+                        {busy === "brand-register" ? "Applying…" : "Apply approved name"}
+                      </button>
+                    </div>
+
+                    {brand.history?.length > 0 && (
+                      <>
+                        <h3 className="h3" style={{ marginTop: 20 }}>History</h3>
+                        <ul className="wh-brand-history">
+                          {brand.history.map((h, i) => (
+                            <li key={`${h.at}-${i}`}>
+                              <span className="mono">{h.at ? fmtTime(h.at) : "—"}</span>
+                              {" · "}
+                              {h.action || "event"}
+                              {h.name ? ` · ${h.name}` : ""}
+                              {h.decision ? ` · ${h.decision}` : ""}
+                              {h.rejection_reason ? ` · ${h.rejection_reason}` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                  </>
+                )}
               </div>
             )}
 

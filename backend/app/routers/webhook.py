@@ -16,6 +16,7 @@ from ..contacts import upsert_chat_contact
 from ..models import AiMedia, BlockedNumber, Broadcast, BroadcastRecipient, Chat, Message
 from ..parser import parse_message
 from ..services import (
+    apply_phone_number_name_update,
     get_or_create_settings,
     meta_ts_ms,
     next_ref,
@@ -128,10 +129,19 @@ async def receive_webhook(request: Request, background: BackgroundTasks, db: Ses
     meta.last_delivery = utcnow()
     entries = payload.get("entry") or []
     stored = 0
+    name_updates = 0
     ai_jobs = []
     for entry in entries:
         for change in entry.get("changes") or []:
+            field = change.get("field") or ""
             value = change.get("value") or {}
+            if field == "phone_number_name_update":
+                try:
+                    apply_phone_number_name_update(meta, value if isinstance(value, dict) else {})
+                    name_updates += 1
+                except Exception as exc:
+                    log.warning("phone_number_name_update failed: %s", exc)
+                continue
             contacts = {c.get("wa_id"): (c.get("profile") or {}).get("name", "") for c in value.get("contacts") or []}
             phone = (value.get("metadata") or {}).get("display_phone_number") or meta.phone_number_id
             for msg in value.get("messages") or []:
@@ -185,7 +195,7 @@ async def receive_webhook(request: Request, background: BackgroundTasks, db: Ses
     db.commit()
     for job in ai_jobs:
         background.add_task(run_ai_job, **job)
-    return {"ok": True, "stored": stored, "ai_queued": len(ai_jobs)}
+    return {"ok": True, "stored": stored, "ai_queued": len(ai_jobs), "name_updates": name_updates}
 
 
 @router.get("/api/chats")
@@ -440,6 +450,8 @@ def subscribe(db: Session = Depends(get_db)):
         fields.append("message_template_status_update")
     if meta.field_account_alerts:
         fields.append("account_alerts")
+    if getattr(meta, "field_phone_name_update", True):
+        fields.append("phone_number_name_update")
     if not fields:
         raise HTTPException(400, "Kam se kam ek webhook field select karo (messages).")
     meta.subscribed = True

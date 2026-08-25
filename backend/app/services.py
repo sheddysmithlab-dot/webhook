@@ -283,6 +283,7 @@ def settings_public(row: MetaSettings) -> dict:
             "messages": row.field_messages,
             "message_template_status_update": row.field_template_status,
             "account_alerts": row.field_account_alerts,
+            "phone_number_name_update": bool(getattr(row, "field_phone_name_update", True)),
         },
         "subscribed": row.subscribed,
         "last_delivery": row.last_delivery.isoformat() if row.last_delivery else None,
@@ -326,6 +327,264 @@ def verify_meta_signature(app_secret: str, raw_body: bytes, header: str | None) 
 
 def graph_url(meta: MetaSettings, path: str) -> str:
     return f"https://graph.facebook.com/{meta.graph_version}/{path.lstrip('/')}"
+
+
+def _graph_headers(meta: MetaSettings) -> dict:
+    return {"Authorization": f"Bearer {meta.system_user_token}"}
+
+
+def _require_meta_phone(meta: MetaSettings) -> None:
+    if not (meta.phone_number_id or "").strip() or not (meta.system_user_token or "").strip():
+        raise RuntimeError(
+            "Meta Phone Number ID aur System User Token save karo (/meta settings)."
+        )
+
+
+def _graph_error_message(data: dict, status_code: int) -> str:
+    err = (data or {}).get("error") or {}
+    return err.get("error_user_msg") or err.get("message") or f"Graph API HTTP {status_code}"
+
+
+def _display_name_history(meta: MetaSettings) -> list:
+    try:
+        rows = json.loads(getattr(meta, "display_name_history", None) or "[]")
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        return []
+
+
+def _append_display_name_history(meta: MetaSettings, event: dict) -> None:
+    rows = _display_name_history(meta)
+    item = {
+        "at": utcnow().isoformat(),
+        **{k: v for k, v in event.items() if v is not None and v != ""},
+    }
+    rows.insert(0, item)
+    meta.display_name_history = json.dumps(rows[:30])
+
+
+def get_display_name_status(meta: MetaSettings) -> dict:
+    """Read WhatsApp display name + Meta review fields from Graph API."""
+    history = _display_name_history(meta)
+    last_decision = (getattr(meta, "display_name_decision", None) or "").strip()
+    last_requested = (getattr(meta, "display_name_requested", None) or "").strip()
+    last_rejection = (getattr(meta, "display_name_rejection", None) or "").strip()
+    event_at = getattr(meta, "display_name_event_at", None)
+    if not (meta.phone_number_id or "").strip() or not (meta.system_user_token or "").strip():
+        return {
+            "configured": False,
+            "display_phone_number": "",
+            "verified_name": "",
+            "name_status": "",
+            "new_display_name": "",
+            "new_name_status": "",
+            "quality_rating": "",
+            "needs_register": False,
+            "can_submit": False,
+            "steps": _display_name_steps("", "", False),
+            "last_webhook": {
+                "decision": last_decision,
+                "requested_name": last_requested,
+                "rejection_reason": last_rejection,
+                "at": event_at.isoformat() if event_at else None,
+            },
+            "history": history[:10],
+            "message": "Meta Phone Number ID aur System User Token /meta pe save karo.",
+        }
+    fields = (
+        "display_phone_number,verified_name,name_status,"
+        "new_display_name,new_name_status,quality_rating"
+    )
+    url = graph_url(meta, meta.phone_number_id)
+    with httpx.Client(timeout=20.0) as client:
+        resp = client.get(url, params={"fields": fields}, headers=_graph_headers(meta))
+        data = resp.json() if resp.content else {}
+        if resp.status_code >= 400:
+            raise RuntimeError(_graph_error_message(data, resp.status_code))
+    new_status = (data.get("new_name_status") or "").strip().upper()
+    name_status = (data.get("name_status") or "").strip().upper()
+    verified = (data.get("verified_name") or "").strip()
+    applied = last_decision.upper() == "APPLIED"
+    # Webhook APPROVED can arrive before Graph reflects; treat both as needs_register.
+    needs_register = (not applied) and (
+        new_status == "APPROVED"
+        or (
+            last_decision.upper() == "APPROVED"
+            and bool(last_requested)
+            and last_requested != verified
+        )
+    )
+    pending = "PENDING" in new_status
+    can_submit = not pending and not needs_register
+    return {
+        "configured": True,
+        "display_phone_number": data.get("display_phone_number") or "",
+        "verified_name": data.get("verified_name") or "",
+        "name_status": data.get("name_status") or "",
+        "new_display_name": data.get("new_display_name") or last_requested or "",
+        "new_name_status": data.get("new_name_status") or "",
+        "quality_rating": data.get("quality_rating") or "",
+        "phone_number_id": meta.phone_number_id,
+        "needs_register": bool(needs_register),
+        "can_submit": bool(can_submit),
+        "steps": _display_name_steps(name_status, new_status, bool(needs_register), last_decision),
+        "last_webhook": {
+            "decision": last_decision,
+            "requested_name": last_requested,
+            "rejection_reason": last_rejection,
+            "at": event_at.isoformat() if event_at else None,
+        },
+        "history": history[:10],
+        "message": "",
+    }
+
+
+def _display_name_steps(
+    name_status: str,
+    new_status: str,
+    needs_register: bool,
+    last_decision: str = "",
+) -> list[dict]:
+    new_u = (new_status or "").upper()
+    dec = (last_decision or "").upper()
+    declined = "DECLIN" in new_u or "REJECT" in new_u or dec in ("DECLINED", "REJECTED")
+    pending = "PENDING" in new_u
+    approved = new_u == "APPROVED" or (needs_register and not declined)
+    live = (name_status or "").upper() == "APPROVED" and not needs_register and not pending
+
+    def step(id_: str, label: str, state: str) -> dict:
+        return {"id": id_, "label": label, "state": state}  # todo | active | done | error
+
+    return [
+        step("submit", "Submit name to Meta", "done" if (new_u or dec or live) else "todo"),
+        step(
+            "review",
+            "Meta review",
+            "error" if declined else ("active" if pending else ("done" if (approved or live or dec == "APPROVED") else "todo")),
+        ),
+        step(
+            "register",
+            "Re-register phone (apply name)",
+            "active" if needs_register else ("done" if live and (dec == "APPROVED" or new_u in ("", "NONE")) else "todo"),
+        ),
+        step("live", "Live for unsaved contacts", "done" if live and not needs_register else "todo"),
+    ]
+
+
+def submit_display_name(meta: MetaSettings, new_name: str) -> dict:
+    """Submit a new WhatsApp display name to Meta for review (P1)."""
+    _require_meta_phone(meta)
+    name = (new_name or "").strip()
+    if not name:
+        raise RuntimeError("Display name required.")
+    if len(name) > 512:
+        raise RuntimeError("Display name bahut lamba hai.")
+    url = graph_url(meta, meta.phone_number_id)
+    with httpx.Client(timeout=20.0) as client:
+        resp = client.post(
+            url,
+            params={"new_display_name": name},
+            headers=_graph_headers(meta),
+        )
+        data = resp.json() if resp.content else {}
+        if resp.status_code >= 400:
+            raise RuntimeError(_graph_error_message(data, resp.status_code))
+    meta.display_name_requested = name[:200]
+    meta.display_name_decision = "SUBMITTED"
+    meta.display_name_rejection = ""
+    meta.display_name_event_at = utcnow()
+    _append_display_name_history(meta, {"action": "submit", "name": name, "decision": "SUBMITTED"})
+    status = get_display_name_status(meta)
+    status["submitted"] = True
+    status["submitted_name"] = name
+    status["graph_success"] = bool(data.get("success", True))
+    status["message"] = (
+        f'"{name}" Meta review ke liye submit ho gaya. '
+        "Approve ke baad neeche PIN se Apply / re-register karo — tab unsaved contacts ko naam dikhega."
+    )
+    return status
+
+
+def register_display_name(meta: MetaSettings, pin: str) -> dict:
+    """Re-register phone number after display name APPROVED (P2). PIN is not stored."""
+    _require_meta_phone(meta)
+    pin_clean = re.sub(r"\D", "", pin or "")
+    if len(pin_clean) != 6:
+        raise RuntimeError("Two-step verification PIN 6 digits hona chahiye.")
+    status_before = get_display_name_status(meta)
+    new_status = (status_before.get("new_name_status") or "").upper()
+    webhook_ok = (getattr(meta, "display_name_decision", None) or "").upper() == "APPROVED"
+    if new_status != "APPROVED" and not webhook_ok and not status_before.get("needs_register"):
+        raise RuntimeError(
+            "Pehle Meta display name APPROVED hona chahiye. Status refresh karke dekho."
+        )
+    url = graph_url(meta, f"{meta.phone_number_id}/register")
+    payload = {"messaging_product": "whatsapp", "pin": pin_clean}
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.post(url, json=payload, headers=_graph_headers(meta))
+        data = resp.json() if resp.content else {}
+        if resp.status_code >= 400:
+            raise RuntimeError(_graph_error_message(data, resp.status_code))
+    meta.display_name_decision = "APPLIED"
+    meta.display_name_event_at = utcnow()
+    _append_display_name_history(
+        meta,
+        {
+            "action": "register",
+            "name": status_before.get("new_display_name") or meta.display_name_requested,
+            "decision": "APPLIED",
+        },
+    )
+    status = get_display_name_status(meta)
+    status["registered"] = True
+    status["graph_success"] = bool(data.get("success", True))
+    status["message"] = (
+        "Phone re-register ho gaya. Unsaved contacts ko ab approved display name dikhna chahiye "
+        "(Refresh status se verify karo)."
+    )
+    return status
+
+
+def apply_phone_number_name_update(meta: MetaSettings, value: dict) -> dict:
+    """Persist Meta phone_number_name_update webhook (P3)."""
+    decision = str(
+        value.get("decision")
+        or value.get("name_status")
+        or value.get("new_name_status")
+        or ""
+    ).strip().upper()
+    requested = str(
+        value.get("requested_verified_name")
+        or value.get("requested_name")
+        or value.get("new_display_name")
+        or value.get("verified_name")
+        or ""
+    ).strip()
+    reason = str(
+        value.get("rejection_reason")
+        or value.get("reason")
+        or ""
+    ).strip()
+    if requested:
+        meta.display_name_requested = requested[:200]
+    if decision:
+        meta.display_name_decision = decision[:40]
+    meta.display_name_rejection = reason[:500]
+    meta.display_name_event_at = utcnow()
+    _append_display_name_history(
+        meta,
+        {
+            "action": "webhook",
+            "name": requested,
+            "decision": decision,
+            "rejection_reason": reason,
+        },
+    )
+    return {
+        "decision": decision,
+        "requested_name": requested,
+        "rejection_reason": reason,
+    }
 
 
 def send_whatsapp_text(
