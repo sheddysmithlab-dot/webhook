@@ -174,11 +174,18 @@ def unique_photo_ids(db: Session, conv: AiConversation | None, payload: dict | N
     return ordered[:5]
 
 
-def seller_fields(db: Session, conv: AiConversation | None, draft: AiListingDraft | None, payload: dict) -> tuple[str, str]:
-    wa_name = ""
+def extract_shared_listing_contact(
+    db: Session,
+    conv: AiConversation | None,
+    payload: dict | None = None,
+) -> str:
+    """Phone number shared in chat / payload for the listing card.
+
+    Never falls back to the WhatsApp channel identity (conv.mobile). Office
+    posts must publish the chat-shared seller number, not the verified office line.
+    """
     chat_blob = ""
     if conv:
-        wa_name = usable_person_name((payload or {}).get("wa_name")) or wa_profile_name(db, conv.conversation_id)
         chats = (
             db.query(Chat)
             .filter(Chat.conversation_id == conv.conversation_id, Chat.direction == "inbound")
@@ -186,14 +193,26 @@ def seller_fields(db: Session, conv: AiConversation | None, draft: AiListingDraf
             .all()
         )
         chat_blob = " ".join((c.body or "") for c in chats)
+    found = extract_contact_mobile(chat_blob, "")
+    if found:
+        return found
+    return extract_contact_mobile(str((payload or {}).get("contact_phone") or ""), "")
+
+
+def seller_fields(db: Session, conv: AiConversation | None, draft: AiListingDraft | None, payload: dict) -> tuple[str, str]:
+    wa_name = ""
+    if conv:
+        wa_name = usable_person_name((payload or {}).get("wa_name")) or wa_profile_name(db, conv.conversation_id)
     name = (
         usable_person_name(conv.customer_name if conv else "")
         or usable_person_name((payload or {}).get("customer_name"))
         or wa_name
         or "Seller"
     )
-    mobile = extract_contact_mobile(chat_blob, "") or extract_contact_mobile(
-        str((payload or {}).get("contact_phone") or ""),
+    shared = extract_shared_listing_contact(db, conv, payload or {})
+    # Non-office callers may still fall back to channel mobile via payloads.build_listing_payload
+    mobile = shared or extract_contact_mobile(
+        "",
         (draft.mobile if draft else "") or (conv.mobile if conv else ""),
     )
     return name, mobile

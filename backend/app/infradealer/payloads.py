@@ -12,7 +12,7 @@ import re
 from typing import Any
 
 from ..config import settings
-from ..identity import listing_category, parse_listing_price, seller_fields, unique_photo_ids
+from ..identity import listing_category, parse_listing_price, seller_fields, unique_photo_ids, extract_shared_listing_contact
 from ..models import AiConversation, AiListingDraft
 from ..ai.schema import listing_title, loads as schema_loads, normalize_vehicle_category
 from .crypto import signed_token
@@ -188,7 +188,7 @@ def build_listing_payload(
     request_id: str,
     infradealer_user_id: str = "",
 ) -> dict[str, Any]:
-    name, phone = seller_fields(db, conv, draft, payload)
+    name, _legacy_phone = seller_fields(db, conv, draft, payload)
     confirmed = payload.get("confirmed_json") or payload.get("summary_json") or {}
     if isinstance(confirmed, str):
         try:
@@ -219,7 +219,23 @@ def build_listing_payload(
     make_model = " ".join(p for p in [brand, model] if p).strip() or str(confirmed.get("vehicle") or "")
     title = (draft.title if draft and draft.title else "") or listing_title(payload) or make_model
     km_val, km_unit = _km_and_unit(payload, internal_cat)
-    contact = seller_contact_digits(phone or conv.mobile)
+
+    # Account identity = WhatsApp peer (office verified line). Listing contact =
+    # number shared in chat. Never publish the office line as seller_contact.
+    account_mobile = seller_contact_digits(conv.mobile if conv else "")
+    shared_contact = seller_contact_digits(extract_shared_listing_contact(db, conv, payload))
+    account_type = str(
+        payload.get("account_type")
+        or payload.get("account_label")
+        or (payload.get("account_context") or {}).get("type")
+        or ""
+    ).strip().lower()
+    is_office = account_type in {"office", "staff", "admin"}
+    if is_office:
+        contact = shared_contact if shared_contact and shared_contact != account_mobile else ""
+    else:
+        contact = shared_contact or seller_contact_digits(_legacy_phone) or account_mobile
+
     owner = name or conv.customer_name or "Seller"
     state = payload.get("state") or confirmed.get("state") or ""
     city = payload.get("city") or confirmed.get("city") or ""
@@ -229,9 +245,11 @@ def build_listing_payload(
     description = _ad_description(payload, confirmed, title)
     customer = {
         "name": owner,
-        "phone": _phone_e164(contact or conv.mobile),
+        # Always the WhatsApp / InfraDealer account number for account lookup.
+        "phone": _phone_e164(account_mobile or conv.mobile),
         "seller_name": owner,
         "seller_contact": contact,
+        "account_type": account_type or None,
     }
     if infradealer_user_id:
         customer["user_id"] = infradealer_user_id
