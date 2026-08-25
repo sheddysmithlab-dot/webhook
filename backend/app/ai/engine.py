@@ -272,7 +272,7 @@ def fallback_reply(db, conv: AiConversation, text: str, media_note: str = "") ->
 
     if conv.state == "AWAITING_CONFIRMATION":
         from .confirm import handle_confirmation
-        hit = handle_confirmation(db, conv, text, {}, lang)
+        hit = handle_confirmation(db, conv, text, lang)
         if hit:
             return hit
 
@@ -605,9 +605,11 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
 
     # Hard: Haan / Yes confirmation only via confirm handler
     if payload.get("awaiting_confirm") or conv.state == "AWAITING_CONFIRMATION":
-        hit = handle_confirmation(db, conv, text, {}, lang)
+        hit = handle_confirmation(db, conv, text, lang)
         if hit:
             return hit
+        # Stale confirm cleared (e.g. new sell/buy) — refresh payload for LLM path
+        payload = _payload(conv)
 
     # Phase-2/3: state first (extract + rm_state + next_ask); keep menu hints from runner
     offer_menu = bool(payload.get("offer_menu"))
@@ -1063,7 +1065,7 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
             otp_reply = fallback_reply(db, conv, text, media_note)
             return _sanitize_reply(otp_reply, posted=posted, lang=lang)
 
-    locked = handle_confirmation(db, conv, text, fields, lang)
+    locked = handle_confirmation(db, conv, text, lang)
     if locked:
         reply = _sanitize_reply(locked, posted=posted, lang=lang)
     else:

@@ -168,7 +168,7 @@ def _llm_correct(text: str, lang: str, cfg: dict) -> str:
         "enable_thinking": False,
     }
     try:
-        with httpx.Client(timeout=8.0) as client:
+        with httpx.Client(timeout=3.5) as client:
             resp = client.post(url, headers=headers, json=body)
             data = resp.json() if resp.content else {}
         if not isinstance(data, dict):
@@ -205,6 +205,12 @@ def _meaning_changed(original: str, corrected: str) -> bool:
     return False
 
 
+_CLEAR_INTENT = re.compile(
+    r"\b(bech|sell|bechna|bechni|bikau|kharid|buy|kharidna|dumper|tipper|gaadi|gadi)\b",
+    re.I,
+)
+
+
 def correct_user_message(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str:
     """Main entry: correct user message typos before agent processes it.
 
@@ -226,10 +232,13 @@ def correct_user_message(db: Session, conv: AiConversation, text: str, media_not
     # Step 2: Decide if LLM correction is needed
     cfg = resolve_ai_config(db)
     llm_ready = bool(cfg.get("enabled") and cfg.get("api_key"))
-    needs_llm = (fast_fixed != msg) or len(msg.split()) > 3
+    word_n = len(msg.split())
+    # Clear sell/buy / vehicle cues: prefer fast path — do not burn 8s on corrector LLM
+    clear_intent = bool(_CLEAR_INTENT.search(msg))
+    needs_llm = (not clear_intent) and ((fast_fixed != msg) or word_n > 5)
 
-    if fast_fixed != msg and len(msg.split()) <= 4:
-        # Fast fix is enough for short messages
+    if fast_fixed != msg and (word_n <= 6 or clear_intent):
+        # Fast fix is enough for short / clear-intent messages
         corrected = fast_fixed
     elif needs_llm and llm_ready:
         corrected = _llm_correct(msg, lang, cfg)

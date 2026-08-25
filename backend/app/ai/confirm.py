@@ -9,6 +9,7 @@ import re
 from sqlalchemy.orm import Session
 
 from ..models import AiConversation, AiListingDraft
+from .i18n import t
 from .schema import listing_title, loads, dumps
 from .tools import _payload, _write_payload
 
@@ -180,10 +181,40 @@ def send_summary(db: Session, conv: AiConversation, lang: str = "hinglish") -> s
     return text
 
 
-def handle_confirmation(db: Session, conv: AiConversation, text: str, lang: str = "hinglish") -> str | None:
-    """Legacy engine helper — prefer chat_memory.submit_confirmed_listing on hot path."""
+def handle_confirmation(
+    db: Session,
+    conv: AiConversation,
+    text: str,
+    lang: str | dict = "hinglish",
+    lang_kw: str | None = None,
+) -> str | None:
+    """Legacy engine helper — prefer chat_memory.submit_confirmed_listing on hot path.
+
+    Callers historically passed ``fields`` dict as the 4th arg; accept that and
+    use ``lang_kw`` / default hinglish so ``t({}, ...)`` never happens.
+    """
     from .chat_memory import submit_confirmed_listing
     from .i18n import t
+
+    if isinstance(lang, dict):
+        lang = lang_kw if isinstance(lang_kw, str) and lang_kw else "hinglish"
+    elif lang_kw and isinstance(lang_kw, str):
+        lang = lang_kw
+    if not isinstance(lang, str) or not lang:
+        lang = "hinglish"
+
+    # New sell/buy intent abandons a stale confirm prompt — let collection/LLM continue.
+    low = (text or "").lower()
+    if re.search(r"\b(bech|sell|bechna|bechni|bikau|kharid|buy|kharidna)\b", low, re.I):
+        if not is_yes(text) and not is_no(text) and not confirmation_has_modification(text):
+            payload = _payload(conv)
+            if payload.get("awaiting_confirm") or conv.state == "AWAITING_CONFIRMATION":
+                payload["awaiting_confirm"] = False
+                payload["customer_confirmed"] = False
+                _write_payload(conv, payload)
+                if conv.state == "AWAITING_CONFIRMATION":
+                    conv.state = "COLLECTING"
+            return None
 
     if confirmation_has_modification(text):
         payload = _payload(conv)

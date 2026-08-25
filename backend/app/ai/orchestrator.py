@@ -579,6 +579,16 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
             if llm_out and str(llm_out).strip():
                 reply = str(llm_out).strip()
                 path = "prompt_chat"
+                # Reject LLM echoing the generic unclear fallback when we already
+                # know the next listing field — ask that instead.
+                unclear = t(lang, "unclear")
+                if reply == unclear or reply.startswith(unclear[:20]):
+                    from .chat_memory import build_next_question
+
+                    nxt = build_next_question(_payload(conv), lang)
+                    if nxt and nxt.strip() and nxt.strip() != unclear:
+                        reply = nxt.strip()
+                        path = "prompt_chat_next_ask"
         except Exception:
             log.exception("prompt_chat failed — trying free_chat / chat_memory")
 
