@@ -441,13 +441,38 @@ def sync_conversation_account(db: Session, conv: AiConversation) -> AccountVerdi
     payload["account_buy_link"] = verdict.buy_link
     if details.infradealer_user_id:
         payload["infradealer_user_id"] = details.infradealer_user_id
+    # Keep remote InfraDealer id in payload only — NEVER write it to
+    # conv.profile_id (FK → local webhook users.id). That mismatch caused
+    # ForeignKeyViolation and silent WhatsApp reply failures.
     if verdict.account_id:
-        payload["profile_id"] = verdict.account_id
-        conv.profile_id = int(verdict.account_id) if str(verdict.account_id).isdigit() else conv.profile_id
-        conv.profile_status = "found" if verdict.found else conv.profile_status
+        payload["infradealer_user_id"] = str(verdict.account_id)
+        payload["remote_account_id"] = str(verdict.account_id)
+        # Do not set payload["profile_id"] / conv.profile_id from remote id
     elif not verdict.found:
+        payload.pop("remote_account_id", None)
+
+    local_user = (
+        db.query(User).filter(User.mobile == phone).first()
+        if (phone := normalize_phone(conv.mobile))
+        else None
+    )
+    if local_user:
+        payload["profile_id"] = local_user.id
+        conv.profile_id = local_user.id
+        conv.profile_status = "found" if verdict.found else (conv.profile_status or "local")
+    else:
+        # Never keep a remote InfraDealer id on conv.profile_id (FK → local users)
+        if conv.profile_id is not None:
+            exists = db.query(User.id).filter(User.id == conv.profile_id).first()
+            if not exists:
+                conv.profile_id = None
         payload.pop("profile_id", None)
-        conv.profile_status = "missing"
+        if not verdict.found:
+            conv.profile_status = "missing"
+        elif verdict.found:
+            conv.profile_status = "found"
+
+    if not verdict.found:
         payload["wa_account_matched"] = False
     if verdict.found:
         payload["wa_account_matched"] = True

@@ -224,6 +224,7 @@ def process_inbound(
 
         set_processing(mobile, "ai")
         conv = get_or_create_conversation(db, mobile, name)
+        conv_id = conv.conversation_id or f"CONV_{mobile}"
         conv.last_wamid = wamid or conv.last_wamid
         conv.updated_at = utcnow()
         # Any user reply cancels pending post-approve/reject 10-min chat clear
@@ -400,7 +401,7 @@ def process_inbound(
             "ai.reply_path path=%s ai_ms=%d route=%s mobile=***%s",
             path, int(t_ai), obs.get("route") or "-", mobile[-4:] if mobile else "",
         )
-        if send and reply and not _is_latest_inbound(db, conv.conversation_id, wamid, mobile=mobile):
+        if send and reply and not _is_latest_inbound(db, conv_id, wamid, mobile=mobile):
             stale = True
             log.info("skip stale AI reply mobile=***%s", mobile[-4:] if mobile else "")
             db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="ai_stale_skip", detail="stale"))
@@ -421,7 +422,7 @@ def process_inbound(
                 store_chat(
                     db,
                     wamid=result.get("wamid") or f"ai.{conv.id}.{int(utcnow().timestamp())}",
-                    conversation_id=conv.conversation_id,
+                    conversation_id=conv_id,
                     from_mobile=meta.phone_number_id or "infradealer",
                     from_name="InfraDealer AI",
                     to_mobile=mobile,
