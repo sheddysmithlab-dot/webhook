@@ -353,6 +353,46 @@ MESSAGES = {
         "hi": "सर/मैडम, लिस्टिंग पुश के लिए वॉलेट में टोकन चाहिए। टोकन खरीदने के लिए यहाँ क्लिक करें:\n{link}",
         "en": "Sir/Ma'am, you need wallet tokens to push a listing. Buy tokens here:\n{link}",
     },
+    "account_info_missing": {
+        "hinglish": "Sir/Ma'am, abhi is WhatsApp number pe InfraDealer account clear nahi mila. *account banao* likh kar yahi se account bana sakte hain, ya registered number se message kijiye.",
+        "hi": "सर/मैडम, अभी इस WhatsApp नंबर पर InfraDealer अकाउंट साफ नहीं मिला। *account banao* लिखकर यहीं से अकाउंट बना सकते हैं, या रजिस्टर्ड नंबर से मैसेज कीजिए।",
+        "en": "Sir/Ma'am, we could not find a clear InfraDealer account on this WhatsApp number. Type *account banao* to create one here, or message from your registered number.",
+    },
+    "account_info_summary": {
+        "hinglish": "Sir/Ma'am, aapka InfraDealer account active hai ({plan}).",
+        "hi": "सर/मैडम, आपका InfraDealer अकाउंट सक्रिय है ({plan})।",
+        "en": "Sir/Ma'am, your InfraDealer account is active ({plan}).",
+    },
+    "account_info_tokens": {
+        "hinglish": "Wallet mein abhi *{tokens} tokens* hain. Listing post karne me tokens use hote hain. Aur chahiye to: {link}",
+        "hi": "वॉलेट में अभी *{tokens} टोकन* हैं। लिस्टिंग पोस्ट करने में टोकन लगते हैं। और चाहिए तो: {link}",
+        "en": "Your wallet currently has *{tokens} tokens*. Listing posts use tokens. Need more: {link}",
+    },
+    "account_info_tokens_zero": {
+        "hinglish": "Wallet mein abhi tokens 0 hain. Nayi paid listing ke liye tokens chahiye ho sakte hain: {link}",
+        "hi": "वॉलेट में अभी टोकन 0 हैं। नई पेड लिस्टिंग के लिए टोकन चाहिए हो सकते हैं: {link}",
+        "en": "Wallet tokens are currently 0. You may need tokens for a new paid listing: {link}",
+    },
+    "account_info_tokens_unknown": {
+        "hinglish": "Wallet balance abhi sync nahi ho paya. Website pe check kijiye: {link}",
+        "hi": "वॉलेट बैलेंस अभी सिंक नहीं हो पाया। वेबसाइट पर चेक कीजिए: {link}",
+        "en": "Wallet balance could not be synced just now. Please check on the website: {link}",
+    },
+    "account_info_listings": {
+        "hinglish": "Listings: *{live} live* website pe, *{pending} review* me admin ke paas.",
+        "hi": "लिस्टिंग: वेबसाइट पर *{live} live*, एडमिन रिव्यू में *{pending}*।",
+        "en": "Listings: *{live} live* on the website, *{pending} in admin review*.",
+    },
+    "account_info_listings_none": {
+        "hinglish": "Abhi aapki koi live/pending listing nahi dikh rahi. Nayi listing ke liye vehicle details bhej dijiye.",
+        "hi": "अभी आपकी कोई live/pending लिस्टिंग नहीं दिख रही। नई लिस्टिंग के लिए वाहन डिटेल भेज दीजिए।",
+        "en": "No live or pending listing found right now. Send vehicle details to start a new listing.",
+    },
+    "account_info_next": {
+        "hinglish": "Aur kuch chahiye? Vehicle bechna/kharidna, listing status, ya password help — bataiye.",
+        "hi": "और कुछ चाहिए? वाहन बेचना/खरीदना, लिस्टिंग स्टेटस, या पासवर्ड हेल्प — बताइए।",
+        "en": "Need anything else — sell/buy a vehicle, listing status, or password help?",
+    },
     "submit_retry": {
         "hinglish": "Listing abhi InfraDealer server tak nahi pahunchi. Kripya thodi der baad phir confirm kijiye.",
         "hi": "लिस्टिंग अभी InfraDealer सर्वर तक नहीं पहुँची। कृपया थोड़ी देर बाद फिर कन्फर्म करें।",

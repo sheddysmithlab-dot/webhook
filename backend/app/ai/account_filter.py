@@ -295,6 +295,11 @@ def apply_remote_account(state: InfraDealerAccountState, response: dict | None) 
             meta["credits"] = account.get("credits")
         elif "tokens" in account:
             meta["credits"] = account.get("tokens")
+        if "tokens" in account:
+            meta["tokens"] = account.get("tokens")
+        for k in ("listings_total", "listings_live", "listings_pending"):
+            if k in account:
+                meta[k] = account.get(k)
         if account.get("buy_link") or account.get("buy_url"):
             meta["buy_link"] = account.get("buy_link") or account.get("buy_url")
         if "broker_subscription_active" in account:

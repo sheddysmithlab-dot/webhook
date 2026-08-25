@@ -24,6 +24,7 @@ from .account import (
     wants_new_chat,
     wants_password_reset,
 )
+from .account_info import handle_account_info
 from .confirm import handle_confirmation, handle_vehicle_slot, is_no, is_yes, collection_ready, sync_posted_product
 from .extract import extract_from_text
 from .i18n import _GREET, _WEAK, language_instruction, pick_language, t
@@ -552,6 +553,11 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
     if wants_password_reset(msg):
         return _sanitize_reply(start_password_reset(db, conv, lang), posted=False, lang=lang)
 
+    # Hard: account / wallet tokens / listing counts — human reply, never LLM jargon
+    info = handle_account_info(db, conv, text, lang)
+    if info:
+        return _sanitize_reply(info, posted=False, lang=lang)
+
     if account_busy(payload) and should_intercept_account(payload, text):
         acc = handle_account(db, conv, text, lang)
         if acc:
@@ -913,6 +919,11 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
     # 1c) Password reset via WhatsApp OTP
     if wants_password_reset(text or "") and not str(payload0.get("account_step") or "").startswith("pw_"):
         return _sanitize_reply(start_password_reset(db, conv, lang), posted=False, lang=lang)
+
+    # 1c2) Account / tokens / listings — human snapshot (no LLM jargon)
+    info0 = handle_account_info(db, conv, text or "", lang)
+    if info0:
+        return _sanitize_reply(info0, posted=False, lang=lang)
 
     # 1d) Mid registration / OTP / password form — never LLM
     step0 = str(payload0.get("account_step") or "").strip()

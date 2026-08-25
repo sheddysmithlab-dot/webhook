@@ -999,6 +999,12 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     if wants_password_reset(msg):
         return start_password_reset(db, conv, lang)
 
+    from .account_info import handle_account_info
+
+    info = handle_account_info(db, conv, text, lang)
+    if info:
+        return info
+
     if account_busy(payload) and should_intercept_account(payload, text):
         acc = handle_account(db, conv, text, lang)
         if acc:
