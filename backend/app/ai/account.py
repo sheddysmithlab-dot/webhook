@@ -11,12 +11,30 @@ from ..models import AiConversation, InfraDealerAccountState, User
 from ..services import hash_user_password
 from .confirm import is_no, is_yes
 from .extract import extract_role
+from .format_reply import bold, fmt_section
 from .i18n import t
 from .tools import _payload, _write_payload, execute_tool
 
 log = logging.getLogger("infradealer.ai.account")
 
 SITE = "http://www.infradealer.com"
+# User tries to register / link a different mobile than this WhatsApp chat
+_OTHER_NUMBER_ACCOUNT = re.compile(
+    r"("
+    r"(naya|new|dusra|doosra|alag|another|other).{0,40}(account|akount|अकाउंट).{0,40}"
+    r"(number|mobile|phone|nambar|namber)"
+    r"|(account|akount|अकाउंट).{0,40}(bana|create|banwa|open).{0,40}"
+    r"(number|mobile|phone|nambar|namber)"
+    r"|(number|mobile|phone|nambar|namber).{0,40}"
+    r"(de\s*raha|de\s*rahi|bhej|dung[ae]|dunga|rakh|use|laga|se\s+account)"
+    r"|(is|usse|us|ye|yeh)\s+(number|mobile).{0,30}(account|akount)"
+    r"|mobile\s+number\s+(de|bhej|dung)"
+    r")",
+    re.I,
+)
+_PHONE_CANDIDATE = re.compile(
+    r"(?:\+?91[\s\-]*)?([6-9]\d{9})\b"
+)
 _PASS_SKIP = re.compile(r"\b(skip|baad me|nahi|password nahi)\b", re.I)
 _HAS_ACCOUNT = re.compile(
     r"account.{0,40}(bana|banaya|hai|he|already|exist|बना)|"
@@ -156,6 +174,95 @@ def wants_create_account(text: str, payload: dict | None = None) -> bool:
     return False
 
 
+def extract_other_mobiles(text: str, chat_mobile: str) -> list[str]:
+    """Indian mobiles mentioned in text that are NOT this WhatsApp chat number."""
+    from .account_filter import normalize_phone
+
+    chat = normalize_phone(chat_mobile)
+    found: list[str] = []
+    for m in _PHONE_CANDIDATE.finditer(text or ""):
+        digits = normalize_phone(m.group(1))
+        if len(digits) == 10 and digits != chat and digits not in found:
+            found.append(digits)
+    return found
+
+
+def wants_other_number_account(text: str, chat_mobile: str = "") -> bool:
+    """True when user tries to create/link account for a different WhatsApp number."""
+    msg = (text or "").strip()
+    if not msg:
+        return False
+    others = extract_other_mobiles(msg, chat_mobile)
+    if others and (
+        wants_create_account(msg)
+        or _OTHER_NUMBER_ACCOUNT.search(msg)
+        or re.search(r"\b(account|akount|register|signup|login)\b", msg, re.I)
+    ):
+        return True
+    if _OTHER_NUMBER_ACCOUNT.search(msg):
+        return True
+    # "naya account ... mobile number de raha hun" without digits yet
+    if wants_create_account(msg) and re.search(
+        r"\b(mobile|phone|number|nambar|namber)\b", msg, re.I
+    ):
+        return True
+    return False
+
+
+def reply_other_number_blocked(lang: str, chat_mobile: str, other: str = "") -> str:
+    """Hard policy: one WhatsApp chat = only that number's InfraDealer account."""
+    from .account_filter import normalize_phone
+
+    this_num = normalize_phone(chat_mobile) or "is WhatsApp number"
+    bullets = [
+        f"Yeh chat sirf {bold(this_num)} ke liye hai",
+        "Is chat se *kisi dusre WhatsApp number* ka account *nahi* banaya ja sakta",
+        "OTP / account hamesha *isi WhatsApp number* pe hi banega",
+    ]
+    if other:
+        bullets.append(f"Aapne diya number {bold(other)} — yahan allow nahi")
+    bullets.append(
+        f"Dusre number ka account chahiye to us number se WhatsApp pe InfraDealer ko message kijiye"
+    )
+    return fmt_section("Rule — Same WhatsApp number only", bullets)
+
+
+def reply_account_already_here(lang: str, chat_mobile: str) -> str:
+    from .account_filter import normalize_phone
+
+    this_num = normalize_phone(chat_mobile) or "is number"
+    return fmt_section(
+        "Account pehle se hai",
+        [
+            f"Is WhatsApp ({bold(this_num)}) pe account *already active* hai",
+            "Naya account isi chat se dusre number pe *nahi* banega",
+            f"Password badalna ho to {bold('password badlo')} likhiye",
+            "Account info: *account detail batao*",
+        ],
+    )
+
+
+def handle_same_number_account_policy(
+    db: Session, conv: AiConversation, text: str, lang: str
+) -> str | None:
+    """Block cross-number account create; clarify same-number-only policy."""
+    msg = (text or "").strip()
+    if not msg:
+        return None
+    payload = _payload(conv)
+    others = extract_other_mobiles(msg, conv.mobile)
+
+    if others or wants_other_number_account(msg, conv.mobile):
+        return reply_other_number_blocked(
+            lang, conv.mobile, others[0] if others else ""
+        )
+
+    if wants_create_account(msg, payload) and payload.get("account_onboarded"):
+        return reply_account_already_here(lang, conv.mobile)
+
+    return None
+
+
 def account_gate_fact(lang: str, payload: dict | None = None) -> str:
     """Canonical corrected mismatch / eligibility fact (backend truth)."""
     pl = payload or {}
@@ -194,8 +301,9 @@ _ADAPT_FACT_SYSTEM = (
     "- Do NOT paste BACKEND_FACT word-for-word. Rephrase naturally (Sir/Ma'am, aap, ji).\n"
     "- First address what they just said (bechna/kharidna/account/help), then the fact.\n"
     "- If number is unmatched, invite WhatsApp signup: type account banao or reply Haan "
-    "to create account here (OTP by SMS on this mobile).\n"
-    "- One short WhatsApp reply only. No markdown headings."
+    "to create account here (OTP by SMS on THIS WhatsApp mobile only).\n"
+    "- NEVER offer to create account for a different mobile number pasted in chat.\n"
+    "- One short WhatsApp reply only. Prefer *heading* + • bullets."
 )
 
 
@@ -591,12 +699,15 @@ def start_password_reset(db: Session, conv: AiConversation, lang: str, *, resend
 
 
 def start_account(db: Session, conv: AiConversation, lang: str, prefix: str = "") -> str:
-    """Start WhatsApp registration (name → username → email → password → SMS OTP)."""
+    """Start WhatsApp registration (name → username → email → password → SMS OTP).
+
+    Account is always created for conv.mobile only — never for a pasted other number.
+    """
     from .account_filter import collect_whatsapp_user, connect_webhook_account
 
     payload = _payload(conv)
     if payload.get("account_onboarded"):
-        return prefix or t(lang, "confirm_ok")
+        return reply_account_already_here(lang, conv.mobile)
     collect_whatsapp_user(db, conv, persist=True)
     svc = _infra(db)
     if svc:
@@ -716,6 +827,13 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
         return None
     msg = (text or "").strip()
     low = msg.lower()
+
+    # Mid-registration: reject any attempt to switch to another mobile
+    others = extract_other_mobiles(msg, conv.mobile)
+    if others and step.startswith(("reg_", "offer", "otp", "ask")):
+        return reply_other_number_blocked(lang, conv.mobile, others[0])
+    if step in {"reg_name", "reg_username", "offer_create"} and wants_other_number_account(msg, conv.mobile):
+        return reply_other_number_blocked(lang, conv.mobile)
 
     if step == "offer_create":
         if is_yes(msg) or wants_create_account(msg, payload) or _CREATE_ACCOUNT_SHORT.search(msg):

@@ -12,6 +12,7 @@ from .account import (
     clear_stale_listing_otp,
     gate_or_registration_offer,
     handle_account,
+    handle_same_number_account_policy,
     needs_account_gate,
     should_intercept_account,
     start_account,
@@ -557,6 +558,11 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
     if wants_password_reset(msg):
         return _sanitize_reply(start_password_reset(db, conv, lang), posted=False, lang=lang)
 
+    # Hard: cannot create another WhatsApp number's account from this chat
+    same_num = handle_same_number_account_policy(db, conv, text, lang)
+    if same_num:
+        return _sanitize_reply(same_num, posted=False, lang=lang)
+
     # Hard: account / wallet tokens / listing counts — human reply, never LLM jargon
     info = handle_account_info(db, conv, text, lang)
     if info:
@@ -926,6 +932,11 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
     # 1c) Password reset via WhatsApp OTP
     if wants_password_reset(text or "") and not str(payload0.get("account_step") or "").startswith("pw_"):
         return _sanitize_reply(start_password_reset(db, conv, lang), posted=False, lang=lang)
+
+    # 1c1) Same WhatsApp number only — never create account for another mobile
+    same0 = handle_same_number_account_policy(db, conv, text or "", lang)
+    if same0:
+        return _sanitize_reply(same0, posted=False, lang=lang)
 
     # 1c2) Account / tokens / listings — human snapshot (no LLM jargon)
     info0 = handle_account_info(db, conv, text or "", lang)

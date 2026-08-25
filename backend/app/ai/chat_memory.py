@@ -999,6 +999,12 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     if wants_password_reset(msg):
         return start_password_reset(db, conv, lang)
 
+    from .account import handle_same_number_account_policy
+
+    same = handle_same_number_account_policy(db, conv, text, lang)
+    if same:
+        return same
+
     from .account_info import handle_account_info
 
     info = handle_account_info(db, conv, text, lang)
