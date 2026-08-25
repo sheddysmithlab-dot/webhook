@@ -289,7 +289,8 @@ def detect_intent(text: str, payload: dict, media_note: str = "") -> str:
     if awaiting:
         if confirmation_has_modification(msg):
             return "REJECT_CORRECTION"
-        if is_yes(msg):
+        # "post kr do" / "haan post" while waiting = confirm submit (same as Haan)
+        if is_yes(msg) or _POST_NOW.search(msg):
             return "CONFIRM_LISTING"
         if is_no(msg):
             return "REJECT_CORRECTION"
@@ -556,7 +557,7 @@ def build_data_filter_payload(conv: AiConversation, payload: dict) -> dict:
                 sources[key] = "USER"
     return {
         "conversation_id": conv.conversation_id,
-        "account_id": payload.get("profile_id") or conv.profile_id,
+        "account_id": payload.get("infradealer_user_id") or payload.get("profile_id") or conv.profile_id,
         "workflow_id": payload.get("workflow_id") or f"WF-{conv.id}",
         "intent": (payload.get("intent") or conv.intent or "").upper(),
         "category": payload.get("category"),
@@ -714,7 +715,7 @@ def send_for_confirmation(db: Session, conv: AiConversation, lang: str = "hingli
 def interpret_confirmation(text: str, payload: dict) -> str:
     if confirmation_has_modification(text):
         return "MODIFY"
-    if is_yes(text):
+    if is_yes(text) or _POST_NOW.search(text or ""):
         return "CONFIRM"
     if is_no(text):
         return "REJECT"
@@ -1199,16 +1200,48 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
             collect_message(db, conv, msg)
             payload = _payload(conv)
             payload["skipped_asks"] = skipped
+            from .data_filteration import ensure_model_fallback
+
+            ensure_model_fallback(payload)
+            # Clear yes/hello noise from location fields
+            for key in ("city", "location", "state"):
+                val = str(payload.get(key) or "").strip().lower()
+                if val in {
+                    "haan", "han", "ha", "yes", "hello", "hi", "ok", "okay", "ji",
+                    "theek", "sahi", "nahi", "no",
+                }:
+                    payload[key] = None
             _write_payload(conv, payload)
             result = filter_memory(db, conv)
             payload = handle_data_filter_result(db, conv, result)
             payload["skipped_asks"] = skipped
+            ensure_model_fallback(payload)
             _write_payload(conv, payload)
             if is_collection_ready(payload) and (
                 (payload.get("intent") or "").upper() != "SELL" or _photos_satisfied(payload)
             ):
-                response_type = "CONFIRMATION_REQUEST"
-                reply = build_confirmation_summary(db, conv, lang, filter_result=result)
+                # Already confirmed once earlier, or explicit post → submit directly
+                if payload.get("awaiting_confirm") or payload.get("customer_confirmed"):
+                    result = submit_confirmed_listing(db, conv)
+                    response_type = "LISTING_SUBMITTED"
+                    if result.get("ok") is False and result.get("error") == "listing_not_ready":
+                        reply = build_next_question(_payload(conv), lang) or t(lang, "unclear")
+                        response_type = "ASK_QUESTION"
+                    elif result.get("ok") is False and result.get("error") == "account_not_eligible":
+                        reply = _account_gate_user_reply(db, conv, msg, lang, _payload(conv))
+                        response_type = "ERROR_MESSAGE"
+                    elif result.get("ok") is False and result.get("error") == "token_insufficient":
+                        buy = result.get("buy_link") or (_payload(conv).get("account_buy_link") or "https://infradealer.com/wallet")
+                        reply = t(lang, "tokens_buy", link=buy)
+                        response_type = "ERROR_MESSAGE"
+                    elif result.get("ok") is False and result.get("status") in {"RETRY", "DELIVERY_FAILED", "FAILED"}:
+                        reply = t(lang, "submit_retry")
+                        response_type = "ERROR_MESSAGE"
+                    else:
+                        reply = t(lang, "submitted")
+                else:
+                    response_type = "CONFIRMATION_REQUEST"
+                    reply = build_confirmation_summary(db, conv, lang, filter_result=result)
             else:
                 response_type = "ASK_QUESTION"
                 reply = build_next_question(payload, lang) or t(lang, "unclear")

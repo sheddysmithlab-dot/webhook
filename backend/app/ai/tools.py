@@ -294,9 +294,15 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
                     clean = canon
             if key == "expected_price" and not looks_like_price(clean):
                 continue
-            if key == "location" and clean.lower() in {"hor", "he", "hai", "or", "and", "the", "yes", "han", "haan"}:
+            if key == "model" and re.fullmatch(r"(?:19|20)\d{2}", clean):
+                # Year answers must not become model
                 continue
-            if key == "state" and clean.lower() in {"hor", "he", "hai", "or", "and", "the", "yes", "han", "haan"}:
+            _PLACE_NOISE = {
+                "hor", "he", "hai", "or", "and", "the", "yes", "han", "haan", "ha",
+                "hello", "hi", "hey", "ok", "okay", "ji", "hji", "nahi", "na", "no",
+                "theek", "thik", "sahi", "post", "submit", "done",
+            }
+            if key in {"location", "city", "state"} and clean.lower() in _PLACE_NOISE:
                 continue
             if key in {"location", "city", "state"}:
                 from .data_filteration import _looks_like_place

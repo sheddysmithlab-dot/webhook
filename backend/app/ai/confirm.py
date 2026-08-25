@@ -60,6 +60,11 @@ _YES = re.compile(
     r")[\s!.]*$",
     re.I,
 )
+_POST_CONFIRM = re.compile(
+    r"\b(post\s*(kar|kr|do|dena|karo|krdo|kardo)|submit\s*(kar|kr|do)|"
+    r"listing\s*(bana|banao|kar\s*do|post)|bas\s*(yahi|itna|post|submit))\b",
+    re.I,
+)
 _NO = re.compile(
     r"^\s*("
     r"nahi+|na+|no+|nope|galat|wrong|cancel|mat\s*karo|rehne\s*do|"
@@ -222,7 +227,7 @@ def handle_confirmation(
         payload["customer_confirmed"] = False
         _write_payload(conv, payload)
         return t(lang, "unclear")
-    if is_yes(text):
+    if is_yes(text) or _POST_CONFIRM.search(text or ""):
         result = submit_confirmed_listing(db, conv)
         if result.get("ok") is False:
             if result.get("error") == "token_insufficient":

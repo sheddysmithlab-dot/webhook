@@ -130,7 +130,11 @@ def _role_to_type(role: str | None) -> str:
 
 
 def verify_account(db: Session, mobile: str) -> AccountVerdict:
-    """Deterministic posting eligibility from local User + InfraDealerAccountState."""
+    """Deterministic posting eligibility from local User + InfraDealerAccountState.
+
+    Primary marketplace identity is always InfraDealer ``infradealer_user_id``.
+    Local webhook ``users.id`` is only a FK mirror (see AccountDetails.local_user_id).
+    """
     phone = normalize_phone(mobile)
     verdict = AccountVerdict(mobile=phone)
     if len(phone) != 10:
@@ -151,6 +155,7 @@ def verify_account(db: Session, mobile: str) -> AccountVerdict:
     )
     meta = _meta(state)
     remote_type = str(meta.get("account_type") or meta.get("type") or "").lower()
+    infra_id = str(state.infradealer_user_id).strip() if state and state.infradealer_user_id else ""
 
     if not user and not state:
         verdict.account_type = "missing"
@@ -160,18 +165,26 @@ def verify_account(db: Session, mobile: str) -> AccountVerdict:
     local_type = "missing"
     if user:
         verdict.found = True
-        verdict.account_id = user.id
         verdict.name = user.name or ""
         verdict.onboarded = bool(user.account_ready)
         verdict.status = "ACTIVE" if user.account_ready else "FOUND"
         local_type = _role_to_type(user.role)
-    else:
-        verdict.found = bool(state and (state.infradealer_user_id or state.account_status))
-        verdict.account_id = state.infradealer_user_id if state else None
-        verdict.name = str(meta.get("name") or "")
-        verdict.onboarded = bool(state and state.account_status in {"ACCOUNT_FOUND", "ACCOUNT_EXISTS", "VERIFIED"})
-        verdict.status = (state.account_status if state else "NOT_FOUND") or "NOT_FOUND"
-        local_type = _role_to_type(remote_type) if remote_type else "missing"
+    if state and (infra_id or state.account_status):
+        verdict.found = True
+        if not verdict.name:
+            verdict.name = str(meta.get("name") or "")
+        if state.account_status in {"ACCOUNT_FOUND", "ACCOUNT_EXISTS", "VERIFIED"}:
+            verdict.onboarded = True
+            verdict.status = "ACTIVE"
+        elif not user:
+            verdict.status = (state.account_status or "NOT_FOUND")
+        if remote_type:
+            local_type = local_type if local_type != "missing" else _role_to_type(remote_type)
+        elif not user:
+            local_type = _role_to_type(remote_type) if remote_type else "missing"
+
+    # One primary id for the whole project: InfraDealer marketplace user id.
+    verdict.account_id = infra_id or None
 
     # Conflict detection: local vs remote account_type disagree (excluding unknowns)
     if (
@@ -439,16 +452,16 @@ def sync_conversation_account(db: Session, conv: AiConversation) -> AccountVerdi
     payload["account_conflict"] = verdict.conflict
     payload["account_onboarded"] = verdict.onboarded
     payload["account_buy_link"] = verdict.buy_link
+    # Primary id = InfraDealer marketplace user id only. Never store local
+    # webhook users.id in infradealer_user_id (that broke Shiv listing identity).
     if details.infradealer_user_id:
-        payload["infradealer_user_id"] = details.infradealer_user_id
-    # Keep remote InfraDealer id in payload only — NEVER write it to
-    # conv.profile_id (FK → local webhook users.id). That mismatch caused
-    # ForeignKeyViolation and silent WhatsApp reply failures.
-    if verdict.account_id:
+        payload["infradealer_user_id"] = str(details.infradealer_user_id)
+        payload["remote_account_id"] = str(details.infradealer_user_id)
+    elif verdict.account_id:
         payload["infradealer_user_id"] = str(verdict.account_id)
         payload["remote_account_id"] = str(verdict.account_id)
-        # Do not set payload["profile_id"] / conv.profile_id from remote id
     elif not verdict.found:
+        payload.pop("infradealer_user_id", None)
         payload.pop("remote_account_id", None)
 
     local_user = (
@@ -456,8 +469,16 @@ def sync_conversation_account(db: Session, conv: AiConversation) -> AccountVerdi
         if (phone := normalize_phone(conv.mobile))
         else None
     )
+    # Sync local mirror role from remote account type (same as working users).
+    if local_user and verdict.account_type in {"broker", "token", "office", "free"}:
+        want_role = "user" if verdict.account_type == "free" else verdict.account_type
+        if (local_user.role or "").lower() != want_role:
+            local_user.role = want_role
+        if verdict.onboarded and not local_user.account_ready:
+            local_user.account_ready = True
     if local_user:
         payload["profile_id"] = local_user.id
+        payload["local_profile_id"] = local_user.id
         conv.profile_id = local_user.id
         conv.profile_status = "found" if verdict.found else (conv.profile_status or "local")
     else:
@@ -467,6 +488,7 @@ def sync_conversation_account(db: Session, conv: AiConversation) -> AccountVerdi
             if not exists:
                 conv.profile_id = None
         payload.pop("profile_id", None)
+        payload.pop("local_profile_id", None)
         if not verdict.found:
             conv.profile_status = "missing"
         elif verdict.found:
@@ -481,6 +503,7 @@ def sync_conversation_account(db: Session, conv: AiConversation) -> AccountVerdi
 
     if not payload.get("workflow_id"):
         payload["workflow_id"] = f"WF-{conv.id}"
+    primary_id = details.infradealer_user_id or verdict.account_id
     payload["account_context"] = {
         "identity": {
             "phone": to_e164_in(conv.mobile) or conv.mobile,
@@ -490,7 +513,9 @@ def sync_conversation_account(db: Session, conv: AiConversation) -> AccountVerdi
         },
         "account": {
             "found": verdict.found,
-            "account_id": verdict.account_id,
+            "account_id": primary_id,
+            "infradealer_user_id": details.infradealer_user_id or primary_id,
+            "local_profile_id": local_user.id if local_user else None,
             "name": verdict.name or wa.wa_name,
             "type": (verdict.account_type or "ACCOUNT_TYPE_UNKNOWN").upper(),
             "status": verdict.status,

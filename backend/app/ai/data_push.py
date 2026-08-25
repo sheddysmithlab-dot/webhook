@@ -301,7 +301,12 @@ def build_payload(
     from ..infradealer.payloads import build_listing_payload
 
     version = int(payload.get("draft_version") or 1)
-    account_id = payload.get("profile_id") or conv.profile_id or ""
+    # Primary marketplace id = InfraDealer user id (not local webhook profile_id).
+    account_id = (
+        payload.get("infradealer_user_id")
+        or payload.get("remote_account_id")
+        or ""
+    )
     fr = payload.get("filter_result") if isinstance(payload.get("filter_result"), dict) else {}
     nd = fr.get("normalized_data") if isinstance(fr.get("normalized_data"), dict) else {}
     summary = payload.get("confirmed_json") or payload.get("summary_json") or {}
@@ -333,6 +338,11 @@ def build_payload(
     except Exception:
         log.warning("build_payload: infradealer account state lookup failed for ***%s", account_mobile(conv.mobile)[-4:])
         infra_user = ""
+
+    if not account_id and infra_user:
+        account_id = infra_user
+    if not infra_user:
+        infra_user = str(account_id or "")
 
     listing_body = build_listing_payload(db, conv, draft, payload, request_id, infra_user)
     if validation_ok is None:
@@ -590,7 +600,7 @@ def process_approval(db: Session, conv: AiConversation, event: dict) -> dict:
         listing_id=listing_id,
         status=target,
         live_url=live_url,
-        account_id=payload.get("profile_id") or conv.profile_id,
+        account_id=payload.get("infradealer_user_id") or payload.get("profile_id") or conv.profile_id,
         submission_id=sub.get("submission_id") or "",
     )
     payload["pending_notification"] = note
@@ -632,7 +642,7 @@ def process_rejection(db: Session, conv: AiConversation, event: dict) -> dict:
         status="REJECTED",
         reason_code=reason_code,
         reason_text=reason_text,
-        account_id=payload.get("profile_id") or conv.profile_id,
+        account_id=payload.get("infradealer_user_id") or payload.get("profile_id") or conv.profile_id,
         submission_id=sub.get("submission_id") or "",
     )
     payload["pending_notification"] = note
@@ -946,7 +956,7 @@ def push_listing(db: Session, conv: AiConversation) -> PushResult:
                     status="FAILED",
                     reason_code="TOKEN_INSUFFICIENT",
                     reason_text="Insufficient wallet tokens",
-                    account_id=payload.get("profile_id") or conv.profile_id,
+                    account_id=payload.get("infradealer_user_id") or payload.get("profile_id") or conv.profile_id,
                     submission_id=str(sub.get("submission_id") or request_id),
                 )
                 return PushResult(
@@ -1026,7 +1036,7 @@ def push_listing(db: Session, conv: AiConversation) -> PushResult:
         payload["push_stage"] = "PUSHED_TO_INFRADEALER"
         note = create_notification_event(
             notification_type="LISTING_SUBMITTED", listing_id=listing_id,
-            status=payload["listing_status"], account_id=payload.get("profile_id") or conv.profile_id,
+            status=payload["listing_status"], account_id=payload.get("infradealer_user_id") or payload.get("profile_id") or conv.profile_id,
             submission_id=sub.get("submission_id") or request_id,
         )
         payload["pending_notification"] = note
@@ -1056,7 +1066,7 @@ def push_listing(db: Session, conv: AiConversation) -> PushResult:
             notification_type="LISTING_DELIVERY_FAILED", status=sub.get("status") or "FAILED",
             reason_code=error_class,
             reason_text="InfraDealer server temporarily unavailable; submission preserved for retry.",
-            account_id=payload.get("profile_id") or conv.profile_id,
+            account_id=payload.get("infradealer_user_id") or payload.get("profile_id") or conv.profile_id,
             submission_id=str(sub.get("submission_id") or request_id),
         )
         return PushResult(

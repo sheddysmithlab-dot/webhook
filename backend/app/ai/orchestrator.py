@@ -151,7 +151,7 @@ def ensure_correlation(payload: dict, conv: AiConversation, ids: dict | None = N
 
 def correlation_snapshot(payload: dict, conv: AiConversation) -> dict:
     return {
-        "account_id": payload.get("profile_id") or payload.get("infradealer_user_id"),
+        "account_id": payload.get("infradealer_user_id") or payload.get("profile_id"),
         "conversation_id": payload.get("conversation_id") or conv.conversation_id,
         "workflow_id": payload.get("workflow_id"),
         "draft_id": payload.get("draft_id") or conv.draft_id,
@@ -420,7 +420,7 @@ def handle_admin_status_event(db: Session, conv: AiConversation, event: dict) ->
         target_agent="data_push",
         event_type=str(event.get("event") or "ADMIN_EVENT"),
         workflow_id=str(payload.get("workflow_id") or ""),
-        account_id=payload.get("profile_id"),
+        account_id=payload.get("infradealer_user_id") or payload.get("profile_id"),
         draft_id=payload.get("draft_id") or conv.draft_id,
         draft_version=int(payload.get("draft_version") or 1),
         request_id=str(payload.get("request_id") or ""),
@@ -528,7 +528,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
         target_agent="account_filter",
         event_type="RESOLVE_IDENTITY",
         workflow_id=str(payload.get("workflow_id") or ""),
-        account_id=payload.get("profile_id"),
+        account_id=payload.get("infradealer_user_id") or payload.get("profile_id"),
         draft_id=payload.get("draft_id") or conv.draft_id,
         draft_version=int(payload.get("draft_version") or 1),
         request_id=ids["request_id"],

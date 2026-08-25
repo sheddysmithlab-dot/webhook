@@ -360,15 +360,22 @@ _STATE_ALIASES = {
 
 
 def _looks_like_place(text: str) -> bool:
-    """Reject prices, years, vehicle dumps, and long sentences as locations."""
+    """Reject prices, years, vehicle dumps, yes/no, and long sentences as locations."""
     raw = (text or "").strip()
     if not raw or len(raw) > 48:
         return False
     low = raw.lower()
+    if re.fullmatch(
+        r"(haan+|han+|ha+|hji|ji|yes+|yup|yeah|yep|ok+|okay|no+|nahi+|na+|hello|hi|hey|"
+        r"theek|thik|sahi|correct|done|post|submit|please|pls|thanks|thank\s*you|"
+        r"हाँ+|हां+|जी+|नहीं+|ना+|ठीक|सही)",
+        low,
+    ):
+        return False
     if re.search(
         r"lakh|lac|crore|\bcr\b|₹|rs\.?|\bkm\b|hour|hrs?|bech|sell|buy|kharid|"
         r"\btata\b|\bjcb\b|\beicher\b|tipper|dumper|truck|photo|otp|password|"
-        r"model|price|rate|budget|year|saal",
+        r"model|price|rate|budget|year|saal|post\s*kr|submit",
         low,
     ):
         return False
@@ -378,6 +385,30 @@ def _looks_like_place(text: str) -> bool:
     if len(raw.split()) > 5:
         return False
     return True
+
+
+def ensure_model_fallback(payload: dict) -> bool:
+    """When model is blank but brand is set (esp. JCB/equipment), use brand as model.
+
+    Returns True if model was filled.
+    """
+    if not _blank(payload.get("model")):
+        return False
+    brand = str(payload.get("brand") or "").strip()
+    if not brand:
+        return False
+    # Reject year-like brands being copied into model elsewhere
+    if re.fullmatch(r"(?:19|20)\d{2}", brand):
+        return False
+    cat = normalize_vehicle_category(payload.get("category") or payload.get("type") or "") or ""
+    equipment = {
+        "JCB", "Excavator", "Poclain", "Loader", "Crane", "Crusher",
+        "Backhoe Loader", "Grader",
+    }
+    if cat in equipment or brand.upper() == (cat or "").upper() or brand.upper() == "JCB":
+        payload["model"] = brand[:80]
+        return True
+    return False
 
 
 def _match_state_name(text: str) -> str | None:
@@ -731,8 +762,16 @@ def build_missing_fields(normalized: dict, category: str, intent: str = "SELL") 
         "km": ("km", "running_km", "running"),
         "photos": ("photos", "media_ids", "photo_count"),
     }
+    # User explicitly skipped optional/runtime fields ("nahi malum" / "post kr do")
+    skipped = {str(x).lower() for x in (normalized.get("skipped_asks") or []) if x}
+    skip_hours = bool(skipped & {"hours", "operating_hours", "optional", "km", "running_km"})
+    skip_km = bool(skipped & {"km", "running_km", "optional", "hours", "operating_hours"})
     missing = []
     for key in required:
+        if key == "hours" and skip_hours:
+            continue
+        if key == "km" and skip_km:
+            continue
         keys = aliases.get(key, (key,))
         present = False
         for k in keys:
@@ -1237,6 +1276,13 @@ def is_collection_ready(payload: dict) -> bool:
     intent = (payload.get("intent") or "").upper()
     if intent not in {"BUY", "SELL"}:
         return False
+    # Equipment often has brand == model line (JCB) — fill before readiness check
+    ensure_model_fallback(payload)
+    # Drop yes/hello garbage that slipped into location fields
+    for key in ("city", "location", "state"):
+        val = str(payload.get(key) or "").strip()
+        if val and not _looks_like_place(val) and not _match_state_name(val):
+            payload[key] = None
     # Use schema missing detection on a normalized view without inventing
     normalized, _ = normalize_fields(payload)
     if intent:
@@ -1247,6 +1293,7 @@ def is_collection_ready(payload: dict) -> bool:
     merged.update({k: v for k, v in normalized.items() if not _blank(v)})
     if category:
         merged["category"] = category
+    ensure_model_fallback(merged)
     missing = build_missing_fields(merged, category, intent)
     # Photos not required for collection_ready (asked later)
     missing = [m for m in missing if m.get("field") != "photos"]
