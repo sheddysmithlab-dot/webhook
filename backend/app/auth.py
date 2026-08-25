@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import time
 from base64 import urlsafe_b64decode, urlsafe_b64encode
@@ -148,6 +149,15 @@ def is_public(request: Request) -> bool:
     if path == "/api/v1/integrations/infradealer/callback":
         return True
     if path.startswith("/api/v1/integrations/infradealer/media/"):
+        return True
+    # Marketplace catalog + photos must load without session (img tags / public browse).
+    if method == "GET" and path == "/api/products":
+        return True
+    if method == "GET" and path == "/api/meta/options":
+        return True
+    if method == "GET" and re.fullmatch(r"/api/products/\d+", path):
+        return True
+    if method == "GET" and re.fullmatch(r"/api/products/\d+/photos/\d+", path):
         return True
     return False
 

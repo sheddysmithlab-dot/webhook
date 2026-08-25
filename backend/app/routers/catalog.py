@@ -45,7 +45,7 @@ class OtpIn(BaseModel):
     code: str = ""
 
 
-def product_out(p: Product) -> dict:
+def product_out(p: Product, db: Session | None = None) -> dict:
     return {
         "id": p.id,
         "ref": p.ref,
@@ -62,7 +62,7 @@ def product_out(p: Product) -> dict:
         "spam_flags": p.spam_flags,
         "views": p.views,
         "description": p.description,
-        "photos": photo_payload(p),
+        "photos": photo_payload(p, db),
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
     }
@@ -133,8 +133,10 @@ def list_products(
             if needle in " ".join([p.title, p.category, p.city, p.seller_name, p.mobile]).lower()
         ]
     published = db.query(Product).filter(Product.status == "published").all()
+    items = [product_out(p, db) for p in rows]
+    db.commit()
     return {
-        "items": [product_out(p) for p in rows],
+        "items": items,
         "categories": sorted({p.category for p in published if p.category}),
         "cities": sorted({p.city for p in published if p.city}),
     }
@@ -146,9 +148,9 @@ def get_product(product_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(404, "Product nahi mila")
     p.views = (p.views or 0) + 1
+    out = product_out(p, db)
     db.commit()
-    db.refresh(p)
-    return product_out(p)
+    return out
 
 
 @router.get("/products/{product_id}/photos/{media_id}")
@@ -156,12 +158,16 @@ def product_photo(product_id: int, media_id: int, db: Session = Depends(get_db))
     p = db.query(Product).filter(Product.id == product_id, Product.status == "published").first()
     if not p:
         raise HTTPException(404, "Product nahi mila")
-    allowed = {item["id"] for item in photo_payload(p)}
+    allowed = {item["id"] for item in photo_payload(p, db)}
     if media_id not in allowed:
-        raise HTTPException(404, "Photo nahi mili")
-    row = db.query(AiMedia).filter(AiMedia.id == media_id).first()
-    if not row or not row.local_path:
-        raise HTTPException(404, "Photo nahi mili")
+        # Allow direct id if file still on disk (legacy stale lists).
+        row = db.query(AiMedia).filter(AiMedia.id == media_id, AiMedia.kind == "image").first()
+        if not row or not row.local_path:
+            raise HTTPException(404, "Photo nahi mili")
+    else:
+        row = db.query(AiMedia).filter(AiMedia.id == media_id).first()
+        if not row or not row.local_path:
+            raise HTTPException(404, "Photo nahi mili")
     path = Path(row.local_path).resolve()
     root = Path(settings.ai_media_dir).resolve()
     if root != path and root not in path.parents:
@@ -252,7 +258,7 @@ def submit(body: SubmitIn, db: Session = Depends(get_db)):
     if user:
         prod = publish_card(db, sub, user, "linked")
         db.commit()
-        return {"ok": True, "need_otp": False, "account_mode": "linked", "product": product_out(prod)}
+        return {"ok": True, "need_otp": False, "account_mode": "linked", "product": product_out(prod, db)}
 
     sub.status = "otp_pending"
     meta = get_or_create_settings(db)
@@ -310,7 +316,7 @@ def verify_otp(body: OtpIn, db: Session = Depends(get_db)):
         mode = "created"
     prod = publish_card(db, sub, user, mode)
     db.commit()
-    return {"ok": True, "account_mode": mode, "product": product_out(prod)}
+    return {"ok": True, "account_mode": mode, "product": product_out(prod, db)}
 
 
 @router.post("/otp/resend")

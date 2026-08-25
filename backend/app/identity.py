@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -198,19 +199,99 @@ def seller_fields(db: Session, conv: AiConversation | None, draft: AiListingDraf
     return name, mobile
 
 
-def photo_payload(product: Product) -> list[dict]:
+def _media_file_ok(row: AiMedia | None) -> bool:
+    if not row or not row.local_path:
+        return False
     try:
-        ids = json.loads(product.photo_ids or "[]")
+        return Path(row.local_path).is_file()
+    except OSError:
+        return False
+
+
+def resolve_product_photo_ids(db: Session, product: Product, *, persist: bool = True) -> list[int]:
+    """Valid AiMedia image ids for a product; repair stale photo_ids from seller drafts when needed."""
+    try:
+        raw = json.loads(product.photo_ids or "[]")
     except json.JSONDecodeError:
-        ids = []
-    out = []
-    for mid in ids:
+        raw = []
+    wanted: list[int] = []
+    for mid in raw:
         try:
-            n = int(mid)
+            wanted.append(int(mid))
         except (TypeError, ValueError):
             continue
-        out.append({"id": n, "url": f"/api/products/{product.id}/photos/{n}"})
-    return out
+
+    valid: list[int] = []
+    seen: set[int] = set()
+    for mid in wanted:
+        if mid in seen:
+            continue
+        row = db.get(AiMedia, mid)
+        if row and row.kind == "image" and _media_file_ok(row):
+            seen.add(mid)
+            valid.append(mid)
+
+    if valid:
+        if persist and valid != wanted:
+            product.photo_ids = json.dumps(valid)
+        return valid[:7]
+
+    # Stale / wiped media rows — recover newest images from this seller's drafts.
+    mobile = "".join(ch for ch in str(product.mobile or "") if ch.isdigit())[-10:]
+    if not mobile:
+        if persist and wanted:
+            product.photo_ids = "[]"
+        return []
+
+    drafts = (
+        db.query(AiListingDraft.id)
+        .filter(AiListingDraft.mobile == mobile)
+        .order_by(AiListingDraft.id.desc())
+        .limit(12)
+        .all()
+    )
+    draft_ids = [int(r[0]) for r in drafts]
+    recovered: list[int] = []
+    if draft_ids:
+        rows = (
+            db.query(AiMedia)
+            .filter(
+                AiMedia.draft_id.in_(draft_ids),
+                AiMedia.kind == "image",
+            )
+            .order_by(AiMedia.id.desc())
+            .limit(20)
+            .all()
+        )
+        for row in rows:
+            if len(recovered) >= 5:
+                break
+            if row.id in seen or not _media_file_ok(row):
+                continue
+            seen.add(row.id)
+            recovered.append(row.id)
+        recovered.reverse()  # chronological for gallery
+
+    if persist:
+        product.photo_ids = json.dumps(recovered)
+    return recovered[:7]
+
+
+def photo_payload(product: Product, db: Session | None = None) -> list[dict]:
+    ids: list[int] = []
+    if db is not None:
+        ids = resolve_product_photo_ids(db, product, persist=True)
+    else:
+        try:
+            raw = json.loads(product.photo_ids or "[]")
+        except json.JSONDecodeError:
+            raw = []
+        for mid in raw:
+            try:
+                ids.append(int(mid))
+            except (TypeError, ValueError):
+                continue
+    return [{"id": n, "url": f"/api/products/{product.id}/photos/{n}"} for n in ids]
 
 
 def repair_posted_listings(db: Session) -> None:
