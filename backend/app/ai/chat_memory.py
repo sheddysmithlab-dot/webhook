@@ -44,9 +44,9 @@ _TEMPLATE_KEYS_CACHE: set | None = None
 def _template_keys() -> set:
     global _TEMPLATE_KEYS_CACHE
     if _TEMPLATE_KEYS_CACHE is None:
-        from .i18n import TEMPLATES
+        from .i18n_messages import MESSAGES
 
-        _TEMPLATE_KEYS_CACHE = set(TEMPLATES["hinglish"].keys())
+        _TEMPLATE_KEYS_CACHE = set(MESSAGES.keys())
     return _TEMPLATE_KEYS_CACHE
 
 

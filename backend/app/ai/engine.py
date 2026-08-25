@@ -414,7 +414,7 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
     }
     posted = _draft_status(db, conv) == "POSTED"
     try:
-        with httpx.Client(timeout=12.0) as client:
+        with httpx.Client(timeout=20.0) as client:
             use_tools = True
             for _ in range(3):  # fast: max 3 rounds
                 payload_body = dict(body)
