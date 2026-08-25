@@ -173,8 +173,12 @@ def language_instruction(lang: str = "hinglish") -> str:
         "ur": "Reply in Urdu (Nastaliq script).",
         "ur_roman": "Reply in Roman Urdu.",
     }
-    return instructions.get(lang, "Reply in Hinglish (Hindi + English, Latin script).")
-
+    base = instructions.get(lang, "Reply in Hinglish (Hindi + English, Latin script).")
+    return (
+        base
+        + " Format like ChatGPT for WhatsApp: *bold heading*, then • bullet points, "
+        + "key numbers in *bold*, optional one-line Next at end. No walls of text."
+    )
 
 def t(lang: str, key: str, **kwargs) -> str:
     lang = lang if lang in SUPPORTED_LANGS else DEFAULT_LANG

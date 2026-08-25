@@ -1,7 +1,7 @@
 """Human-friendly WhatsApp replies for account / wallet / listing questions.
 
 Never expose backend jargon (FREE_USER, ELIGIBLE, onboarded, backend DB).
-Answer only what the user asked; bold the key numbers.
+ChatGPT-style: heading + bullet points + bold key numbers.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..models import AiConversation
 from .account_filter import connect_webhook_account, read_account_details
-from .i18n import t
+from .format_reply import bold, fmt_section
 from .tools import _payload, _write_payload
 
 log = logging.getLogger("infradealer.ai.account_info")
@@ -21,7 +21,7 @@ log = logging.getLogger("infradealer.ai.account_info")
 _ACCOUNT_DETAIL = re.compile(
     r"("
     r"\b(account|akount|अकाउंट)\b.{0,40}\b(detail|details|info|jaankari|jankari|batao|bata|summary)\b"
-    r"|\b(meri|mera|mujhe|mere)\b.{0,24}\b(account|akount)\b.{0,20}\b(detail|details|info|batao|bata|kya\s+hai)?\b"
+    r"|\b(meri|mera|mujhe|mere)\b.{0,24}\b(account|akount)\b"
     r"|account\s*(detail|details|info)"
     r"|(database|db)\s*(mein|me)\s*(check|dekh|dekho)"
     r"|database\s*mein\s*check"
@@ -64,7 +64,6 @@ def _human_plan(account_type: str) -> str:
 
 
 def _refresh_snapshot(db: Session, conv: AiConversation) -> dict:
-    """Pull live account.check into local state; return friendly snapshot dict."""
     try:
         connect_webhook_account(db, conv, refresh=True)
         db.flush()
@@ -130,26 +129,36 @@ def _refresh_snapshot(db: Session, conv: AiConversation) -> dict:
     }
 
 
-def _token_line(lang: str, snap: dict) -> str:
+def _token_bullets(snap: dict) -> list[str]:
     tok = snap.get("tokens")
     if tok is None:
-        return t(lang, "account_info_tokens_unknown", link=snap["buy_link"])
+        return [f"Wallet balance sync nahi hua — check: {snap['buy_link']}"]
     if tok <= 0:
-        return t(lang, "account_info_tokens_zero", link=snap["buy_link"])
-    return t(lang, "account_info_tokens", tokens=tok, link=snap["buy_link"])
+        return [
+            f"Wallet: {bold('0 tokens')}",
+            f"Tokens chahiye to: {snap['buy_link']}",
+        ]
+    return [f"Wallet: {bold(f'{tok} tokens')}"]
 
 
-def _listing_line(lang: str, snap: dict) -> str:
+def _listing_bullets(snap: dict) -> list[str]:
     live = int(snap.get("listings_live") or 0)
     pending = int(snap.get("listings_pending") or 0)
     total = int(snap.get("listings_total") or (live + pending))
     if live == 0 and pending == 0:
-        return t(lang, "account_info_listings_none")
-    return t(lang, "account_info_listings", live=live, pending=pending, total=total)
+        return [
+            f"Live / pending listings: {bold('0')}",
+            "Nayi listing ke liye vehicle detail bhej dijiye",
+        ]
+    return [
+        f"Total: {bold(total)}",
+        f"Live website pe: {bold(live)}",
+        f"Admin review me: {bold(pending)}",
+    ]
 
 
 def handle_account_info(db: Session, conv: AiConversation, text: str, lang: str) -> str | None:
-    """Deterministic human reply — only the asked point, key figures in *bold*."""
+    """Deterministic ChatGPT-style reply — heading + bullets, only asked points."""
     msg = (text or "").strip()
     if not wants_account_snapshot(msg):
         return None
@@ -163,31 +172,42 @@ def handle_account_info(db: Session, conv: AiConversation, text: str, lang: str)
         want_account = True
 
     if not snap.get("found") and not snap.get("onboarded"):
-        return t(lang, "account_info_missing")
-
-    # Point answers: don't dump full account when user only asked tokens / listings
-    if want_tokens and not want_account and not want_listings:
-        return _token_line(lang, snap)
-
-    if want_listings and not want_account and not want_tokens:
-        return _listing_line(lang, snap)
-
-    if want_tokens and want_listings and not want_account:
-        return "\n".join([_token_line(lang, snap), _listing_line(lang, snap)])
-
-    bits: list[str] = []
-    if want_account or (not want_tokens and not want_listings):
-        bits.append(
-            t(
-                lang,
-                "account_info_summary",
-                name=snap["name"],
-                plan=snap["plan"],
-            )
+        return fmt_section(
+            "Account nahi mila",
+            [
+                "Is WhatsApp number pe clear InfraDealer account nahi dikha",
+                f"{bold('account banao')} likh kar yahi se bana sakte hain",
+                "Ya registered number se message kijiye",
+            ],
         )
-    if want_tokens or want_account:
-        bits.append(_token_line(lang, snap))
-    if want_listings or want_account:
-        bits.append(_listing_line(lang, snap))
 
-    return "\n".join(b for b in bits if b)
+    # Tokens only
+    if want_tokens and not want_account and not want_listings:
+        return fmt_section("Wallet / Tokens", _token_bullets(snap))
+
+    # Listings only
+    if want_listings and not want_account and not want_tokens:
+        return fmt_section("Aapki Listings", _listing_bullets(snap))
+
+    # Tokens + listings (no full account dump)
+    if want_tokens and want_listings and not want_account:
+        bullets = []
+        bullets.extend(_token_bullets(snap))
+        bullets.extend(_listing_bullets(snap))
+        return fmt_section("Wallet + Listings", bullets)
+
+    # Full account detail
+    bullets = [
+        f"Status: {bold('active')}",
+        f"Plan: {bold(snap['plan'])}",
+    ]
+    if want_tokens or want_account:
+        bullets.extend(_token_bullets(snap))
+    if want_listings or want_account:
+        bullets.extend(_listing_bullets(snap))
+
+    return fmt_section(
+        "Account Summary",
+        bullets,
+        footer="Next: vehicle bechna / kharidna, listing, ya password help bataiye.",
+    )
