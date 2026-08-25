@@ -189,8 +189,8 @@ _ADAPT_FACT_SYSTEM = (
     "credits, passwords, or live links.\n"
     "- Do NOT paste BACKEND_FACT word-for-word. Rephrase naturally (Sir/Ma'am, aap, ji).\n"
     "- First address what they just said (bechna/kharidna/account/help), then the fact.\n"
-    "- If number is unmatched, mention both options briefly: registered number OR "
-    "type account banao for WhatsApp OTP signup.\n"
+    "- If number is unmatched, invite WhatsApp signup: type account banao or reply Haan "
+    "to create account here (OTP by SMS on this mobile).\n"
     "- One short WhatsApp reply only. No markdown headings."
 )
 
@@ -262,8 +262,12 @@ def adapt_account_gate_reply(
 
 
 def account_busy(payload: dict) -> bool:
-    step = payload.get("account_step") or ""
-    return bool(step) and step != "done" and not payload.get("account_onboarded")
+    step = (payload.get("account_step") or "").strip()
+    if not step or step == "done":
+        return False
+    if step.startswith("pw_"):
+        return True
+    return not payload.get("account_onboarded")
 
 
 def should_intercept_account(payload: dict, text: str) -> bool:
@@ -277,6 +281,17 @@ def should_intercept_account(payload: dict, text: str) -> bool:
     msg = (text or "").strip()
     if not msg:
         return False
+    # Full WhatsApp registration / password-reset — always stay on the form
+    if step in {
+        "offer_create",
+        "reg_name",
+        "reg_username",
+        "reg_email",
+        "reg_password",
+        "pw_otp",
+        "pw_new",
+    }:
+        return True
     # Listing / card work always wins over a stuck account prompt
     if _LISTING_HINT.search(msg) and step in {"ask_exists", "password", "role"}:
         return False
@@ -299,6 +314,77 @@ def should_intercept_account(payload: dict, text: str) -> bool:
     if step == "role":
         return extract_role(msg) is not None
     return False
+
+
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", re.I)
+_USERNAME_RE = re.compile(r"^[a-zA-Z0-9._]{3,40}$")
+_PASSWORD_RESET = re.compile(
+    r"("
+    r"(password|passwd|pass|पासवर्ड).{0,24}(badlo|change|reset|update|bhool|forgot|naya|new)"
+    r"|(change|reset|forgot|naya|new).{0,24}(password|passwd|pass|पासवर्ड)"
+    r"|password\s*(badlo|change|reset)"
+    r")",
+    re.I,
+)
+
+
+def wants_password_reset(text: str) -> bool:
+    return bool(_PASSWORD_RESET.search(text or ""))
+
+
+def suggest_username(name: str, mobile: str = "") -> str:
+    base = re.sub(r"[^a-z0-9._]", "", (name or "").lower().replace(" ", ""))
+    if len(base) >= 3:
+        return base[:40]
+    tail = "".join(ch for ch in (mobile or "") if ch.isdigit())[-4:] or "user"
+    return (base + tail)[:40] or f"user{tail}"
+
+
+def _valid_name(msg: str) -> bool:
+    clean = re.sub(r"\s+", " ", (msg or "").strip())
+    if len(clean) < 2 or len(clean) > 120:
+        return False
+    if re.fullmatch(r"\d+", clean):
+        return False
+    return bool(re.search(r"[a-zA-Z\u0900-\u097F]", clean))
+
+
+def _valid_email(msg: str) -> bool:
+    return bool(_EMAIL_RE.match((msg or "").strip()))
+
+
+def _valid_username(msg: str) -> bool:
+    return bool(_USERNAME_RE.match((msg or "").strip()))
+
+
+def _valid_password(msg: str) -> bool:
+    return 6 <= len((msg or "").strip()) <= 64
+
+
+def begin_registration_offer(db: Session, conv: AiConversation, lang: str) -> str:
+    """When WA number has no account — ask to create via WhatsApp (not dead-end)."""
+    payload = _payload(conv)
+    if payload.get("account_onboarded"):
+        return t(lang, "confirm_ok")
+    payload["account_step"] = "offer_create"
+    payload["account_has_infra"] = False
+    conv.error_message = "ask:account_reg_offer"
+    _write_payload(conv, payload)
+    return t(lang, "account_reg_offer")
+
+
+def gate_or_registration_offer(
+    db: Session,
+    conv: AiConversation,
+    user_text: str,
+    lang: str,
+    payload: dict | None = None,
+) -> str:
+    """Unmatched WA → registration offer; eligibility block → adapted fact."""
+    pl = payload if isinstance(payload, dict) else _payload(conv)
+    if _wa_unmatched_payload(pl) and not account_busy(pl):
+        return begin_registration_offer(db, conv, lang)
+    return adapt_account_gate_reply(db, conv, user_text, lang, pl)
 
 
 def _website_line(lang: str) -> str:
@@ -358,7 +444,10 @@ def _finish(db: Session, conv: AiConversation, user: User, lang: str, extra: str
     payload["account_role"] = user.role or payload.get("account_role") or "user"
     payload["account_password_set"] = bool(user.password_hash)
     payload["account_eligibility"] = "ELIGIBLE"
+    payload["wa_account_matched"] = True
     payload.pop("account_context", None)  # force refresh on next turn
+    payload.pop("reg_password", None)
+    payload.pop("pw_reset_otp", None)
     conv.profile_id = user.id
     conv.profile_status = "verified"
     _write_payload(conv, payload)
@@ -372,7 +461,6 @@ def _send_website_button(db: Session, conv: AiConversation, lang: str) -> None:
     """Send interactive button with website link after account onboarding."""
     try:
         from ..services import get_or_create_settings, send_whatsapp_button, store_chat
-        from .i18n import t
         import time as _time
 
         meta = get_or_create_settings(db)
@@ -399,7 +487,13 @@ def _ensure_user(db: Session, conv: AiConversation, payload: dict) -> User:
     user = db.query(User).filter(User.mobile == conv.mobile).first()
     if user:
         return user
-    name = (conv.customer_name or payload.get("customer_name") or payload.get("wa_name") or "Seller")[:120]
+    name = (
+        payload.get("reg_name")
+        or conv.customer_name
+        or payload.get("customer_name")
+        or payload.get("wa_name")
+        or "Seller"
+    )[:120]
     user = User(name=name, mobile=conv.mobile, source="whatsapp_ai_otp", role="user")
     db.add(user)
     db.flush()
@@ -407,7 +501,44 @@ def _ensure_user(db: Session, conv: AiConversation, payload: dict) -> User:
     return user
 
 
+def _begin_name_step(db: Session, conv: AiConversation, lang: str, prefix: str = "") -> str:
+    payload = _payload(conv)
+    payload["account_step"] = "reg_name"
+    payload["account_has_infra"] = False
+    conv.error_message = "ask:account_reg_name"
+    _write_payload(conv, payload)
+    head = prefix.strip() if prefix else ""
+    body = t(lang, "account_reg_ask_name")
+    return f"{head}\n\n{body}".strip() if head else body
+
+
+def start_password_reset(db: Session, conv: AiConversation, lang: str) -> str:
+    """Existing account: SMS OTP → new password via WhatsApp."""
+    payload = _payload(conv)
+    svc = _infra(db)
+    if not svc:
+        return t(lang, "otp_send_fail")
+    try:
+        item = svc.password_reset_request(conv)
+        if item:
+            svc.process_outbox_item(item)
+            db.flush()
+            code = (item.business_status or "").upper()
+            if item.status == "DONE" or code == "OTP_SENT":
+                payload["account_step"] = "pw_otp"
+                payload.pop("pw_reset_otp", None)
+                conv.error_message = "ask:pw_otp"
+                _write_payload(conv, payload)
+                return t(lang, "account_pw_reset_start")
+            if code == "ACCOUNT_NOT_FOUND":
+                return begin_registration_offer(db, conv, lang)
+    except Exception:
+        log.exception("password reset OTP request failed for %s", conv.mobile)
+    return t(lang, "otp_send_fail")
+
+
 def start_account(db: Session, conv: AiConversation, lang: str, prefix: str = "") -> str:
+    """Start WhatsApp registration (name → username → email → password → SMS OTP)."""
     from .account_filter import collect_whatsapp_user, connect_webhook_account
 
     payload = _payload(conv)
@@ -425,35 +556,61 @@ def start_account(db: Session, conv: AiConversation, lang: str, prefix: str = ""
         st = _state(db, conv.mobile)
         if _infra_exists(st):
             return _finish_existing(db, conv, lang, prefix or t(lang, "account_already"))
-        if st and st.account_status == "NOT_FOUND":
-            payload["account_has_infra"] = False
-            payload["account_step"] = "otp"
-            _write_payload(conv, payload)
-            name = (conv.customer_name or payload.get("customer_name") or payload.get("wa_name") or "Seller")[:120]
-            try:
-                with db.begin_nested():
-                    created = svc.create_account(conv, name)
-                    if created:
-                        svc.process_outbox_item(created)
-                        db.flush()
-            except Exception:
-                log.exception("InfraDealer account create failed for %s", conv.mobile)
-            st = _state(db, conv.mobile)
-            head = prefix or t(lang, "confirm_ok")
-            if st and st.account_status == "OTP_PENDING" and st.registration_id:
-                conv.error_message = "ask:otp"
-                return head + "\n\n" + t(lang, "account_otp")
-            return _local_otp_then(db, conv, payload, lang, prefix, infra_create=False)
+
     found = execute_tool(db, conv, "find_profile_by_mobile", {})
     user = db.query(User).filter(User.mobile == conv.mobile).first() if found.get("found") else None
     if user and user.account_ready and user.role:
         return _finish(db, conv, user, lang, prefix or t(lang, "confirm_ok"))
-    payload = _payload(conv)
-    payload["account_step"] = "ask_exists"
-    conv.error_message = "ask:account_exists"
-    _write_payload(conv, payload)
-    head = prefix or t(lang, "confirm_ok")
-    return head + "\n\n" + t(lang, "account_ask")
+
+    return _begin_name_step(db, conv, lang, prefix)
+
+
+def _submit_registration_and_otp(db: Session, conv: AiConversation, payload: dict, lang: str) -> str:
+    name = str(payload.get("reg_name") or conv.customer_name or "Seller")[:120]
+    username = str(payload.get("reg_username") or suggest_username(name, conv.mobile))[:40]
+    email = str(payload.get("reg_email") or "").strip().lower()
+    password = str(payload.get("reg_password") or "").strip()
+    svc = _infra(db)
+    created = None
+    if svc:
+        try:
+            with db.begin_nested():
+                created = svc.create_account(
+                    conv,
+                    name,
+                    username=username,
+                    email=email,
+                    password=password,
+                )
+                if created:
+                    svc.process_outbox_item(created)
+                    db.flush()
+        except Exception:
+            log.exception("InfraDealer account create failed for %s", conv.mobile)
+            created = None
+        st = _state(db, conv.mobile)
+        if st and st.account_status == "OTP_PENDING" and st.registration_id:
+            payload["account_step"] = "otp"
+            conv.error_message = "ask:otp"
+            _write_payload(conv, payload)
+            return t(lang, "account_otp")
+        biz = ""
+        if created:
+            biz = (created.business_status or created.last_error or "").upper()
+        if biz in {"EMAIL_EXISTS", "USERNAME_EXISTS", "INVALID_EMAIL", "INVALID_USERNAME", "INVALID_PASSWORD"}:
+            if "EMAIL" in biz:
+                payload["account_step"] = "reg_email"
+                _write_payload(conv, payload)
+                return t(lang, "account_reg_invalid_email")
+            if "USERNAME" in biz:
+                payload["account_step"] = "reg_username"
+                _write_payload(conv, payload)
+                return t(lang, "account_reg_invalid_username")
+            if "PASSWORD" in biz:
+                payload["account_step"] = "reg_password"
+                _write_payload(conv, payload)
+                return t(lang, "account_reg_invalid_password")
+    return _local_otp_then(db, conv, payload, lang, "", infra_create=False)
 
 
 def _local_otp_then(db, conv, payload, lang, prefix, infra_create=False) -> str:
@@ -479,15 +636,130 @@ def _local_otp_then(db, conv, payload, lang, prefix, infra_create=False) -> str:
     return head + "\n\n" + t(lang, "account_otp")
 
 
+def _complete_after_otp(db: Session, conv: AiConversation, lang: str) -> str:
+    payload = _payload(conv)
+    user = _ensure_user(db, conv, payload)
+    name = str(payload.get("reg_name") or "").strip()
+    if name:
+        user.name = name[:120]
+        conv.customer_name = name[:120]
+    pwd = str(payload.get("reg_password") or "").strip()
+    if pwd:
+        user.password_hash = hash_user_password(pwd)
+        payload["account_password_set"] = True
+    user.role = user.role or "user"
+    user.account_ready = True
+    user.source = user.source or "whatsapp_ai_otp"
+    payload["account_role"] = user.role
+    return _finish(db, conv, user, lang, t(lang, "account_reg_done"))
+
+
 def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> str | None:
     payload = _payload(conv)
-    if payload.get("account_onboarded"):
+    step = (payload.get("account_step") or "").strip()
+    if payload.get("account_onboarded") and not step.startswith("pw_"):
         return None
-    step = payload.get("account_step") or ""
     if not step:
         return None
     msg = (text or "").strip()
     low = msg.lower()
+
+    if step == "offer_create":
+        if is_yes(msg) or wants_create_account(msg, payload) or _CREATE_ACCOUNT_SHORT.search(msg):
+            return _begin_name_step(db, conv, lang)
+        if is_no(msg):
+            payload["account_step"] = ""
+            _write_payload(conv, payload)
+            return t(lang, "account_reg_offer_no")
+        return t(lang, "account_reg_offer")
+
+    if step == "reg_name":
+        if not _valid_name(msg):
+            return t(lang, "account_reg_invalid_name")
+        name = re.sub(r"\s+", " ", msg).strip()[:120]
+        payload["reg_name"] = name
+        conv.customer_name = name
+        suggested = suggest_username(name, conv.mobile)
+        payload["reg_username_suggest"] = suggested
+        payload["account_step"] = "reg_username"
+        conv.error_message = "ask:account_reg_username"
+        _write_payload(conv, payload)
+        return t(lang, "account_reg_ask_username", username=suggested)
+
+    if step == "reg_username":
+        if is_yes(msg):
+            username = str(payload.get("reg_username_suggest") or suggest_username(
+                str(payload.get("reg_name") or ""), conv.mobile
+            ))
+        else:
+            username = msg.strip().lstrip("@")
+        if not _valid_username(username):
+            return t(lang, "account_reg_invalid_username")
+        payload["reg_username"] = username
+        payload["account_step"] = "reg_email"
+        conv.error_message = "ask:account_reg_email"
+        _write_payload(conv, payload)
+        return t(lang, "account_reg_ask_email")
+
+    if step == "reg_email":
+        email = msg.strip().lower()
+        if not _valid_email(email):
+            return t(lang, "account_reg_invalid_email")
+        payload["reg_email"] = email
+        payload["account_step"] = "reg_password"
+        conv.error_message = "ask:account_reg_password"
+        _write_payload(conv, payload)
+        return t(lang, "account_reg_ask_password")
+
+    if step == "reg_password":
+        if not _valid_password(msg):
+            return t(lang, "account_reg_invalid_password")
+        payload["reg_password"] = msg.strip()
+        _write_payload(conv, payload)
+        return _submit_registration_and_otp(db, conv, payload, lang)
+
+    if step == "pw_otp":
+        digits = re.sub(r"\D", "", msg)
+        if len(digits) != 6:
+            return t(lang, "otp_ask")
+        payload["pw_reset_otp"] = digits
+        payload["account_step"] = "pw_new"
+        conv.error_message = "ask:pw_new"
+        _write_payload(conv, payload)
+        return t(lang, "account_pw_reset_ask_new")
+
+    if step == "pw_new":
+        if not _valid_password(msg):
+            return t(lang, "account_reg_invalid_password")
+        otp = str(payload.get("pw_reset_otp") or "")
+        if len(otp) != 6:
+            payload["account_step"] = "pw_otp"
+            _write_payload(conv, payload)
+            return start_password_reset(db, conv, lang)
+        svc = _infra(db)
+        if not svc:
+            return t(lang, "account_pw_reset_fail")
+        try:
+            item = svc.password_reset_confirm(conv, otp, msg.strip())
+            if item:
+                svc.process_outbox_item(item)
+                db.flush()
+            code = (item.business_status if item else "") or ""
+            if item and item.status == "DONE" and code.upper() in {"PASSWORD_UPDATED", "SUCCESS", ""}:
+                user = _ensure_user(db, conv, payload)
+                user.password_hash = hash_user_password(msg.strip())
+                payload["account_step"] = "done" if payload.get("account_onboarded") else ""
+                payload.pop("pw_reset_otp", None)
+                _write_payload(conv, payload)
+                return t(lang, "account_pw_reset_done")
+            if code.upper() in {"OTP_INVALID", "OTP_EXPIRED", "OTP_ATTEMPTS_EXCEEDED"}:
+                payload["account_step"] = "pw_otp"
+                payload.pop("pw_reset_otp", None)
+                _write_payload(conv, payload)
+                return t(lang, "otp_mismatch")
+        except Exception:
+            log.exception("password reset confirm failed for %s", conv.mobile)
+        return t(lang, "account_pw_reset_fail")
 
     if step == "ask_exists":
         if is_yes(msg) or says_has_account(msg) or re.search(r"\b(bana hua|banaya|already|account hai|haan account)\b", low):
@@ -511,31 +783,9 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
                     return t(lang, "account_role")
                 user.account_ready = True
                 return _finish(db, conv, user, lang, t(lang, "account_already"))
-            payload["account_step"] = "otp"
-            _write_payload(conv, payload)
-            otp = execute_tool(db, conv, "send_otp", {})
-            if not otp.get("ok"):
-                return t(lang, "otp_send_fail")
-            return t(lang, "account_otp")
+            return _begin_name_step(db, conv, lang)
         if is_no(msg) or re.search(r"\b(nahi|nahin|new|bana nahi|create)\b", low):
-            payload["account_has_infra"] = False
-            payload["account_step"] = "otp"
-            _write_payload(conv, payload)
-            svc = _infra(db)
-            if svc:
-                name = (conv.customer_name or payload.get("customer_name") or payload.get("wa_name") or "Seller")[:120]
-                item = svc.create_account(conv, name)
-                if item:
-                    svc.process_outbox_item(item)
-                    db.flush()
-                st = _state(db, conv.mobile)
-                if st and st.account_status == "OTP_PENDING" and st.registration_id:
-                    conv.error_message = "ask:otp"
-                    return t(lang, "account_otp")
-            otp = execute_tool(db, conv, "send_otp", {})
-            if not otp.get("ok"):
-                return t(lang, "otp_send_fail")
-            return t(lang, "account_otp")
+            return _begin_name_step(db, conv, lang)
         return t(lang, "account_ask")
 
     if step == "otp":
@@ -561,11 +811,7 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
                     db.flush()
                 st = _state(db, conv.mobile)
                 if st and st.account_status == "ACCOUNT_CREATED":
-                    payload = _payload(conv)
-                    payload["account_step"] = "password"
-                    conv.error_message = "ask:account_password"
-                    _write_payload(conv, payload)
-                    return t(lang, "account_password")
+                    return _complete_after_otp(db, conv, lang)
                 if st and item and (item.business_status == "OTP_EXPIRED" or item.last_error == "OTP_EXPIRED"):
                     nxt = svc.request_otp(conv)
                     if nxt:
@@ -575,11 +821,7 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
             result = execute_tool(db, conv, "verify_otp", {"code": digits})
             if not result.get("ok"):
                 return t(lang, "otp_mismatch")
-            payload = _payload(conv)
-            payload["account_step"] = "password"
-            conv.error_message = "ask:account_password"
-            _write_payload(conv, payload)
-            return t(lang, "account_password")
+            return _complete_after_otp(db, conv, lang)
         return t(lang, "otp_ask")
 
     if step == "password":

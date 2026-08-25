@@ -921,11 +921,32 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
 
     soft = soft_rules_fallback(db)
 
-    # Explicit create-account request — never loop the mismatch lecture
-    from .account import start_account, wants_create_account
+    # Explicit create-account / password-reset / mid-registration
+    from .account import (
+        account_busy,
+        gate_or_registration_offer,
+        handle_account,
+        needs_account_gate,
+        should_intercept_account,
+        start_account,
+        start_password_reset,
+        wants_create_account,
+        wants_password_reset,
+    )
+
+    if wants_password_reset(msg):
+        return start_password_reset(db, conv, lang)
+
+    if account_busy(payload) and should_intercept_account(payload, text):
+        acc = handle_account(db, conv, text, lang)
+        if acc:
+            return acc
 
     if wants_create_account(msg, payload) and not payload.get("account_onboarded"):
         return start_account(db, conv, lang)
+
+    if needs_account_gate(payload):
+        return gate_or_registration_offer(db, conv, msg, lang, payload)
 
     # Ensure draft isolation for listing workflows
     if (payload.get("intent") or "").upper() == "SELL" or media_note:
@@ -1061,7 +1082,9 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                     payload = _payload(conv)
                 except Exception:
                     pass
-                reply = _account_gate_user_reply(db, conv, msg, lang, payload)
+                from .account import gate_or_registration_offer
+
+                reply = gate_or_registration_offer(db, conv, msg, lang, payload)
                 _set_rm_state(payload, "IDENTITY_PENDING")
                 _write_payload(conv, payload)
             else:

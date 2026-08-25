@@ -143,18 +143,39 @@ class InfraDealerApiClient:
             request_id=rid,
         )
 
-    def create_account(self, name: str, phone: str, request_id: str | None = None) -> dict[str, Any]:
+    def create_account(
+        self,
+        name: str,
+        phone: str,
+        request_id: str | None = None,
+        *,
+        username: str = "",
+        email: str = "",
+        password: str = "",
+    ) -> dict[str, Any]:
         rid = request_id or str(uuid.uuid4())
-        return self.request(
-            "account.create",
-            {
-                "request_id": rid,
-                "event": "account.create",
-                "customer": {"name": name, "phone": phone},
-                "source": "whatsapp_ai",
-            },
-            request_id=rid,
-        )
+        customer: dict[str, Any] = {"name": name, "phone": phone}
+        if username:
+            customer["username"] = username
+        if email:
+            customer["email"] = email
+        if password:
+            customer["password"] = password
+        body: dict[str, Any] = {
+            "request_id": rid,
+            "event": "account.create",
+            "customer": customer,
+            "name": name,
+            "phone": phone,
+            "source": "whatsapp_ai",
+        }
+        if username:
+            body["username"] = username
+        if email:
+            body["email"] = email
+        if password:
+            body["password"] = password
+        return self.request("account.create", body, request_id=rid)
 
     def verify_otp(
         self,
@@ -185,6 +206,40 @@ class InfraDealerApiClient:
                 "event": "otp.request",
                 "registration_id": registration_id,
                 "phone": phone,
+            },
+            request_id=rid,
+        )
+
+    def password_reset_request(self, phone: str, request_id: str | None = None) -> dict[str, Any]:
+        rid = request_id or str(uuid.uuid4())
+        return self.request(
+            "password.reset.request",
+            {
+                "request_id": rid,
+                "event": "password.reset.request",
+                "phone": phone,
+                "customer": {"phone": phone},
+            },
+            request_id=rid,
+        )
+
+    def password_reset_confirm(
+        self,
+        phone: str,
+        otp: str,
+        new_password: str,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        rid = request_id or str(uuid.uuid4())
+        return self.request(
+            "password.reset.confirm",
+            {
+                "request_id": rid,
+                "event": "password.reset.confirm",
+                "phone": phone,
+                "otp": otp,
+                "new_password": new_password,
+                "customer": {"phone": phone},
             },
             request_id=rid,
         )

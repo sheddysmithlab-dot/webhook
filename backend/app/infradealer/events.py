@@ -12,6 +12,8 @@ DEFAULT_EVENT_FLAGS = {
     "account_create": True,
     "otp_request": True,
     "otp_verify": True,
+    "password_reset_request": True,
+    "password_reset_confirm": True,
     "listing_push": True,
     "media_push": False,
     "profile_update": False,
@@ -22,6 +24,8 @@ INTERNAL_TO_API = {
     "ACCOUNT_CREATE": "account.create",
     "OTP_REQUEST": "otp.request",
     "OTP_VERIFY": "otp.verify",
+    "PASSWORD_RESET_REQUEST": "password.reset.request",
+    "PASSWORD_RESET_CONFIRM": "password.reset.confirm",
     "LISTING_PUSH": "listing.push",
     "MEDIA_PUSH": "media.push",
     "PROFILE_UPDATE": "profile.update",
@@ -35,6 +39,8 @@ API_PATHS = {
     "account.create": "/account/create",
     "otp.request": "/otp/request",
     "otp.verify": "/otp/verify",
+    "password.reset.request": "/password/reset/request",
+    "password.reset.confirm": "/password/reset/confirm",
     "listing.push": "/listing/push",
     "media.push": "/media",
     "profile.update": "/profile/update",
@@ -61,6 +67,9 @@ BUSINESS_CODES = {
     "OTP_ATTEMPTS_EXCEEDED",
     "ACCOUNT_CREATION_FAILED",
     "OTP_REQUIRED",
+    "OTP_PENDING",
+    "OTP_SENT",
+    "PASSWORD_UPDATED",
     "ACCOUNT_CREATED",
     "ACCOUNT_FOUND",
     "ACCOUNT_REQUIRED",
@@ -75,7 +84,15 @@ BUSINESS_CODES = {
 }
 
 RETRYABLE_HTTP = {502, 503, 504, 408, 429}
-NON_RETRY_BUSINESS = BUSINESS_CODES - {"ACCOUNT_NOT_FOUND", "OTP_REQUIRED", "ACCOUNT_REQUIRED", "PENDING_REVIEW"}
+NON_RETRY_BUSINESS = BUSINESS_CODES - {
+    "ACCOUNT_NOT_FOUND",
+    "OTP_REQUIRED",
+    "OTP_PENDING",
+    "OTP_SENT",
+    "ACCOUNT_REQUIRED",
+    "PENDING_REVIEW",
+    "PASSWORD_UPDATED",
+}
 
 
 def normalize_base_url(raw: str | None) -> str:

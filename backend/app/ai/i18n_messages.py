@@ -451,9 +451,84 @@ MESSAGES = {
         "en": "Sir/Ma'am, your account is not ready to post a listing yet. Please check your account/credits on InfraDealer and try again.",
     },
     "account_wa_not_matched": {
-        "hinglish": "Sir/Ma'am, ye WhatsApp number InfraDealer account se match nahi hua — galat/registered-se-alag number ho sakta hai, ya account abhi bana nahi. Registered number se message kijiye, ya yahi pe account banwane ke liye *account banao* likh dijiye.",
-        "hi": "सर/मैडम, यह WhatsApp नंबर InfraDealer अकाउंट से मैच नहीं हुआ — गलत/रजिस्टर्ड से अलग नंबर हो सकता है, या अकाउंट अभी बना नहीं। रजिस्टर्ड नंबर से मैसेज कीजिए, या यहीं अकाउंट बनवाने के लिए *account banao* लिख दीजिए।",
-        "en": "Sir/Ma'am, this WhatsApp number does not match an InfraDealer account — it may be the wrong/unregistered number, or the account is not created yet. Message from the registered number, or type *account banao* here to create one.",
+        "hinglish": "Sir/Ma'am, aapka InfraDealer account is WhatsApp number pe nahi mila. Kya main WhatsApp se aapka account bana du? Haan ya Nahi likhiye — ya *account banao* type kijiye.",
+        "hi": "सर/मैडम, आपका InfraDealer अकाउंट इस WhatsApp नंबर पर नहीं मिला। क्या मैं WhatsApp से आपका अकाउंट बना दूँ? हाँ या नहीं लिखिए — या *account banao* टाइप कीजिए।",
+        "en": "Sir/Ma'am, no InfraDealer account was found for this WhatsApp number. Shall I create your account here on WhatsApp? Reply Yes or No — or type *account banao*.",
+    },
+    "account_reg_offer": {
+        "hinglish": "Aapka InfraDealer account nahi mila.\nKya main WhatsApp se aapka account bana du?\nHaan / Nahi",
+        "hi": "आपका InfraDealer अकाउंट नहीं मिला।\nक्या मैं WhatsApp से आपका अकाउंट बना दूँ?\nहाँ / नहीं",
+        "en": "Your InfraDealer account was not found.\nShall I create your account on WhatsApp?\nYes / No",
+    },
+    "account_reg_offer_no": {
+        "hinglish": "Theek hai. Registered WhatsApp number se message kijiye, ya baad me *account banao* likh kar yahi se account bana sakte hain.",
+        "hi": "ठीक है। रजिस्टर्ड WhatsApp नंबर से मैसेज कीजिए, या बाद में *account banao* लिखकर यहीं से अकाउंट बना सकते हैं।",
+        "en": "Okay. Please message from your registered WhatsApp number, or type *account banao* later to create an account here.",
+    },
+    "account_reg_ask_name": {
+        "hinglish": "Bilkul 👍\nSabse pehle apna poora naam batayein.",
+        "hi": "बिल्कुल 👍\nसबसे पहले अपना पूरा नाम बताइए।",
+        "en": "Great 👍\nFirst, please share your full name.",
+    },
+    "account_reg_ask_username": {
+        "hinglish": "Aapke liye username suggest kar raha hoon:\n*{username}*\n\nKya ye username theek hai? Haan likhiye, ya naya username bhejiye.",
+        "hi": "आपके लिए यूज़रनेम सुझा रहा हूँ:\n*{username}*\n\nक्या यह यूज़रनेम ठीक है? हाँ लिखिए, या नया यूज़रनेम भेजिए।",
+        "en": "Suggested username:\n*{username}*\n\nIs this okay? Reply Yes, or send a different username.",
+    },
+    "account_reg_ask_email": {
+        "hinglish": "Apni email ID bhejiye.",
+        "hi": "अपनी ईमेल ID भेजिए।",
+        "en": "Please send your email ID.",
+    },
+    "account_reg_ask_password": {
+        "hinglish": "Website login ke liye password set kijiye (kam se kam 6 character).",
+        "hi": "वेबसाइट लॉगिन के लिए पासवर्ड सेट कीजिए (कम से कम 6 अक्षर)।",
+        "en": "Set a password for website login (at least 6 characters).",
+    },
+    "account_reg_invalid_name": {
+        "hinglish": "Kripya sahi naam bhejiye (kam se kam 2 letter).",
+        "hi": "कृपया सही नाम भेजिए (कम से कम 2 अक्षर)।",
+        "en": "Please send a valid name (at least 2 letters).",
+    },
+    "account_reg_invalid_username": {
+        "hinglish": "Username 3-40 letters/numbers/. _ hona chahiye. Dobara try kijiye.",
+        "hi": "यूज़रनेम 3-40 अक्षर/अंक/. _ होना चाहिए। दोबारा कोशिश कीजिए।",
+        "en": "Username must be 3-40 letters/numbers/. _ . Please try again.",
+    },
+    "account_reg_invalid_email": {
+        "hinglish": "Sahi email ID bhejiye (jaise name@gmail.com).",
+        "hi": "सही ईमेल ID भेजिए (जैसे name@gmail.com)।",
+        "en": "Please send a valid email (e.g. name@gmail.com).",
+    },
+    "account_reg_invalid_password": {
+        "hinglish": "Password kam se kam 6 character ka hona chahiye. Dobara bhejiye.",
+        "hi": "पासवर्ड कम से कम 6 अक्षर का होना चाहिए। दोबारा भेजिए।",
+        "en": "Password must be at least 6 characters. Please send again.",
+    },
+    "account_reg_done": {
+        "hinglish": "✅ OTP verified.\n\nAapka InfraDealer account successfully create ho gaya hai.\n\nAb aap WhatsApp se listings, enquiries aur apna account manage kar sakte hain.",
+        "hi": "✅ OTP वेरिफाई हो गया।\n\nआपका InfraDealer अकाउंट सफलतापूर्वक बन गया है।\n\nअब आप WhatsApp से लिस्टिंग, पूछताछ और अपना अकाउंट मैनेज कर सकते हैं।",
+        "en": "✅ OTP verified.\n\nYour InfraDealer account has been created successfully.\n\nYou can now manage listings, enquiries and your account on WhatsApp.",
+    },
+    "account_pw_reset_start": {
+        "hinglish": "Password change ke liye OTP aapke mobile pe SMS se bhej diya hai. 6-digit OTP yahan type kijiye.",
+        "hi": "पासवर्ड बदलने के लिए OTP आपके मोबाइल पर SMS से भेज दिया है। 6 अंकों का OTP यहाँ टाइप कीजिए।",
+        "en": "OTP for password change has been sent by SMS to your mobile. Type the 6-digit OTP here.",
+    },
+    "account_pw_reset_ask_new": {
+        "hinglish": "OTP mil gaya. Ab naya password bhejiye (kam se kam 6 character).",
+        "hi": "OTP मिल गया। अब नया पासवर्ड भेजिए (कम से कम 6 अक्षर)।",
+        "en": "OTP received. Now send your new password (at least 6 characters).",
+    },
+    "account_pw_reset_done": {
+        "hinglish": "✅ Password successfully update ho gaya. Ab naye password se login kar sakte hain.",
+        "hi": "✅ पासवर्ड सफलतापूर्वक अपडेट हो गया। अब नए पासवर्ड से लॉगिन कर सकते हैं।",
+        "en": "✅ Password updated successfully. You can now login with the new password.",
+    },
+    "account_pw_reset_fail": {
+        "hinglish": "Password update nahi ho paya. Thodi der baad dobara try kijiye ya *password badlo* likhiye.",
+        "hi": "पासवर्ड अपडेट नहीं हो पाया। थोड़ी देर बाद दोबारा कोशिश कीजिए या *password badlo* लिखिए।",
+        "en": "Could not update password. Please try again shortly or type *password badlo*.",
     },
     "otp_ask": {
         "hinglish": "OTP aapke number pe SMS se bhej diya hai. 6-digit OTP type kijiye.",

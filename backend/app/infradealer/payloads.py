@@ -298,11 +298,31 @@ def build_account_check_payload(mobile: str, request_id: str) -> dict[str, Any]:
     }
 
 
-def build_account_create_payload(name: str, mobile: str, request_id: str) -> dict[str, Any]:
+def build_account_create_payload(
+    name: str,
+    mobile: str,
+    request_id: str,
+    *,
+    username: str = "",
+    email: str = "",
+    password: str = "",
+) -> dict[str, Any]:
+    customer: dict[str, Any] = {"name": name, "phone": _phone_e164(mobile)}
+    if username:
+        customer["username"] = username
+    if email:
+        customer["email"] = email
+    if password:
+        customer["password"] = password
     return {
         "request_id": request_id,
         "event": "account.create",
-        "customer": {"name": name, "phone": _phone_e164(mobile)},
+        "customer": customer,
+        "name": name,
+        "phone": _phone_e164(mobile),
+        "username": username or None,
+        "email": email or None,
+        "password": password or None,
         "source": "whatsapp_ai",
     }
 
@@ -332,6 +352,31 @@ def build_otp_request_payload(registration_id: str, mobile: str, request_id: str
         "event": "otp.request",
         "registration_id": registration_id,
         "phone": _phone_e164(mobile),
+    }
+
+
+def build_password_reset_request_payload(mobile: str, request_id: str) -> dict[str, Any]:
+    return {
+        "request_id": request_id,
+        "event": "password.reset.request",
+        "phone": _phone_e164(mobile),
+        "customer": {"phone": _phone_e164(mobile)},
+    }
+
+
+def build_password_reset_confirm_payload(
+    mobile: str,
+    otp: str,
+    new_password: str,
+    request_id: str,
+) -> dict[str, Any]:
+    return {
+        "request_id": request_id,
+        "event": "password.reset.confirm",
+        "phone": _phone_e164(mobile),
+        "otp": otp,
+        "new_password": new_password,
+        "customer": {"phone": _phone_e164(mobile)},
     }
 
 

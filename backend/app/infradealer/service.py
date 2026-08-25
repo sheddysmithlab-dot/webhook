@@ -39,9 +39,9 @@ from .payloads import build_listing_payload
 log = logging.getLogger("infradealer.integration")
 
 _BUSINESS_OK = {
-    "ACCOUNT_NOT_FOUND", "OTP_REQUIRED", "PENDING_REVIEW", "ACCOUNT_REQUIRED",
+    "ACCOUNT_NOT_FOUND", "OTP_REQUIRED", "OTP_PENDING", "OTP_SENT", "PENDING_REVIEW", "ACCOUNT_REQUIRED",
     "ACCOUNT_EXISTS", "ACCOUNT_FOUND", "ACCOUNT_CREATED", "LISTING_POSTED",
-    "LISTING_PENDING_REVIEW", "LIVE", "POSTED", "PUBLISHED",
+    "LISTING_PENDING_REVIEW", "LIVE", "POSTED", "PUBLISHED", "PASSWORD_UPDATED",
 }
 
 _LISTING_PUSH_ACTIVE = {"PENDING", "RETRY", "DONE"}
@@ -370,7 +370,7 @@ class InfraDealerIntegrationService:
             parent_request_id=item.parent_request_id,
         )
         self._apply_business_result(item, body, business_code, response_class, result.get("http_status") or 0)
-        if "otp" in payload:
+        if any(k in payload for k in ("otp", "password", "new_password")):
             item.payload_json = json.dumps(self._redact(payload), ensure_ascii=False)
         ok = result.get("ok") or response_class == "SUCCESS"
         if ok or (response_class == "BUSINESS_ERROR" and business_code in _BUSINESS_OK):
@@ -444,10 +444,10 @@ class InfraDealerIntegrationService:
         elif et == "ACCOUNT_CREATE":
             if state:
                 state.account_status = "REQUESTED"
-            if code == "OTP_REQUIRED":
+            if code in {"OTP_REQUIRED", "OTP_PENDING", "OTP_SENT"} or body.get("registration_id"):
                 if state:
                     state.account_status = "OTP_PENDING"
-                    state.registration_id = str(body.get("registration_id") or "")
+                    state.registration_id = str(body.get("registration_id") or state.registration_id or "")
             elif code == "ACCOUNT_CREATED" or (body.get("success") and (body.get("account") or {}).get("user_id")):
                 if state:
                     state.account_status = "ACCOUNT_CREATED"
@@ -686,12 +686,27 @@ class InfraDealerIntegrationService:
                 state.last_request_id = rid
         return item
 
-    def create_account(self, conv: AiConversation, name: str) -> InfraDealerOutbox | None:
+    def create_account(
+        self,
+        conv: AiConversation,
+        name: str,
+        *,
+        username: str = "",
+        email: str = "",
+        password: str = "",
+    ) -> InfraDealerOutbox | None:
         from .payloads import build_account_create_payload
 
         rid = str(uuid.uuid4())
         phone = account_mobile(conv.mobile)
-        payload = build_account_create_payload(name, phone, rid)
+        payload = build_account_create_payload(
+            name,
+            phone,
+            rid,
+            username=username,
+            email=email,
+            password=password,
+        )
         return self.enqueue("ACCOUNT_CREATE", payload, conversation_id=conv.id, mobile=phone, request_id=rid)
 
     def verify_otp_external(self, conv: AiConversation, otp: str, registration_id: str = "") -> InfraDealerOutbox | None:
@@ -716,6 +731,39 @@ class InfraDealerIntegrationService:
         phone = account_mobile(conv.mobile)
         payload = build_otp_request_payload(state.registration_id, phone, rid)
         return self.enqueue("OTP_REQUEST", payload, conversation_id=conv.id, mobile=phone, request_id=rid)
+
+    def password_reset_request(self, conv: AiConversation) -> InfraDealerOutbox | None:
+        from .payloads import build_password_reset_request_payload
+
+        rid = str(uuid.uuid4())
+        phone = account_mobile(conv.mobile)
+        payload = build_password_reset_request_payload(phone, rid)
+        return self.enqueue(
+            "PASSWORD_RESET_REQUEST",
+            payload,
+            conversation_id=conv.id,
+            mobile=phone,
+            request_id=rid,
+        )
+
+    def password_reset_confirm(
+        self,
+        conv: AiConversation,
+        otp: str,
+        new_password: str,
+    ) -> InfraDealerOutbox | None:
+        from .payloads import build_password_reset_confirm_payload
+
+        rid = str(uuid.uuid4())
+        phone = account_mobile(conv.mobile)
+        payload = build_password_reset_confirm_payload(phone, otp, new_password, rid)
+        return self.enqueue(
+            "PASSWORD_RESET_CONFIRM",
+            payload,
+            conversation_id=conv.id,
+            mobile=phone,
+            request_id=rid,
+        )
 
     def handle_callback(self, payload: dict, signature: str = "", timestamp: str = "") -> dict:
         event = normalize_callback_event(payload)
@@ -1098,7 +1146,7 @@ class InfraDealerIntegrationService:
         out = {}
         for k, v in (data or {}).items():
             key = str(k).lower()
-            if key in {"otp", "api_secret", "password", "signature"}:
+            if key in {"otp", "api_secret", "password", "new_password", "signature", "reg_password"}:
                 out[k] = "[REDACTED]"
             elif isinstance(v, dict):
                 out[k] = self._redact(v)

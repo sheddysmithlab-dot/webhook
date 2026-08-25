@@ -9,16 +9,19 @@ from ..services import resolve_ai_config
 from .account import (
     account_busy,
     adapt_account_gate_reply,
+    gate_or_registration_offer,
     handle_account,
     needs_account_gate,
     should_intercept_account,
     start_account,
+    start_password_reset,
     wants_clear_conversation,
     wants_create_account,
     wants_delete_listing,
     wants_last_post,
     wants_listing_link,
     wants_new_chat,
+    wants_password_reset,
 )
 from .confirm import handle_confirmation, handle_vehicle_slot, is_no, is_yes, collection_ready, sync_posted_product
 from .extract import extract_from_text
@@ -525,14 +528,24 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         if post:
             return post
 
-    # Hard: "naya account ban do" → WhatsApp OTP signup (do not loop mismatch lecture)
+    # Hard: password reset via WhatsApp OTP (existing accounts)
+    if wants_password_reset(msg):
+        return _sanitize_reply(start_password_reset(db, conv, lang), posted=False, lang=lang)
+
+    # Hard: mid-account form (registration / OTP / password reset) stays in account agent
+    if account_busy(payload) and should_intercept_account(payload, text):
+        acc = handle_account(db, conv, text, lang)
+        if acc:
+            return _sanitize_reply(acc, posted=False, lang=lang)
+
+    # Hard: "naya account ban do" → WhatsApp registration (do not loop mismatch lecture)
     if wants_create_account(msg, payload) and not payload.get("account_onboarded"):
         return _sanitize_reply(start_account(db, conv, lang), posted=False, lang=lang)
 
-    # Hard: corrected account fact → AI rewrite for THIS user message → outbound
+    # Hard: unmatched WA → registration offer; else eligibility fact
     if needs_account_gate(payload):
         return _sanitize_reply(
-            adapt_account_gate_reply(db, conv, msg, lang, payload),
+            gate_or_registration_offer(db, conv, msg, lang, payload),
             posted=False,
             lang=lang,
         )
@@ -556,12 +569,6 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         hit = handle_confirmation(db, conv, text, {}, lang)
         if hit:
             return hit
-
-    # Hard: mid-account form (password / OTP ask) stays in account agent
-    if account_busy(payload) and should_intercept_account(payload, text):
-        acc = handle_account(db, conv, text, lang)
-        if acc:
-            return _sanitize_reply(acc, posted=False, lang=lang)
 
     # Phase-2/3: state first (extract + rm_state + next_ask); keep menu hints from runner
     offer_menu = bool(payload.get("offer_menu"))
@@ -880,14 +887,27 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
         reset_ai_conversation(db, conv)
         return t(lang, "chat_cleared")
 
-    # 1c) Create account from WhatsApp when user asks (or short "naya bana do" after mismatch)
+    # 1c) Password reset via WhatsApp OTP
+    if wants_password_reset(text or ""):
+        return _sanitize_reply(start_password_reset(db, conv, lang), posted=False, lang=lang)
+
+    # 1d) Mid registration / OTP / password form
+    if account_busy(payload0) and should_intercept_account(payload0, text):
+        acc = handle_account(db, conv, text, lang)
+        if acc:
+            cleaned = avoid_repeat(db, conv, lang, _sanitize_reply(acc, posted=False, lang=lang), recents)
+            if not (cleaned or "").strip():
+                cleaned = _sanitize_reply(acc, posted=False, lang=lang)
+            return attach_intro(db, conv, lang, cleaned)
+
+    # 1e) Create account from WhatsApp when user asks (or short "naya bana do" after mismatch)
     if wants_create_account(text, payload0) and not payload0.get("account_onboarded"):
         return _sanitize_reply(start_account(db, conv, lang), posted=False, lang=lang)
 
-    # 1d) Corrected account fact → AI rewrite for this user message
+    # 1f) Unmatched WA → registration offer; else eligibility fact
     if needs_account_gate(payload0):
         return _sanitize_reply(
-            adapt_account_gate_reply(db, conv, text or "", lang, payload0),
+            gate_or_registration_offer(db, conv, text or "", lang, payload0),
             posted=False,
             lang=lang,
         )
@@ -919,15 +939,7 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
         _write_payload(conv, payload0)
         return t(lang, "chat_cleared_followup")
 
-    if account_busy(payload0) and should_intercept_account(payload0, text):
-        acc = handle_account(db, conv, text, lang)
-        if acc:
-            cleaned = avoid_repeat(db, conv, lang, _sanitize_reply(acc, posted=False, lang=lang), recents)
-            if not (cleaned or "").strip():
-                cleaned = _sanitize_reply(acc, posted=False, lang=lang)
-            return attach_intro(db, conv, lang, cleaned)
-        # Not a clear account answer — fall through to listing chat
-    elif account_busy(payload0) and payload0.get("account_step") == "ask_exists":
+    if account_busy(payload0) and payload0.get("account_step") == "ask_exists" and not should_intercept_account(payload0, text):
         # Stuck account prompt while user talks listing — pause account ask
         payload0["account_step"] = ""
         _write_payload(conv, payload0)
