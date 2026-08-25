@@ -526,9 +526,24 @@ MESSAGES = {
         "en": "✅ OTP verified.\n\nYour InfraDealer account has been created successfully.\n\nYou can now manage listings, enquiries and your account on WhatsApp.",
     },
     "account_pw_reset_start": {
-        "hinglish": "Password change ke liye OTP aapke mobile pe SMS se bhej diya hai. 6-digit OTP yahan type kijiye.",
-        "hi": "पासवर्ड बदलने के लिए OTP आपके मोबाइल पर SMS से भेज दिया है। 6 अंकों का OTP यहाँ टाइप कीजिए।",
-        "en": "OTP for password change has been sent by SMS to your mobile. Type the 6-digit OTP here.",
+        "hinglish": "Password change ke liye OTP aapke mobile pe SMS se bhej diya hai. 6-digit OTP yahan type kijiye.\nAgar OTP nahi aaya to *resend otp* likhiye.",
+        "hi": "पासवर्ड बदलने के लिए OTP आपके मोबाइल पर SMS से भेज दिया है। 6 अंकों का OTP यहाँ टाइप कीजिए।\nअगर OTP नहीं आया तो *resend otp* लिखिए।",
+        "en": "OTP for password change has been sent by SMS. Type the 6-digit OTP here.\nIf you did not get it, type *resend otp*.",
+    },
+    "account_pw_reset_resent": {
+        "hinglish": "Naya OTP SMS se bhej diya hai. 6-digit OTP yahan type kijiye.",
+        "hi": "नया OTP SMS से भेज दिया है। 6 अंकों का OTP यहाँ टाइप कीजिए।",
+        "en": "A new OTP has been sent by SMS. Type the 6-digit OTP here.",
+    },
+    "account_pw_reset_need_otp": {
+        "hinglish": "Password change ke liye 6-digit OTP bhejiye. Agar nahi aaya to *resend otp* likhiye.",
+        "hi": "पासवर्ड बदलने के लिए 6 अंकों का OTP भेजिए। अगर नहीं आया तो *resend otp* लिखिए।",
+        "en": "Please send the 6-digit OTP for password change. If it did not arrive, type *resend otp*.",
+    },
+    "account_pw_reset_cancelled": {
+        "hinglish": "Password change cancel ho gaya. Jab chaho *password badlo* likh kar dubara shuru kar sakte hain.",
+        "hi": "पासवर्ड चेंज रद्द हो गया। जब चाहें *password badlo* लिखकर दोबारा शुरू कर सकते हैं।",
+        "en": "Password change cancelled. Type *password badlo* anytime to start again.",
     },
     "account_pw_reset_otp_lost": {
         "hinglish": "Session expire ho gayi. Dobara *password badlo* likh kar naya OTP lein, phir OTP aur password bhejiye.",

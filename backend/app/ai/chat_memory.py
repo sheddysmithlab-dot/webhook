@@ -965,6 +965,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     # Explicit create-account / password-reset / mid-registration
     from .account import (
         account_busy,
+        clear_stale_listing_otp,
         gate_or_registration_offer,
         handle_account,
         needs_account_gate,
@@ -975,7 +976,27 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
         wants_password_reset,
     )
 
-    if wants_password_reset(msg) and not str(payload.get("account_step") or "").startswith("pw_"):
+    payload = clear_stale_listing_otp(conv, payload)
+    step = str(payload.get("account_step") or "").strip()
+    account_form_steps = {
+        "offer_create",
+        "reg_name",
+        "reg_username",
+        "reg_email",
+        "reg_password",
+        "otp",
+        "password",
+        "role",
+        "ask_exists",
+        "pw_otp",
+        "pw_new",
+    }
+    if step in account_form_steps:
+        acc = handle_account(db, conv, text, lang)
+        if acc:
+            return acc
+
+    if wants_password_reset(msg):
         return start_password_reset(db, conv, lang)
 
     if account_busy(payload) and should_intercept_account(payload, text):

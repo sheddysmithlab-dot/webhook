@@ -324,18 +324,49 @@ _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", re.I)
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9._]{3,40}$")
 _PASSWORD_RESET = re.compile(
     r"("
-    r"\b(password|passwd|पासवर्ड)\b.{0,24}\b(badlo|change|reset|update|bhool|forgot|naya|new)\b"
-    r"|\b(change|reset|forgot|naya|new)\b.{0,24}\b(password|passwd|पासवर्ड)\b"
-    r"|\bpassword\s*(badlo|change|reset)\b"
-    r"|mera\s+account.{0,40}password"
-    r"|account.{0,40}password.{0,20}(change|badlo|reset)"
+    r"\b(password|passwd|pasword|पासवर्ड)\b.{0,30}\b(badlo|badal|change|chenge|chang|reset|update|bhool|forgot|naya|new)\b"
+    r"|\b(change|chenge|chang|reset|forgot|naya|new|badlo|badal)\b.{0,30}\b(password|passwd|pasword|पासवर्ड)\b"
+    r"|\bpassword\s*(badlo|badal|change|chenge|reset)\b"
+    r"|mera\s+account.{0,50}password"
+    r"|account.{0,50}password.{0,30}(change|chenge|badlo|badal|reset)"
+    r"|password\s*(chenge|chang|change|badlo)"
     r")",
+    re.I,
+)
+_OTP_RESEND = re.compile(
+    r"("
+    r"\b(resend|re-send|dobara|phir\s*se)\b.{0,20}\b(otp|code)\b"
+    r"|\b(otp|code)\b.{0,20}\b(resend|re-send|dobara|bhejo|bhej\s*do|send)\b"
+    r"|(nahi|nahin|nhi|not).{0,16}(aya|aaya|aayi|ayi|mila|received|aaya\s*otp|otp)"
+    r"|otp.{0,12}(nahi|nahin|nhi|not).{0,12}(aya|aaya|mila|received)"
+    r")",
+    re.I,
+)
+_OTP_CANCEL = re.compile(
+    r"\b(cancel|band\s*karo|chhodo|mat\s*karo|skip|baad\s*me)\b",
     re.I,
 )
 
 
 def wants_password_reset(text: str) -> bool:
     return bool(_PASSWORD_RESET.search(text or ""))
+
+
+def wants_otp_resend(text: str) -> bool:
+    return bool(_OTP_RESEND.search(text or ""))
+
+
+def clear_stale_listing_otp(conv: AiConversation, payload: dict | None = None) -> dict:
+    """Onboarded users must not get stuck in listing OTP_PENDING loops."""
+    pl = payload if isinstance(payload, dict) else _payload(conv)
+    step = str(pl.get("account_step") or "")
+    if pl.get("account_onboarded") and step not in {"otp", "pw_otp", "pw_new"}:
+        if pl.get("verification_status") == "otp_pending" or conv.state == "OTP_PENDING":
+            pl["verification_status"] = "verified" if pl.get("otp_verified") else "unverified"
+            if conv.state == "OTP_PENDING":
+                conv.state = "NEW"
+            _write_payload(conv, pl)
+    return pl
 
 
 def suggest_username(name: str, mobile: str = "") -> str:
@@ -518,28 +549,44 @@ def _begin_name_step(db: Session, conv: AiConversation, lang: str, prefix: str =
     return f"{head}\n\n{body}".strip() if head else body
 
 
-def start_password_reset(db: Session, conv: AiConversation, lang: str) -> str:
-    """Existing account: SMS OTP → new password via WhatsApp."""
+def start_password_reset(db: Session, conv: AiConversation, lang: str, *, resend: bool = False) -> str:
+    """Existing account: SMS OTP → new password via WhatsApp (deterministic, no LLM)."""
     payload = _payload(conv)
     svc = _infra(db)
     if not svc:
+        payload["account_step"] = ""
+        _write_payload(conv, payload)
         return t(lang, "otp_send_fail")
     try:
         item = svc.password_reset_request(conv)
         if item:
             svc.process_outbox_item(item)
             db.flush()
-            code = (item.business_status or "").upper()
-            if item.status == "DONE" or code == "OTP_SENT":
+            code = (item.business_status or item.last_error or "").upper()
+            if item.status == "DONE" or code in {"OTP_SENT", "SUCCESS"}:
                 payload["account_step"] = "pw_otp"
                 payload.pop("pw_reset_otp", None)
                 conv.error_message = "ask:pw_otp"
                 _write_payload(conv, payload)
+                if resend:
+                    return t(lang, "account_pw_reset_resent")
                 return t(lang, "account_pw_reset_start")
             if code == "ACCOUNT_NOT_FOUND":
+                payload["account_step"] = ""
+                _write_payload(conv, payload)
                 return begin_registration_offer(db, conv, lang)
+            log.warning(
+                "password reset OTP request failed mobile=***%s status=%s code=%s",
+                (conv.mobile or "")[-4:],
+                item.status,
+                code,
+            )
     except Exception:
         log.exception("password reset OTP request failed for %s", conv.mobile)
+    # Keep user in pw_otp if they already had an OTP pending; otherwise clear
+    if payload.get("account_step") != "pw_otp":
+        payload["account_step"] = ""
+        _write_payload(conv, payload)
     return t(lang, "otp_send_fail")
 
 
@@ -725,9 +772,17 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
         return _submit_registration_and_otp(db, conv, payload, lang)
 
     if step == "pw_otp":
+        if _OTP_CANCEL.search(msg) and not re.search(r"\d{6}", msg):
+            payload["account_step"] = ""
+            payload.pop("pw_reset_otp", None)
+            conv.error_message = ""
+            _write_payload(conv, payload)
+            return t(lang, "account_pw_reset_cancelled")
+        if wants_otp_resend(msg) or wants_password_reset(msg):
+            return start_password_reset(db, conv, lang, resend=True)
         digits = re.sub(r"\D", "", msg)
         if len(digits) != 6:
-            return t(lang, "otp_ask")
+            return t(lang, "account_pw_reset_need_otp")
         payload["pw_reset_otp"] = digits
         payload["account_step"] = "pw_new"
         conv.error_message = "ask:pw_new"

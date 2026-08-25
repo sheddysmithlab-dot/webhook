@@ -34,8 +34,19 @@ def test_wants_password_reset():
     assert wants_password_reset("password badlo") is True
     assert wants_password_reset("Change password please") is True
     assert wants_password_reset("naya password set karo") is True
+    assert wants_password_reset("Mujhe password chenge Krna h") is True
     assert wants_password_reset("Bechna hai") is False
     print("OK wants_password_reset")
+
+
+def test_wants_otp_resend():
+    from app.ai.account import wants_otp_resend
+
+    assert wants_otp_resend("Resend otp kr do") is True
+    assert wants_otp_resend("Nhi aya otp") is True
+    assert wants_otp_resend("Nahin aaya OTP") is True
+    assert wants_otp_resend("135395") is False
+    print("OK wants_otp_resend")
 
 
 def test_wants_create_account():
@@ -60,6 +71,7 @@ if __name__ == "__main__":
     test_suggest_username()
     test_validators()
     test_wants_password_reset()
+    test_wants_otp_resend()
     test_wants_create_account()
     test_reg_intercept()
     print("ALL OK")

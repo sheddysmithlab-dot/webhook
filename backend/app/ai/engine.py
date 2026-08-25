@@ -9,6 +9,7 @@ from ..services import resolve_ai_config
 from .account import (
     account_busy,
     adapt_account_gate_reply,
+    clear_stale_listing_otp,
     gate_or_registration_offer,
     handle_account,
     needs_account_gate,
@@ -507,8 +508,9 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         return None
 
     lang = _conv_lang(db, conv, text)
-    payload = _payload(conv)
+    payload = clear_stale_listing_otp(conv, _payload(conv))
     msg = (text or "").strip()
+    step = str(payload.get("account_step") or "").strip()
 
     # Hard: clear / new chat stay deterministic
     if wants_clear_conversation(msg):
@@ -528,11 +530,28 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         if post:
             return post
 
-    # Hard: password reset via WhatsApp OTP (existing accounts)
-    if wants_password_reset(msg) and not str(payload.get("account_step") or "").startswith("pw_"):
+    # Hard: entire account/password form — single window, never LLM
+    account_form_steps = {
+        "offer_create",
+        "reg_name",
+        "reg_username",
+        "reg_email",
+        "reg_password",
+        "otp",
+        "password",
+        "role",
+        "ask_exists",
+        "pw_otp",
+        "pw_new",
+    }
+    if step in account_form_steps:
+        acc = handle_account(db, conv, text, lang)
+        if acc:
+            return _sanitize_reply(acc, posted=False, lang=lang)
+
+    if wants_password_reset(msg):
         return _sanitize_reply(start_password_reset(db, conv, lang), posted=False, lang=lang)
 
-    # Hard: mid-account form (registration / OTP / password reset) stays in account agent
     if account_busy(payload) and should_intercept_account(payload, text):
         acc = handle_account(db, conv, text, lang)
         if acc:
@@ -550,8 +569,12 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
             lang=lang,
         )
 
-    # Hard: OTP digits while pending
-    if conv.state == "OTP_PENDING" or payload.get("verification_status") == "otp_pending":
+    # Hard: listing OTP — never for onboarded / password-reset users
+    if (
+        not payload.get("account_onboarded")
+        and not step.startswith("pw_")
+        and (conv.state == "OTP_PENDING" or payload.get("verification_status") == "otp_pending")
+    ):
         digits = re.sub(r"\D", "", msg)
         if len(digits) == 6:
             result = execute_tool(db, conv, "verify_otp", {"code": digits})
@@ -891,8 +914,21 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
     if wants_password_reset(text or "") and not str(payload0.get("account_step") or "").startswith("pw_"):
         return _sanitize_reply(start_password_reset(db, conv, lang), posted=False, lang=lang)
 
-    # 1d) Mid registration / OTP / password form
-    if account_busy(payload0) and should_intercept_account(payload0, text):
+    # 1d) Mid registration / OTP / password form — never LLM
+    step0 = str(payload0.get("account_step") or "").strip()
+    if step0 in {
+        "offer_create",
+        "reg_name",
+        "reg_username",
+        "reg_email",
+        "reg_password",
+        "otp",
+        "password",
+        "role",
+        "ask_exists",
+        "pw_otp",
+        "pw_new",
+    } or (account_busy(payload0) and should_intercept_account(payload0, text)):
         acc = handle_account(db, conv, text, lang)
         if acc:
             cleaned = avoid_repeat(db, conv, lang, _sanitize_reply(acc, posted=False, lang=lang), recents)
