@@ -194,7 +194,10 @@ def handle_confirmation(db: Session, conv: AiConversation, text: str, lang: str 
     if is_yes(text):
         result = submit_confirmed_listing(db, conv)
         if result.get("ok") is False:
-            return t(lang, "unclear")
+            if result.get("error") == "token_insufficient":
+                buy = result.get("buy_link") or "https://infradealer.com/wallet"
+                return t(lang, "tokens_buy", link=buy)
+            return t(lang, "submit_blocked")
         _send_listing_button(db, conv, lang)
         return t(lang, "submitted")
     if is_no(text):

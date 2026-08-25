@@ -883,16 +883,130 @@ def push_listing(db: Session, conv: AiConversation) -> PushResult:
 
         svc = get_integration_service(db)
         outbox = svc.push_listing_for_draft(conv, draft, payload)
+        # Process immediately so TOKEN_INSUFFICIENT / validation failures surface to the user.
+        if outbox is not None and str(outbox.status or "").upper() in {"PENDING", "RETRY", ""}:
+            try:
+                svc.process_outbox_item(outbox)
+                db.flush()
+            except Exception:
+                log.exception("sync listing outbox process failed")
+
         listing_id = str(payload.get("infradealer_listing_id") or "")
         listing_url = str(payload.get("listing_url") or "")
         if outbox is not None:
-            listing_id = listing_id or str(getattr(outbox, "business_status", "") and payload.get("infradealer_listing_id") or "")
             payload = _payload(conv)
             listing_id = str(payload.get("infradealer_listing_id") or listing_id or "")
             listing_url = str(payload.get("listing_url") or listing_url or "")
             if listing_url and not validate_live_url(listing_url):
                 listing_url = ""
                 payload["listing_url"] = ""
+
+            biz = str(
+                getattr(outbox, "business_status", None)
+                or getattr(outbox, "last_error", None)
+                or ""
+            ).upper()
+            out_status = str(outbox.status or "").upper()
+            if out_status == "FAILED" and (
+                biz == "TOKEN_INSUFFICIENT" or "TOKEN_INSUFFICIENT" in biz
+            ):
+                buy = "https://infradealer.com/wallet"
+                # Prefer buy_link from recorded request body when available.
+                try:
+                    from ..models import InfraDealerRequest
+
+                    req = (
+                        db.query(InfraDealerRequest)
+                        .filter(InfraDealerRequest.outbox_id == outbox.id)
+                        .order_by(InfraDealerRequest.id.desc())
+                        .first()
+                    )
+                    if req and req.response_json:
+                        resp = json.loads(req.response_json or "{}")
+                        buy = str(resp.get("buy_link") or resp.get("buy_url") or buy)
+                except Exception:
+                    pass
+                payload["account_buy_link"] = buy
+                payload["account_reason"] = "TOKEN_INSUFFICIENT"
+                payload["account_eligibility"] = "NOT_ELIGIBLE"
+                payload["account_can_post"] = False
+                payload["push_stage"] = "TOKEN_REQUIRED"
+                sub = handle_failure(
+                    payload,
+                    retry=False,
+                    error_code="TOKEN_INSUFFICIENT",
+                    message="Insufficient tokens to push listing",
+                )
+                _write_payload(conv, payload)
+                _audit(db, conv, "data_push_token_insufficient", {
+                    "request_id": request_id, "buy_link": buy,
+                })
+                note = create_notification_event(
+                    notification_type="TOKEN_INSUFFICIENT",
+                    status="FAILED",
+                    reason_code="TOKEN_INSUFFICIENT",
+                    reason_text="Insufficient wallet tokens",
+                    account_id=payload.get("profile_id") or conv.profile_id,
+                    submission_id=str(sub.get("submission_id") or request_id),
+                )
+                return PushResult(
+                    ok=False,
+                    status="FAILED",
+                    reason_code="TOKEN_INSUFFICIENT",
+                    request_id=request_id,
+                    idempotency_key=idem,
+                    payload_hash=listing_hash,
+                    message="Insufficient tokens",
+                    notification=note,
+                    detail={
+                        "user_data_error": True,
+                        "buy_link": buy,
+                        "outbox_id": getattr(outbox, "id", None),
+                    },
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                    submitted_at=_now_iso(),
+                )
+
+            if out_status == "FAILED" and biz not in {"", "SUCCESS"}:
+                # Permanent business/validation failure — do not pretend success.
+                err_msg = biz or "LISTING_PUSH_FAILED"
+                sub = handle_failure(
+                    payload, retry=False, error_code=biz or "FAILED", message=err_msg,
+                )
+                _write_payload(conv, payload)
+                return PushResult(
+                    ok=False,
+                    status="FAILED",
+                    reason_code=biz or "FAILED",
+                    request_id=request_id,
+                    idempotency_key=idem,
+                    payload_hash=listing_hash,
+                    message=err_msg,
+                    detail={"user_data_error": True, "outbox_id": getattr(outbox, "id", None)},
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                    submitted_at=_now_iso(),
+                )
+
+            if out_status in {"PENDING", "RETRY"}:
+                sub = handle_failure(
+                    payload,
+                    retry=True,
+                    error_code=biz or "TRANSIENT",
+                    message="Listing push queued for retry",
+                )
+                _write_payload(conv, payload)
+                return PushResult(
+                    ok=False,
+                    status="RETRY",
+                    reason_code=biz or "TRANSIENT",
+                    request_id=request_id,
+                    idempotency_key=idem,
+                    payload_hash=listing_hash,
+                    message="Listing push deferred",
+                    detail={"user_data_error": False, "system_error": True, "outbox_id": getattr(outbox, "id", None)},
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                    submitted_at=_now_iso(),
+                )
 
         ack_status = "UNDER_REVIEW"
         if outbox is not None and (outbox.status or "").upper() == "DONE":

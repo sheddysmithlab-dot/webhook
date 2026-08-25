@@ -161,6 +161,10 @@ def account_gate_fact(lang: str, payload: dict | None = None) -> str:
     pl = payload or {}
     if _wa_unmatched_payload(pl):
         return t(lang, "account_wa_not_matched")
+    reason = str(pl.get("account_reason") or "").upper()
+    if reason in {"TOKEN_NO_CREDITS", "TOKEN_INSUFFICIENT"}:
+        link = str(pl.get("account_buy_link") or "https://infradealer.com/wallet")
+        return t(lang, "tokens_buy", link=link)
     return t(lang, "account_not_eligible")
 
 

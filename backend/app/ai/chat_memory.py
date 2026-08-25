@@ -712,6 +712,22 @@ def submit_confirmed_listing(db: Session, conv: AiConversation) -> dict:
             _set_rm_state(payload, "WAITING_FOR_MISSING_DATA")
             _write_payload(conv, payload)
             return result
+        if str(result.get("reason_code") or result.get("error") or "").upper() == "TOKEN_INSUFFICIENT":
+            buy = (
+                result.get("buy_link")
+                or payload.get("account_buy_link")
+                or "https://infradealer.com/wallet"
+            )
+            payload["account_reason"] = "TOKEN_INSUFFICIENT"
+            payload["account_buy_link"] = buy
+            payload["account_eligibility"] = "NOT_ELIGIBLE"
+            payload["account_can_post"] = False
+            _set_rm_state(payload, "WAITING_FOR_MISSING_DATA")
+            _write_payload(conv, payload)
+            out = dict(result)
+            out["error"] = "token_insufficient"
+            out["buy_link"] = buy
+            return out
         if result.get("status") in {"RETRY", "DELIVERY_FAILED", "FAILED"} and not result.get("user_data_error"):
             # System failure — keep draft intact; do not tell user listing was rejected
             _set_rm_state(payload, "SUBMISSION_IN_PROGRESS")
@@ -719,6 +735,7 @@ def submit_confirmed_listing(db: Session, conv: AiConversation) -> dict:
             return result
     _set_rm_state(payload, "SUBMITTED_TO_ADMIN")
     payload["listing_status"] = payload.get("listing_status") or "PENDING_REVIEW"
+    _set_next_listing_cooldown(payload, minutes=10)
     _write_payload(conv, payload)
     execute_tool(db, conv, "save_conversation", {"state": "READY_FOR_REVIEW"})
     return result
@@ -848,16 +865,40 @@ def _safe_truncate(text: str, limit: int = REPLY_MAX_CHARS) -> str:
 
 def _is_eligible_to_post(payload: dict) -> bool:
     """True if the account is allowed to proceed with listing creation."""
-    # Trust local onboarding state — if account_onboarded is True, allow posting
-    if payload.get("account_onboarded"):
-        return True
     if str(payload.get("master_workflow_state") or "") == "INVALID_IDENTITY":
         return False
     if payload.get("account_gate") == "ELIGIBILITY_BLOCKED":
         return False
     if str(payload.get("account_eligibility") or "").upper() == "NOT_ELIGIBLE":
         return False
+    # Trust local onboarding when eligibility not explicitly blocked.
+    if payload.get("account_onboarded"):
+        return True
     return True
+
+
+def _listing_cooldown_active(payload: dict) -> bool:
+    raw = str(payload.get("next_listing_not_before") or "").strip()
+    if not raw:
+        return False
+    try:
+        from datetime import datetime, timezone
+
+        text = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return datetime.utcnow() < dt
+    except ValueError:
+        return False
+
+
+def _set_next_listing_cooldown(payload: dict, minutes: int = 10) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    until = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(minutes=minutes)
+    payload["next_listing_not_before"] = until.isoformat().replace("+00:00", "Z")
+    payload["last_listing_submitted_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _wa_account_unmatched(payload: dict) -> bool:
@@ -1066,6 +1107,13 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                 elif result.get("ok") is False and result.get("error") == "account_not_eligible":
                     reply = _account_gate_user_reply(db, conv, msg, lang, _payload(conv))
                     response_type = "ERROR_MESSAGE"
+                elif result.get("ok") is False and result.get("error") == "token_insufficient":
+                    buy = result.get("buy_link") or (_payload(conv).get("account_buy_link") or "https://infradealer.com/wallet")
+                    reply = t(lang, "tokens_buy", link=buy)
+                    response_type = "ERROR_MESSAGE"
+                elif result.get("ok") is False and result.get("status") in {"RETRY", "DELIVERY_FAILED", "FAILED"}:
+                    reply = t(lang, "submit_retry")
+                    response_type = "ERROR_MESSAGE"
                 else:
                     reply = t(lang, "submitted")
             else:
@@ -1073,8 +1121,13 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                 reply = t(lang, "confirm_prompt")
 
         elif intent in {"REJECT_CORRECTION", "PROVIDE_FIELD", "SELL", "BUY", "UPLOAD_PHOTO", "OTHER", "RESOLVE_CONFLICT"}:
+            # Soft cooldown after a successful listing submit (10 minutes).
+            if intent in {"SELL", "BUY"} and _listing_cooldown_active(payload):
+                response_type = "ERROR_MESSAGE"
+                reply = t(lang, "listing_cooldown")
+                _write_payload(conv, payload)
             # Eligibility gate — block listing flow for not-eligible accounts.
-            if intent in {"SELL", "BUY"} and not _is_eligible_to_post(payload):
+            elif intent in {"SELL", "BUY"} and not _is_eligible_to_post(payload):
                 response_type = "ERROR_MESSAGE"
                 # Save intent so next turns know they wanted sell/buy
                 try:

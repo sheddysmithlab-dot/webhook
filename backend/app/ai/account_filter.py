@@ -195,11 +195,6 @@ def verify_account(db: Session, mobile: str) -> AccountVerdict:
         verdict.can_post = True
         verdict.eligibility = "ELIGIBLE"
         verdict.reason = "OFFICE"
-    elif verdict.account_type == "free":
-        # Free users must have completed onboarding (account_ready)
-        verdict.can_post = bool(verdict.onboarded)
-        verdict.eligibility = "ELIGIBLE" if verdict.can_post else "NOT_ELIGIBLE"
-        verdict.reason = "FREE_USER" if verdict.can_post else "FREE_NOT_ONBOARDED"
     elif verdict.account_type == "token":
         credits = meta.get("credits")
         try:
@@ -209,6 +204,17 @@ def verify_account(db: Session, mobile: str) -> AccountVerdict:
         verdict.can_post = credits_i > 0
         verdict.eligibility = "ELIGIBLE" if verdict.can_post else "NOT_ELIGIBLE"
         verdict.reason = "TOKEN_CREDITS" if verdict.can_post else "TOKEN_NO_CREDITS"
+        if meta.get("buy_link"):
+            verdict.buy_link = str(meta["buy_link"])
+        elif not verdict.can_post:
+            verdict.buy_link = "https://infradealer.com/wallet"
+    elif verdict.account_type == "free":
+        # Free/onboarded users may still need wallet tokens at push (trial cost can be 0).
+        verdict.can_post = bool(verdict.onboarded)
+        verdict.eligibility = "ELIGIBLE" if verdict.can_post else "NOT_ELIGIBLE"
+        verdict.reason = "FREE_USER" if verdict.can_post else "FREE_NOT_ONBOARDED"
+        if meta.get("buy_link"):
+            verdict.buy_link = str(meta["buy_link"])
     elif verdict.account_type == "broker":
         active = bool(
             meta.get("broker_subscription_active")
@@ -287,6 +293,10 @@ def apply_remote_account(state: InfraDealerAccountState, response: dict | None) 
             meta["account_type"] = str(account.get("account_type") or account.get("type")).lower()
         if "credits" in account:
             meta["credits"] = account.get("credits")
+        elif "tokens" in account:
+            meta["credits"] = account.get("tokens")
+        if account.get("buy_link") or account.get("buy_url"):
+            meta["buy_link"] = account.get("buy_link") or account.get("buy_url")
         if "broker_subscription_active" in account:
             meta["broker_subscription_active"] = account.get("broker_subscription_active")
         if account.get("status"):

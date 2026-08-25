@@ -586,6 +586,32 @@ class InfraDealerIntegrationService:
                     if listing.get("listing_id"):
                         meta["listing_id"] = listing.get("listing_id")
                     state.meta_json = json.dumps(meta)
+            elif code == "TOKEN_INSUFFICIENT":
+                buy = str(body.get("buy_link") or body.get("buy_url") or "https://infradealer.com/wallet")
+                if item.draft_id:
+                    draft = self.db.get(AiListingDraft, item.draft_id)
+                    if draft and draft.status not in {"POSTED", "APPROVED", "LIVE", "REJECTED"}:
+                        draft.status = "TOKEN_REQUIRED"
+                conv = self.db.get(AiConversation, item.conversation_id) if item.conversation_id else None
+                if conv:
+                    from ..ai.tools import _payload, _write_payload
+
+                    pl = _payload(conv)
+                    pl["account_reason"] = "TOKEN_INSUFFICIENT"
+                    pl["account_eligibility"] = "NOT_ELIGIBLE"
+                    pl["account_can_post"] = False
+                    pl["account_buy_link"] = buy
+                    pl["push_stage"] = "TOKEN_REQUIRED"
+                    _write_payload(conv, pl)
+                if state:
+                    meta = {}
+                    try:
+                        meta = json.loads(state.meta_json or "{}")
+                    except json.JSONDecodeError:
+                        meta = {}
+                    meta["listing_status"] = "TOKEN_REQUIRED"
+                    meta["buy_link"] = buy
+                    state.meta_json = json.dumps(meta)
             elif code in {"ACCOUNT_NOT_FOUND", "ACCOUNT_REQUIRED"}:
                 if state:
                     state.pending_draft_id = item.draft_id

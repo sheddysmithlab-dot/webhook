@@ -229,6 +229,8 @@ def empty_payload() -> dict:
         "account_reason": None,
         "account_buy_link": None,
         "account_eligibility": None,
+        "next_listing_not_before": None,
+        "last_listing_submitted_at": None,
         "awaiting_card_choice": False,
         "chat_cleared": False,
         "skipped_asks": [],
