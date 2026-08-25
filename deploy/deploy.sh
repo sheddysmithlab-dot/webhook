@@ -31,8 +31,8 @@ else
   echo "==> Caddy route already present"
 fi
 
-docker compose build
-docker compose up -d
+docker compose build api web
+docker compose up -d --force-recreate --remove-orphans
 docker compose ps
 
 echo "==> Local health check"
@@ -44,5 +44,11 @@ for i in $(seq 1 30); do
   sleep 3
 done
 
+echo "==> Confirm code + containers"
+git -C "$APP_DIR" rev-parse --short HEAD || true
+docker ps --filter name=webhook-infradealer --format '{{.Names}} {{.Status}}' || true
+
 echo "==> Public health (may need DNS/SSL propagate)"
 curl -fsS "https://${DOMAIN}/api/health" || true
+echo
+echo DEPLOY_OK
