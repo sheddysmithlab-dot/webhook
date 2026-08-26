@@ -180,6 +180,20 @@ def media_public_url(media_id: int) -> str:
     return f"{base}/api/v1/integrations/infradealer/media/{int(media_id)}?t={token}"
 
 
+def _resolve_account_type(payload: dict | None) -> str:
+    data = payload if isinstance(payload, dict) else {}
+    ctx = data.get("account_context") if isinstance(data.get("account_context"), dict) else {}
+    account = ctx.get("account") if isinstance(ctx.get("account"), dict) else {}
+    raw = (
+        data.get("account_type")
+        or data.get("account_label")
+        or account.get("type")
+        or ctx.get("type")
+        or ""
+    )
+    return str(raw).strip().lower()
+
+
 def build_listing_payload(
     db,
     conv: AiConversation,
@@ -224,15 +238,15 @@ def build_listing_payload(
     # number shared in chat. Never publish the office line as seller_contact.
     account_mobile = seller_contact_digits(conv.mobile if conv else "")
     shared_contact = seller_contact_digits(extract_shared_listing_contact(db, conv, payload))
-    account_type = str(
-        payload.get("account_type")
-        or payload.get("account_label")
-        or (payload.get("account_context") or {}).get("type")
-        or ""
-    ).strip().lower()
+    account_type = _resolve_account_type(payload)
     is_office = account_type in {"office", "staff", "admin"}
-    if is_office:
-        contact = shared_contact if shared_contact and shared_contact != account_mobile else ""
+
+    # Prefer any chat-shared number that differs from the channel identity.
+    # Office posts must never fall back to the verified office line.
+    if shared_contact and shared_contact != account_mobile:
+        contact = shared_contact
+    elif is_office:
+        contact = ""
     else:
         contact = shared_contact or seller_contact_digits(_legacy_phone) or account_mobile
 
@@ -293,6 +307,12 @@ def build_listing_payload(
         "photos": [{"url": item["url"], "media_id": item["media_id"]} for item in media],
     }
     listing = {k: v for k, v in listing.items() if v not in (None, "", [])}
+    # Keep empty seller_contact visible for office so API can reject clearly
+    if is_office and not contact:
+        listing["seller_contact"] = ""
+        listing["contact_number"] = ""
+        customer["seller_contact"] = ""
+        customer["account_type"] = account_type or "office"
     body = {
         "request_id": request_id,
         "event": "listing.push",

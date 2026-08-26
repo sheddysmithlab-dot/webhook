@@ -151,7 +151,14 @@ def test_office_listing_uses_chat_shared_phone_not_account(db_session):
         mobile=office_mobile,
         language="hinglish",
         customer_name="Office Desk",
-        payload_json=json.dumps({"account_type": "OFFICE", "brand": "Tata", "model": "407", "expected_price": "5 lakh", "state": "Madhya Pradesh"}),
+        payload_json=json.dumps({
+            "account_type": "OFFICE",
+            "account_context": {"account": {"type": "OFFICE"}},
+            "brand": "Tata",
+            "model": "407",
+            "expected_price": "5 lakh",
+            "state": "Madhya Pradesh",
+        }),
     )
     db_session.add(conv)
     db_session.flush()
@@ -182,6 +189,44 @@ def test_office_listing_uses_chat_shared_phone_not_account(db_session):
         body["listing"].get("seller_contact"),
         body["customer"].get("seller_contact"),
     )
+
+
+def test_shared_phone_preferred_even_without_office_label(db_session):
+    """Any chat-shared number different from WA identity becomes seller_contact."""
+    from app.infradealer.payloads import build_listing_payload
+    from app.models import AiConversation, AiListingDraft, Chat
+
+    wa_mobile = "8224000829"
+    seller_mobile = "9988776655"
+    conv = AiConversation(
+        conversation_id=f"CONV_{wa_mobile}",
+        mobile=wa_mobile,
+        language="hinglish",
+        payload_json=json.dumps({
+            "account_type": "FREE",
+            "brand": "JCB",
+            "model": "3DX",
+            "expected_price": "12 lakh",
+            "state": "Madhya Pradesh",
+        }),
+    )
+    db_session.add(conv)
+    db_session.flush()
+    draft = AiListingDraft(conversation_id=conv.id, mobile=wa_mobile, status="READY", title="JCB 3DX")
+    db_session.add(draft)
+    db_session.add(
+        Chat(
+            conversation_id=conv.conversation_id,
+            direction="inbound",
+            from_mobile=wa_mobile,
+            body=f"Contact {seller_mobile}",
+        )
+    )
+    db_session.flush()
+    payload = json.loads(conv.payload_json)
+    body = build_listing_payload(db_session, conv, draft, payload, "req-shared-1")
+    assert body["customer"]["phone"].endswith(wa_mobile)
+    assert body["listing"]["seller_contact"] == seller_mobile
 
 
 def test_listing_push_status_auto_publish(monkeypatch):
