@@ -17,13 +17,11 @@ fi
 
 cp -a .env /tmp/webhook-infradealer.env.hard-reset-bak
 
-# Load DB credentials for truncate step
-set -a
-# shellcheck disable=SC1091
-source .env
-set +a
-DB_USER="${POSTGRES_USER:-infradealer}"
-DB_NAME="${POSTGRES_DB:-infradealer}"
+# Read DB credentials without sourcing full .env (values may contain spaces/special chars)
+DB_USER="$(grep -E '^POSTGRES_USER=' .env | head -1 | cut -d= -f2- | tr -d '\r' | tr -d '"' | tr -d "'")"
+DB_NAME="$(grep -E '^POSTGRES_DB=' .env | head -1 | cut -d= -f2- | tr -d '\r' | tr -d '"' | tr -d "'")"
+DB_USER="${DB_USER:-infradealer}"
+DB_NAME="${DB_NAME:-infradealer}"
 
 echo "==> Sync code from origin/main"
 git fetch origin main
@@ -37,7 +35,7 @@ sleep 3
 echo "==> Flush Redis chat/session cache"
 docker compose exec -T redis redis-cli FLUSHDB || true
 
-echo "==> Truncate AI chat-memory tables (keep accounts/settings)"
+echo "==> Truncate AI chat-memory tables (keep accounts/settings) as ${DB_USER}/${DB_NAME}"
 docker compose exec -T db psql -U "$DB_USER" -d "$DB_NAME" <<'SQL'
 BEGIN;
 
