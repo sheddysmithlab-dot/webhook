@@ -1012,6 +1012,7 @@ class InfraDealerIntegrationService:
             payload=payload,
             reason=listing_reject_reason(payload),
             draft=draft,
+            force=True,
         )
 
     def _on_account_created(self, payload: dict) -> None:
