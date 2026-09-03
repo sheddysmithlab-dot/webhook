@@ -390,7 +390,30 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
     )
     # prompt_block was a legacy memory.py stub that returned "" — inlined as no-op.
     sys = SYSTEM_PROMPT + "\n\n" + language_instruction(lang)
+    # Learn from past admin reject reasons so agent guides corrections better
+    lessons = []
+    try:
+        from .tools import _payload
+
+        pl = _payload(conv) if conv else {}
+        raw_lessons = list(pl.get("admin_rejection_lessons") or [])
+        for item in raw_lessons[-5:]:
+            if not isinstance(item, dict):
+                continue
+            reason = str(item.get("reason") or "").strip()
+            if reason:
+                title = str(item.get("title") or item.get("listing_id") or "").strip()
+                lessons.append(f"- {title + ': ' if title else ''}{reason}")
+        if pl.get("rejection_reason"):
+            lessons.append(f"- latest: {pl.get('rejection_reason')}")
+    except Exception:
+        lessons = []
     learned = ""
+    if lessons:
+        learned = (
+            "ADMIN_REJECTION_LESSONS (use when helping user fix listing):\n"
+            + "\n".join(dict.fromkeys(lessons))
+        )
     if learned:
         sys += "\n\n" + learned
     messages = [{"role": "system", "content": sys}]

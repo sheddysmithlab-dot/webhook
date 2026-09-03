@@ -615,12 +615,18 @@ def process_rejection(db: Session, conv: AiConversation, event: dict) -> dict:
     payload = _payload(conv)
     listing_id = str(event.get("listing_id") or payload.get("infradealer_listing_id") or "")
     reason_code = str(event.get("reason_code") or event.get("code") or "REJECTED")
-    reason_text = str(event.get("reason_text") or event.get("reason") or event.get("message") or "")
+    reason_text = str(
+        event.get("reason_text")
+        or event.get("rejection_reason")
+        or event.get("reason")
+        or ""
+    ).strip()
     old = str(payload.get("listing_status") or "")
-    if not _can_transition(old, "REJECTED"):
-        # LIVE/APPROVED should not silently become REJECTED from stale event unless same or higher
-        if STATUS_RANK.get(old.upper(), 0) > STATUS_RANK["REJECTED"]:
-            return {"ok": True, "status": old, "ignored": True, "reason_code": "NO_DOWNGRADE"}
+    force = bool(event.get("force") or event.get("admin_force"))
+    # Admin panel reject is final authority: may downgrade APPROVED → REJECTED.
+    # Only refuse silently downgrading a LIVE listing without an explicit force flag.
+    if old.upper() in {"LIVE", "POSTED"} and not force:
+        return {"ok": True, "status": old, "ignored": True, "reason_code": "NO_DOWNGRADE"}
 
     payload["listing_status"] = "REJECTED"
     payload["rejection_reason"] = reason_text or reason_code
@@ -1178,6 +1184,7 @@ def notify_user_admin_decision(
     reason: str = "",
     draft: Any = None,
     force: bool = False,
+    message_override: str = "",
 ) -> dict:
     """Update shared state + send WhatsApp approve/reject message (Admin is final authority)."""
     from .i18n import pick_language, t
@@ -1211,6 +1218,7 @@ def notify_user_admin_decision(
         live_url = public_listing_url(lid) if lid else ""
 
     open_url = listing_open_url(lid, mobile=conv.mobile, payload={"listing_url": live_url}) if lid else live_url
+    override = str(message_override or "").strip()
 
     # Sync shared listing state (Admin is final authority)
     if approved:
@@ -1223,13 +1231,23 @@ def notify_user_admin_decision(
         pl["submission"] = sub
         if draft is not None:
             draft.status = "POSTED"
-        text = t(
+        text = override or t(
             pick_language("", str(getattr(conv, "language", "") or ""), "auto"),
             "approved",
             link=open_url or live_url or public_listing_url(lid),
         )
     else:
-        reason_text = str(reason or remote.get("reason_text") or remote.get("message") or "Needs correction")
+        reason_text = str(
+            reason
+            or remote.get("reason_text")
+            or remote.get("rejection_reason")
+            or remote.get("reason")
+            or pl.get("rejection_reason")
+            or "Needs correction"
+        ).strip()
+        # Do not treat the full English callback blast as the reason
+        if reason_text.lower().startswith("your listing was rejected"):
+            reason_text = str(remote.get("reason") or pl.get("rejection_reason") or "Needs correction").strip()
         pl["listing_status"] = "REJECTED"
         pl["rejection_reason"] = reason_text
         pl["customer_confirmed"] = False
@@ -1239,7 +1257,7 @@ def notify_user_admin_decision(
         pl["submission"] = sub
         if draft is not None:
             draft.status = "REJECTED"
-        text = t(
+        text = override or t(
             pick_language("", str(getattr(conv, "language", "") or ""), "auto"),
             "rejected",
             reason=reason_text,

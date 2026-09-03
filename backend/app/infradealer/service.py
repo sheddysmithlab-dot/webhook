@@ -820,7 +820,8 @@ class InfraDealerIntegrationService:
         dup = self.db.query(InfraDealerCallback).filter(InfraDealerCallback.callback_id == callback_id).first()
         if dup and dup.processed:
             return {"ok": True, "duplicate": True}
-        if request_id and event:
+        # request_id dedupe only for approve/posted — same push request_id is reused on reject
+        if request_id and event and event not in {"listing.rejected"}:
             dup2 = (
                 self.db.query(InfraDealerCallback)
                 .filter(
@@ -1002,15 +1003,78 @@ class InfraDealerIntegrationService:
 
     def _on_listing_rejected(self, request_id: str, listing_id: str, payload: dict) -> None:
         customer = payload.get("customer") if isinstance(payload.get("customer"), dict) else {}
-        req = self._resolve_request(request_id, listing_id, str(customer.get("phone") or payload.get("phone") or ""))
+        phone = str(customer.get("phone") or payload.get("phone") or "")
+        req = self._resolve_request(request_id, listing_id, phone)
         conv = self._resolve_conversation(req, payload)
         draft = self.db.get(AiListingDraft, req.draft_id) if req and req.draft_id else None
+        from ..infradealer.events import listing_reject_reason
+
+        reason = listing_reject_reason(payload)
+        log.info(
+            "listing.rejected listing_id=%s phone=%s reason=%s conv=%s",
+            listing_id,
+            (phone or "")[-4:],
+            (reason or "")[:120],
+            getattr(conv, "id", None),
+        )
         if not conv:
             if draft:
                 draft.status = "REJECTED"
+            log.warning("listing.rejected skipped — no conversation for listing=%s", listing_id)
             return
+
+        # 1) Feed AI agent memory (reason + correction workflow)
+        ai_reply = ""
+        try:
+            from ..ai.data_push import process_rejection
+            from ..ai.i18n import pick_language, t
+            from ..ai.orchestrator import commit_workflow_state, emit_event
+            from ..ai.tools import _payload, _write_payload
+
+            admin_event = {
+                "event": "LISTING_REJECTED",
+                "event_id": str(payload.get("event_id") or uuid.uuid4()),
+                "listing_id": str(listing_id or ""),
+                "request_id": str(request_id or ""),
+                "reason_text": reason,
+                "reason": reason,
+                "rejection_reason": reason,
+                "force": True,  # admin panel reject always wins over APPROVED
+            }
+            process_rejection(self.db, conv, admin_event)
+
+            pl = _payload(conv)
+            lessons = list(pl.get("admin_rejection_lessons") or [])
+            lessons.append(
+                {
+                    "listing_id": str(listing_id or ""),
+                    "reason": reason,
+                    "at": _now().isoformat(),
+                    "title": str((payload.get("listing") or {}).get("title") or pl.get("title") or ""),
+                }
+            )
+            pl["admin_rejection_lessons"] = lessons[-20:]
+            pl["rejection_reason"] = reason
+            pl["listing_status"] = "REJECTED"
+            pl["awaiting_confirm"] = False
+            pl["customer_confirmed"] = False
+            _write_payload(conv, pl)
+
+            lang = pick_language("", str(getattr(conv, "language", "") or ""), "auto")
+            ai_reply = t(lang, "rejected", reason=reason or "Needs correction")
+            emit_event(
+                self.db,
+                conv,
+                "LISTING_REJECTED",
+                source_agent="data_push",
+                detail={"listing_id": listing_id, "reason": reason, "via": "admin_callback"},
+            )
+            commit_workflow_state(self.db, conv, "CORRECTION_REQUIRED", source_agent="chat_memory")
+        except Exception:
+            log.exception("AI reject memory update failed listing_id=%s", listing_id)
+
+        # 2) WhatsApp agent sends the crafted message (force=True so resends work)
         from ..ai.data_push import notify_user_admin_decision
-        from ..infradealer.events import listing_reject_reason
 
         notify_user_admin_decision(
             self.db,
@@ -1018,9 +1082,10 @@ class InfraDealerIntegrationService:
             approved=False,
             listing_id=listing_id,
             payload=payload,
-            reason=listing_reject_reason(payload),
+            reason=reason,
             draft=draft,
             force=True,
+            message_override=ai_reply,
         )
 
     def _on_account_created(self, payload: dict) -> None:
