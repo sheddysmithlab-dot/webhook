@@ -796,8 +796,16 @@ class InfraDealerIntegrationService:
         request_id = str(payload.get("request_id") or "")
         listing = payload.get("listing") if isinstance(payload.get("listing"), dict) else {}
         listing_id = str(listing.get("listing_id") or listing.get("id") or payload.get("listing_id") or "")
-        callback_id = str(payload.get("callback_id") or request_id or listing_id or str(uuid.uuid4()))
-        if listing_id and event in {"listing.posted", "listing.rejected"}:
+        callback_id = str(
+            payload.get("callback_id")
+            or payload.get("event_id")
+            or request_id
+            or listing_id
+            or str(uuid.uuid4())
+        )
+        # Only dedupe "posted" by listing_id — reject must be re-deliverable
+        # (admin can reject again with a new reason / after a failed WhatsApp send).
+        if listing_id and event == "listing.posted":
             dup_lid = (
                 self.db.query(InfraDealerCallback)
                 .filter(
