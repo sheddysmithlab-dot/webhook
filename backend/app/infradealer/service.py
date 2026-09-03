@@ -934,12 +934,26 @@ class InfraDealerIntegrationService:
         digits = "".join(ch for ch in phone if ch.isdigit())[-10:]
         if not digits:
             return None
-        return (
+        conv = (
             self.db.query(AiConversation)
             .filter(AiConversation.mobile == digits)
             .order_by(AiConversation.id.desc())
             .first()
         )
+        if conv:
+            return conv
+        # Admin reject/approve must still WhatsApp even if AI session row was lost
+        conv = AiConversation(
+            mobile=digits,
+            conversation_id=f"CONV_{digits}",
+            state="ADMIN_NOTIFY",
+            language="hinglish",
+            payload_json="{}",
+        )
+        self.db.add(conv)
+        self.db.flush()
+        log.warning("created missing AiConversation for mobile=***%s id=%s", digits[-4:], conv.id)
+        return conv
 
     def _notify_customer(self, conv: AiConversation | None, text: str, *, preview_url: bool = False) -> bool:
         msg = (text or "").strip()
