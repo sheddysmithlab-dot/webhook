@@ -237,6 +237,7 @@ def test_orchestrator_falls_back_when_prompt_disabled(monkeypatch):
         return "rules reply"
 
     monkeypatch.setattr("app.ai.chat_memory.handle_message", fake_rm)
+    monkeypatch.setattr("app.ai.lead_welcome.lead_welcome_reply", lambda *a, **k: "")
     reply = handle_message(db, conv, "hello")
     assert called["rm"] is True
     assert reply == "rules reply"

@@ -38,6 +38,7 @@ def test_orchestrator_emits_reply_path(monkeypatch):
         lambda db, conv, text, media_note="": "Namaste Sir, kya bechna hai?",
     )
     monkeypatch.setattr("app.ai.free_chat.free_chat_enabled", lambda db: False)
+    monkeypatch.setattr("app.ai.lead_welcome.lead_welcome_reply", lambda *a, **k: "")
 
     reply = handle_message(db, conv, "hi")
     assert reply and "bechna" in reply.lower()

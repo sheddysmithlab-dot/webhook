@@ -478,7 +478,13 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     )
 
     from .i18n import pick_language, t
+    from .lead_welcome import resolve_menu_choice
     from .session_memory import prepare_turn
+
+    text, menu_reply = resolve_menu_choice(conv, _payload(conv), text)
+    if menu_reply:
+        sync_master_from_rm(db, conv)
+        return menu_reply
 
     prep = prepare_turn(db, conv, text)
     lang = pick_language(text, str(getattr(conv, "language", "") or ""), "auto")
@@ -559,6 +565,16 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
         af_payload["account_gate"] = "ELIGIBILITY_BLOCKED"
         _write_payload(conv, af_payload)
 
+    # Ad click / new unregistered lead just greeting or asking for info → welcome menu first,
+    # account talk only once they want to list.
+    from .lead_welcome import lead_welcome_reply
+
+    welcome = lead_welcome_reply(db, conv, _payload(conv), text, media_note)
+    if welcome:
+        log.info("orchestrator.reply_path path=lead_welcome mobile=***%s", (conv.mobile or "")[-4:])
+        sync_master_from_rm(db, conv)
+        return welcome
+
     # Agent 2 — Phase-3: unified prompt_chat; free_chat then soft chat_memory on fail.
     reply = ""
     path = "chat_memory"
@@ -613,14 +629,9 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
         reply = rm_handle(db, conv, text, media_note)
         path = "chat_memory"
 
-    if prep.get("mode") == "new_chat" and prep.get("reset"):
-        # Soft intro so it feels like a fresh conversation after 10-min memory reset
-        intro = t(lang, "memory_reset_new_chat")
-        body = (reply or "").strip()
-        if body and intro not in body:
-            reply = intro + "\n\n" + body
-        elif not body:
-            reply = intro
+    # The 10-min idle reset is internal only — customers must not see a "chat cleared" notice.
+    if not (reply or "").strip() and prep.get("mode") == "new_chat":
+        reply = t(lang, "greet")
 
     sync_master_from_rm(db, conv)
 
