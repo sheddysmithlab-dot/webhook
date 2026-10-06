@@ -537,8 +537,15 @@ export default function Webhook() {
                   <BubbleBody m={m} />
                   <div className="meta">
                     <span>{clock(m.timestamp)}</span>
-                    {m.direction === "outbound" && <span className="wa-ticks">{m.status === "read" || m.status === "delivered" ? "✓✓" : "✓"}</span>}
+                    {m.direction === "outbound" && (m.error ? (
+                      <span className="wa-ticks" style={{ color: "#d93025", fontWeight: 700 }} title={m.error}>!</span>
+                    ) : (
+                      <span className="wa-ticks">{m.status === "read" || m.status === "delivered" ? "✓✓" : "✓"}</span>
+                    ))}
                   </div>
+                  {m.direction === "outbound" && m.error && (
+                    <div style={{ color: "#d93025", fontSize: 11, marginTop: 2 }}>Deliver nahi hua: {m.error}</div>
+                  )}
                 </div>
               ))}
             </div>

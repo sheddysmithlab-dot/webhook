@@ -13,8 +13,10 @@ from sqlalchemy.orm import sessionmaker
 from app.ai.lead_welcome import (
     MENU_CHOICES,
     PARTNER_TEXT,
+    WELCOME_ECHO_REPLY,
     WELCOME_TEXT,
     is_ad_prefill,
+    is_welcome_echo,
     is_lead_inquiry,
     lead_welcome_reply,
     resolve_menu_choice,
@@ -104,6 +106,20 @@ def test_no_welcome_mid_listing_media_or_account_form():
 
     conv3 = _conv(db, {**UNREGISTERED, "account_step": "otp"}, mobile="9000111555")
     assert lead_welcome_reply(db, conv3, _payload(conv3), "Hello! Can I get more info on this?") == ""
+
+
+def test_ad_prefill_that_is_the_welcome_text_gets_short_menu_not_account_offer():
+    db = _session()
+    conv = _conv(db, {**REGISTERED, "lead_welcome_sent": True, "intent": "SELL"})
+    reply = lead_welcome_reply(db, conv, _payload(conv), WELCOME_TEXT)
+    assert reply == WELCOME_ECHO_REPLY
+    assert "account" not in reply.lower()
+    assert _payload(conv)["lead_menu_pending"] is True
+
+    conv2 = _conv(db, UNREGISTERED, mobile="9000111666")
+    corrected = "dY`< Hello Welcome to InfraDealer dYso Thanks for contacting us We help buyers and sellers 1 Buy equipment 2 Sell equipment"
+    assert lead_welcome_reply(db, conv2, _payload(conv2), corrected) == WELCOME_ECHO_REPLY
+    assert not is_welcome_echo("Welcome sir, JCB bechna hai")
 
 
 def test_menu_choices():

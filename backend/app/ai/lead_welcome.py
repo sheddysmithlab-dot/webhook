@@ -27,6 +27,16 @@ WELCOME_TEXT = (
     "find the right option."
 )
 
+# The ad's prefilled message is the welcome text itself — the customer already sees the menu.
+WELCOME_ECHO_REPLY = (
+    "🙏 Thanks for reaching out to InfraDealer!\n"
+    "Just reply with a number:\n"
+    "1️⃣ Buy equipment\n"
+    "2️⃣ Sell equipment\n"
+    "3️⃣ Become a Dealer/Business Partner\n"
+    "Or send the machine type + preferred location + budget, and we'll help you find the right option."
+)
+
 PARTNER_TEXT = (
     "🤝 *Become a Dealer / Business Partner*\n"
     "• Register here: https://infradealer.com/partner/signup\n"
@@ -72,6 +82,11 @@ def _core(text: str) -> str:
 def is_ad_prefill(text: str) -> bool:
     msg = (text or "").strip()
     return bool(msg) and len(msg) <= 160 and bool(_AD_PREFILL.search(msg))
+
+
+def is_welcome_echo(text: str) -> bool:
+    core = _core(text).lower()
+    return "welcome to infradealer" in core and ("buy equipment" in core or "sell equipment" in core)
 
 
 def is_lead_inquiry(text: str) -> bool:
@@ -120,11 +135,19 @@ def lead_welcome_reply(
     from .account import _wa_unmatched_payload, account_busy
 
     pl = payload or {}
-    if media_note or pl.get("lead_welcome_sent") or account_busy(pl):
+    if media_note or account_busy(pl):
         return ""
-    if _has_listing_context(conv, pl):
+    raw = _original_inbound_text(db, conv)
+    if is_welcome_echo(text) or is_welcome_echo(raw):
+        pl["lead_welcome_sent"] = True
+        pl["lead_menu_pending"] = True
+        pl["ai_introduced"] = True
+        pl["lead_source"] = "ad"
+        _write_payload(conv, pl)
+        return WELCOME_ECHO_REPLY
+    if pl.get("lead_welcome_sent") or _has_listing_context(conv, pl):
         return ""
-    from_ad = is_ad_prefill(text) or is_ad_prefill(_original_inbound_text(db, conv))
+    from_ad = is_ad_prefill(text) or is_ad_prefill(raw)
     new_lead = _wa_unmatched_payload(pl) and not pl.get("account_onboarded") and is_lead_inquiry(text)
     if not (from_ad or new_lead):
         return ""

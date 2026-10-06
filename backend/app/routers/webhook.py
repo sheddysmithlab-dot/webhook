@@ -29,6 +29,7 @@ from ..services import (
     valid_mobile,
     verify_meta_signature,
 )
+from ..wa_status import apply_status, delivery_error_reason
 
 router = APIRouter()
 log = logging.getLogger("infradealer")
@@ -186,12 +187,7 @@ async def receive_webhook(request: Request, background: BackgroundTasks, db: Ses
                         except Exception as exc:
                             log.warning("auto-ack failed for %s: %s", frm, exc)
             for st in value.get("statuses") or []:
-                wamid = st.get("id") or ""
-                status = st.get("status") or ""
-                if wamid and status:
-                    chat = db.query(Chat).filter(Chat.wamid == wamid).first()
-                    if chat:
-                        chat.status = status
+                apply_status(db, st)
     db.commit()
     for job in ai_jobs:
         background.add_task(run_ai_job, **job)
@@ -238,6 +234,7 @@ def list_chats(
             "direction": c.direction,
             "body": c.body,
             "status": c.status,
+            "error": delivery_error_reason(c.status),
             "unread": c.unread,
             "is_test": c.is_test,
             "timestamp": c.timestamp_ms,
