@@ -30,6 +30,7 @@ from ..services import (
     verify_meta_signature,
 )
 from ..wa_status import apply_status, delivery_error_reason
+from ..wa_templates import DEFAULT_TEMPLATE_NAME, create_default_template, list_templates, send_template
 
 router = APIRouter()
 log = logging.getLogger("infradealer")
@@ -393,6 +394,57 @@ def send_chat(body: SendChatIn, db: Session = Depends(get_db)):
         to_mobile=to,
         direction="outbound",
         body=text,
+        status="sent",
+        unread=False,
+    )
+    db.commit()
+    return {"ok": True, **result}
+
+
+@router.get("/api/chats/templates")
+def chat_templates(db: Session = Depends(get_db)):
+    meta = get_or_create_settings(db)
+    try:
+        return {"templates": list_templates(meta), "default_name": DEFAULT_TEMPLATE_NAME}
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/api/chats/templates/default")
+def chat_template_default(db: Session = Depends(get_db)):
+    meta = get_or_create_settings(db)
+    try:
+        return {"ok": True, **create_default_template(meta)}
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+class SendTemplateIn(BaseModel):
+    to: str
+    name: str
+    language: str
+    params: dict[str, str] = {}
+
+
+@router.post("/api/chats/send-template")
+def send_chat_template(body: SendTemplateIn, db: Session = Depends(get_db)):
+    to = normalize_mobile(body.to)
+    if not valid_mobile(to):
+        raise HTTPException(400, "Valid number chahiye.")
+    meta = get_or_create_settings(db)
+    try:
+        result = send_template(meta, to, body.name, body.language, body.params)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    store_chat(
+        db,
+        wamid=result["wamid"],
+        conversation_id=f"CONV_{to}",
+        from_mobile=meta.phone_number_id or "infradealer",
+        from_name="InfraDealer",
+        to_mobile=to,
+        direction="outbound",
+        body=result["text"],
         status="sent",
         unread=False,
     )

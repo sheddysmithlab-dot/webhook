@@ -126,6 +126,139 @@ function Modal({ title, onClose, children }) {
   );
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const TPL_BOX = { background: "#fff", borderTop: "1px solid #e9edef", padding: "10px 14px", fontSize: 13, display: "grid", gap: 8 };
+const TPL_INPUT = { padding: "6px 8px", border: "1px solid #d1d7db", borderRadius: 6, fontSize: 13, width: "100%", boxSizing: "border-box" };
+
+function fillTemplate(text, vals) {
+  return String(text || "").replace(/\{\{\s*(\w+)\s*\}\}/g, (all, k) => vals[k] || all);
+}
+
+function TemplatePanel({ to, name, onClose, onSent }) {
+  const [list, setList] = useState(null);
+  const [defaultName, setDefaultName] = useState("");
+  const [sel, setSel] = useState("");
+  const [vals, setVals] = useState({});
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    setMsg("");
+    try {
+      const r = await api.chatTemplates();
+      setList(r.templates || []);
+      setDefaultName(r.default_name || "");
+    } catch (e) {
+      setList([]);
+      setMsg(e.message);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const usable = (list || []).filter((t) => t.status === "APPROVED" && t.supported);
+  const pending = (list || []).filter((t) => t.status !== "APPROVED" && t.status !== "REJECTED");
+  const hasDefault = (list || []).some((t) => t.name === defaultName);
+  const tpl = usable.find((t) => `${t.name}|${t.language}` === sel) || null;
+
+  useEffect(() => {
+    if (!tpl && usable.length) setSel(`${usable[0].name}|${usable[0].language}`);
+  }, [list]);
+
+  useEffect(() => {
+    if (!tpl) return;
+    const first = (name || "").trim().split(/\s+/)[0] || "Sir";
+    setVals(Object.fromEntries(tpl.params.map((p, i) => [p, tpl.name === defaultName && i === 0 ? first : ""])));
+  }, [sel, list]);
+
+  async function send() {
+    if (!tpl) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      await api.sendTemplate({ to, name: tpl.name, language: tpl.language, params: vals });
+      onSent();
+    } catch (e) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createDefault() {
+    setBusy(true);
+    setMsg("");
+    try {
+      const r = await api.createDefaultTemplate();
+      setMsg(`Template "${r.name}" Meta ko approval ke liye bhej diya (status: ${r.status}). Approve hone ke baad yahan dikhega — Refresh dabao.`);
+      await load();
+    } catch (e) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={TPL_BOX}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <strong>Template message</strong>
+        <span style={{ display: "flex", gap: 6 }}>
+          <button type="button" className="wa-mini" onClick={load} disabled={busy}>Refresh</button>
+          <button type="button" className="wa-mini" onClick={onClose}>Close</button>
+        </span>
+      </div>
+      {list === null && <div>Templates load ho rahe hain…</div>}
+      {list !== null && !usable.length && (
+        <div>
+          Koi approved template nahi hai.
+          {pending.length > 0 && <> Approval pending: {pending.map((t) => `${t.name} (${t.status})`).join(", ")}.</>}
+          {!hasDefault && defaultName && (
+            <div style={{ marginTop: 6 }}>
+              <button type="button" className="wa-mini" onClick={createDefault} disabled={busy}>
+                Follow-up template banao (Meta approval ke liye)
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      {usable.length > 0 && (
+        <>
+          <select style={TPL_INPUT} value={sel} onChange={(e) => setSel(e.target.value)}>
+            {usable.map((t) => (
+              <option key={`${t.name}|${t.language}`} value={`${t.name}|${t.language}`}>
+                {t.name} · {t.language} · {t.category}
+              </option>
+            ))}
+          </select>
+          {tpl && tpl.params.map((p) => (
+            <input
+              key={p}
+              style={TPL_INPUT}
+              placeholder={`{{${p}}}`}
+              value={vals[p] || ""}
+              onChange={(e) => setVals((v) => ({ ...v, [p]: e.target.value }))}
+            />
+          ))}
+          {tpl && (
+            <div style={{ whiteSpace: "pre-wrap", background: "#d9fdd3", borderRadius: 8, padding: "8px 10px" }}>
+              {[tpl.header, fillTemplate(tpl.body, vals), tpl.footer].filter(Boolean).join("\n")}
+            </div>
+          )}
+          <div>
+            <button type="button" className="btn primary" onClick={send} disabled={busy || !tpl}>
+              {busy ? "Bhej rahe hain…" : "Template bhejo"}
+            </button>
+          </div>
+        </>
+      )}
+      {msg && <div style={{ color: msg.startsWith("Template \"") ? "#008069" : "#d93025" }}>{msg}</div>}
+    </div>
+  );
+}
+
 function StatusDot({ ok }) {
   return <span style={{ color: ok ? "#00a884" : "#e74c3c", fontWeight: 600 }}>{ok ? "Configured" : "Missing"}</span>;
 }
@@ -147,6 +280,7 @@ export default function Webhook() {
   const [selected, setSelected] = useState([]);
   const [aiKey, setAiKey] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
+  const [tplOpen, setTplOpen] = useState(false);
   const threadRef = useRef(null);
   const menuRef = useRef(null);
   const stickToBottomRef = useRef(true);
@@ -219,6 +353,7 @@ export default function Webhook() {
     if (openPeer !== lastOpenPeerRef.current) {
       lastOpenPeerRef.current = openPeer;
       stickToBottomRef.current = true;
+      setTplOpen(false);
     }
   }, [openPeer]);
 
@@ -267,6 +402,10 @@ export default function Webhook() {
 
   const recipients = convs.map((g) => ({ from: g.peer, name: g.name, last: g.last?.body || "" }));
   const activeBlocked = !!active && blocked.some((b) => String(b.mobile) === String(active.peer));
+  const lastInboundTs = active
+    ? Math.max(0, ...active.messages.filter((m) => m.direction === "inbound").map((m) => m.timestamp || 0))
+    : 0;
+  const windowClosed = !!active && (!lastInboundTs || Date.now() - lastInboundTs > DAY_MS);
 
   function field(k, v) {
     setS((prev) => ({ ...prev, [k]: v }));
@@ -549,7 +688,29 @@ export default function Webhook() {
                 </div>
               ))}
             </div>
+            {windowClosed && !tplOpen && (
+              <div style={{ background: "#fff4e5", color: "#7a4b00", padding: "8px 14px", fontSize: 13, display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
+                <span>Customer ka last message 24 ghante se purana hai — WhatsApp normal message deliver nahi karega. Template bhejo; customer reply kare to normal chat chalu ho jayegi.</span>
+                <button type="button" className="wa-mini" onClick={() => setTplOpen(true)}>Template bhejo</button>
+              </div>
+            )}
+            {tplOpen && (
+              <TemplatePanel
+                to={active.peer}
+                name={active.name}
+                onClose={() => setTplOpen(false)}
+                onSent={async () => {
+                  setTplOpen(false);
+                  stickToBottomRef.current = true;
+                  await loadChats().catch(() => {});
+                  requestAnimationFrame(() => scrollThread(true));
+                }}
+              />
+            )}
             <form className="wa-composer" onSubmit={(e) => { e.preventDefault(); sendDraft(); }}>
+              <button type="button" className="wa-mini" onClick={() => setTplOpen((v) => !v)} title="Approved template message bhejo" style={{ alignSelf: "center" }}>
+                Template
+              </button>
               <textarea
                 rows={1}
                 value={draft}
