@@ -732,18 +732,17 @@ def start_account(db: Session, conv: AiConversation, lang: str, prefix: str = ""
 def _submit_registration_and_otp(db: Session, conv: AiConversation, payload: dict, lang: str) -> str:
     name = str(payload.get("reg_name") or conv.customer_name or "Seller")[:120]
     username = str(payload.get("reg_username") or suggest_username(name, conv.mobile))[:40]
-    email = str(payload.get("reg_email") or "").strip().lower()
     password = str(payload.get("reg_password") or "").strip()
     svc = _infra(db)
     created = None
     if svc:
         try:
             with db.begin_nested():
+                # No email: login is username or mobile only; backend stores a placeholder email.
                 created = svc.create_account(
                     conv,
                     name,
                     username=username,
-                    email=email,
                     password=password,
                 )
                 if created:
@@ -761,15 +760,11 @@ def _submit_registration_and_otp(db: Session, conv: AiConversation, payload: dic
         biz = ""
         if created:
             biz = (created.business_status or created.last_error or "").upper()
-        if biz in {"EMAIL_EXISTS", "USERNAME_EXISTS", "INVALID_EMAIL", "INVALID_USERNAME", "INVALID_PASSWORD"}:
-            if "EMAIL" in biz:
-                payload["account_step"] = "reg_email"
-                _write_payload(conv, payload)
-                return t(lang, "account_reg_invalid_email")
+        if biz in {"USERNAME_EXISTS", "INVALID_USERNAME", "INVALID_PASSWORD"}:
             if "USERNAME" in biz:
                 payload["account_step"] = "reg_username"
                 _write_payload(conv, payload)
-                return t(lang, "account_reg_invalid_username")
+                return t(lang, "account_reg_username_taken" if biz == "USERNAME_EXISTS" else "account_reg_invalid_username")
             if "PASSWORD" in biz:
                 payload["account_step"] = "reg_password"
                 _write_payload(conv, payload)
@@ -867,16 +862,13 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
         if not _valid_username(username):
             return t(lang, "account_reg_invalid_username")
         payload["reg_username"] = username
-        payload["account_step"] = "reg_email"
-        conv.error_message = "ask:account_reg_email"
+        payload["account_step"] = "reg_password"
+        conv.error_message = "ask:account_reg_password"
         _write_payload(conv, payload)
-        return t(lang, "account_reg_ask_email")
+        return t(lang, "account_reg_ask_password")
 
     if step == "reg_email":
-        email = msg.strip().lower()
-        if not _valid_email(email):
-            return t(lang, "account_reg_invalid_email")
-        payload["reg_email"] = email
+        # Chats parked on the old email step move straight on; the email is not used.
         payload["account_step"] = "reg_password"
         conv.error_message = "ask:account_reg_password"
         _write_payload(conv, payload)

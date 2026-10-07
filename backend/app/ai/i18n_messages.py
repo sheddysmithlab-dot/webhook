@@ -531,9 +531,9 @@ MESSAGES = {
         "en": "Great 👍\nFirst, please share your full name.",
     },
     "account_reg_ask_username": {
-        "hinglish": "Aapke liye username suggest kar raha hoon:\n*{username}*\n\nKya ye username theek hai? Haan likhiye, ya naya username bhejiye.",
-        "hi": "आपके लिए यूज़रनेम सुझा रहा हूँ:\n*{username}*\n\nक्या यह यूज़रनेम ठीक है? हाँ लिखिए, या नया यूज़रनेम भेजिए।",
-        "en": "Suggested username:\n*{username}*\n\nIs this okay? Reply Yes, or send a different username.",
+        "hinglish": "Aapke liye username suggest kar raha hoon:\n*{username}*\n\nWebsite pe isi *username* ya apne *mobile number* se login hoga.\nKya ye username theek hai? Haan likhiye, ya naya username bhejiye.",
+        "hi": "आपके लिए यूज़रनेम सुझा रहा हूँ:\n*{username}*\n\nवेबसाइट पर इसी *यूज़रनेम* या अपने *मोबाइल नंबर* से लॉगिन होगा।\nक्या यह यूज़रनेम ठीक है? हाँ लिखिए, या नया यूज़रनेम भेजिए।",
+        "en": "Suggested username:\n*{username}*\n\nYou will log in on the website with this *username* or your *mobile number*.\nIs this okay? Reply Yes, or send a different username.",
     },
     "account_reg_ask_email": {
         "hinglish": "Apni email ID bhejiye.",
@@ -541,9 +541,9 @@ MESSAGES = {
         "en": "Please send your email ID.",
     },
     "account_reg_ask_password": {
-        "hinglish": "Website login ke liye password set kijiye (kam se kam 6 character).",
-        "hi": "वेबसाइट लॉगिन के लिए पासवर्ड सेट कीजिए (कम से कम 6 अक्षर)।",
-        "en": "Set a password for website login (at least 6 characters).",
+        "hinglish": "Website login (username ya mobile number) ke liye password set kijiye (kam se kam 6 character).",
+        "hi": "वेबसाइट लॉगिन (यूज़रनेम या मोबाइल नंबर) के लिए पासवर्ड सेट कीजिए (कम से कम 6 अक्षर)।",
+        "en": "Set a password for website login (username or mobile number) (at least 6 characters).",
     },
     "account_reg_invalid_name": {
         "hinglish": "Kripya sahi naam bhejiye (kam se kam 2 letter).",
@@ -554,6 +554,11 @@ MESSAGES = {
         "hinglish": "Username 3-40 letters/numbers/. _ hona chahiye. Dobara try kijiye.",
         "hi": "यूज़रनेम 3-40 अक्षर/अंक/. _ होना चाहिए। दोबारा कोशिश कीजिए।",
         "en": "Username must be 3-40 letters/numbers/. _ . Please try again.",
+    },
+    "account_reg_username_taken": {
+        "hinglish": "Ye username kisi aur ka hai. Koi dusra username bhejiye (3-40 letters/numbers/. _).",
+        "hi": "यह यूज़रनेम किसी और का है। कोई दूसरा यूज़रनेम भेजिए (3-40 अक्षर/अंक/. _)।",
+        "en": "This username is already taken. Please send a different one (3-40 letters/numbers/. _).",
     },
     "account_reg_invalid_email": {
         "hinglish": "Sahi email ID bhejiye (jaise name@gmail.com).",
@@ -566,9 +571,9 @@ MESSAGES = {
         "en": "Password must be at least 6 characters. Please send again.",
     },
     "account_reg_done": {
-        "hinglish": "*Account create ho gaya* ✅\n• OTP verified\n• Ab WhatsApp se listing, enquiry aur account manage kar sakte hain\n• Website login: *phone number* + aapka password\n\nNext: vehicle detail bhejein ya *account detail batao* likhein.",
-        "hi": "*अकाउंट बन गया* ✅\n• OTP वेरिफाई हो गया\n• अब WhatsApp से लिस्टिंग, पूछताछ और अकाउंट मैनेज कर सकते हैं\n• वेबसाइट लॉगिन: *फोन नंबर* + आपका पासवर्ड\n\nNext: वाहन डिटेल भेजें या *account detail batao* लिखें।",
-        "en": "*Account created* ✅\n• OTP verified\n• Manage listings, enquiries and account on WhatsApp\n• Website login: *phone number* + your password\n\nNext: send vehicle details or type *account detail batao*.",
+        "hinglish": "*Account create ho gaya* ✅\n• OTP verified\n• Ab WhatsApp se listing, enquiry aur account manage kar sakte hain\n• Website login: *username* ya *mobile number* + aapka password\n\nNext: vehicle detail bhejein ya *account detail batao* likhein.",
+        "hi": "*अकाउंट बन गया* ✅\n• OTP वेरिफाई हो गया\n• अब WhatsApp से लिस्टिंग, पूछताछ और अकाउंट मैनेज कर सकते हैं\n• वेबसाइट लॉगिन: *यूज़रनेम* या *मोबाइल नंबर* + आपका पासवर्ड\n\nNext: वाहन डिटेल भेजें या *account detail batao* लिखें।",
+        "en": "*Account created* ✅\n• OTP verified\n• Manage listings, enquiries and account on WhatsApp\n• Website login: *username* or *mobile number* + your password\n\nNext: send vehicle details or type *account detail batao*.",
     },
     "account_pw_reset_start": {
         "hinglish": "*Password change — OTP*\n• SMS se OTP bhej diya hai\n• Yahan *6-digit OTP* type kijiye\n• Nahi aaya to *resend otp* likhiye",
