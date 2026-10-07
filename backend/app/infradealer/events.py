@@ -45,6 +45,8 @@ API_PATHS = {
     "media.push": "/media",
     "profile.update": "/profile/update",
     "status": "/status",
+    "office.customer.lookup": "/office/customer/lookup",
+    "office.customer.create": "/office/customer/create",
 }
 
 API_METHODS = {

@@ -313,9 +313,15 @@ def process_inbound(
             lang = pick_language(text, getattr(conv, "language", "") or "", "auto")
             conv.language = lang
 
+            # Office operator commands (customer select / create) run on the raw
+            # text, before typo correction and the same-number account policy.
+            from .office_mode import decorate_office_reply, handle_office_turn
+
+            office_reply = handle_office_turn(db, conv, text, lang)
+
             # Step 1: Correct typos
             try:
-                corrected = correct_user_message(db, conv, text, media_note)
+                corrected = text if office_reply else correct_user_message(db, conv, text, media_note)
                 if corrected != text:
                     log.info("corrector: '%s' → '%s' mobile=***%s", text[:80], corrected[:80], conv.mobile[-4:] if conv.mobile else "")
                     text = corrected
@@ -329,7 +335,11 @@ def process_inbound(
             verdict = classify_message(text, pl, media_note)
             use_prompt = prompt_chat_enabled(db)
 
-            if use_prompt:
+            if office_reply:
+                reply = office_reply
+                path = "office_mode"
+                verdict = {"route": "office"}
+            elif use_prompt:
                 # Soft options: after 2 free turns, hint LLM to offer menu (not static dump)
                 if verdict["route"] == "options":
                     pl["offer_menu"] = True
@@ -366,6 +376,9 @@ def process_inbound(
                 _write_payload(conv, pl)
                 reply = t(lang, "infradealer_options")
                 path = "options"
+
+            if path != "office_mode":
+                reply = decorate_office_reply(db, conv, reply)
 
             pl = _payload(conv)
             if pl.get("active_card_id"):

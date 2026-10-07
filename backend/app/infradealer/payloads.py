@@ -241,16 +241,25 @@ def build_listing_payload(
     account_type = _resolve_account_type(payload)
     is_office = account_type in {"office", "staff", "admin"}
 
+    from ..ai.office_mode import office_listing_context
+
+    office = office_listing_context(db, conv, account_type) if conv else None
+    office_target = (office or {}).get("target")
+    if office is not None and not office.get("office_mode"):
+        is_office = False
+
     # Prefer any chat-shared number that differs from the channel identity.
     # Office posts must never fall back to the verified office line.
-    if shared_contact and shared_contact != account_mobile:
+    if office_target and seller_contact_digits(office_target.get("phone")):
+        contact = seller_contact_digits(office_target.get("phone"))
+    elif shared_contact and shared_contact != account_mobile:
         contact = shared_contact
     elif is_office:
         contact = ""
     else:
         contact = shared_contact or seller_contact_digits(_legacy_phone) or account_mobile
 
-    owner = name or conv.customer_name or "Seller"
+    owner = (office_target or {}).get("name") or name or conv.customer_name or "Seller"
     state = payload.get("state") or confirmed.get("state") or ""
     city = payload.get("city") or confirmed.get("city") or ""
     if city and city == state:
@@ -267,6 +276,11 @@ def build_listing_payload(
     }
     if infradealer_user_id:
         customer["user_id"] = infradealer_user_id
+    if office is not None:
+        customer["office_mode"] = bool(office.get("office_mode"))
+        if office_target:
+            customer["target_user_id"] = office_target["user_id"]
+            customer["target_phone"] = office_target.get("phone") or ""
     listing = {
         "intent": (payload.get("intent") or conv.intent or "SELL").upper(),
         "title": title[:200],

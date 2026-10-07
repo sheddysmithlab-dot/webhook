@@ -253,6 +253,11 @@ def handle_same_number_account_policy(
     others = extract_other_mobiles(msg, conv.mobile)
 
     if others or wants_other_number_account(msg, conv.mobile):
+        from .office_mode import is_office_session
+
+        # Verified office operator posts for other customers' numbers.
+        if is_office_session(db, conv):
+            return None
         return reply_other_number_blocked(
             lang, conv.mobile, others[0] if others else ""
         )

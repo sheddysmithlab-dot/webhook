@@ -286,6 +286,23 @@ class AiAgentMemory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class AiOfficeSession(Base):
+    """Office operator's selected customer — survives chat/listing payload resets."""
+
+    __tablename__ = "ai_office_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    operator_mobile: Mapped[str] = mapped_column(String(10), unique=True, index=True)
+    target_phone: Mapped[str] = mapped_column(String(10), default="")
+    target_user_id: Mapped[str] = mapped_column(String(32), default="")
+    target_name: Mapped[str] = mapped_column(String(120), default="")
+    target_username: Mapped[str] = mapped_column(String(64), default="")
+    step: Mapped[str] = mapped_column(String(24), default="")
+    pending_phone: Mapped[str] = mapped_column(String(10), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class InfraDealerIntegration(Base):
     __tablename__ = "infradealer_integration"
 

@@ -244,6 +244,34 @@ class InfraDealerApiClient:
             request_id=rid,
         )
 
+    def office_customer_lookup(self, operator_phone: str, phone: str, request_id: str | None = None) -> dict[str, Any]:
+        rid = request_id or str(uuid.uuid4())
+        return self.request(
+            "office.customer.lookup",
+            {
+                "request_id": rid,
+                "event": "office.customer.lookup",
+                "operator_phone": operator_phone,
+                "customer": {"phone": phone},
+            },
+            request_id=rid,
+        )
+
+    def office_customer_create(
+        self, operator_phone: str, phone: str, name: str, request_id: str | None = None
+    ) -> dict[str, Any]:
+        rid = request_id or str(uuid.uuid4())
+        return self.request(
+            "office.customer.create",
+            {
+                "request_id": rid,
+                "event": "office.customer.create",
+                "operator_phone": operator_phone,
+                "customer": {"phone": phone, "name": name},
+            },
+            request_id=rid,
+        )
+
     def upload_media(self, payload: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
         rid = request_id or str(uuid.uuid4())
         body = dict(payload)

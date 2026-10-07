@@ -1,0 +1,412 @@
+"""Office operator (postdesk) mode for the public WhatsApp agent.
+
+An allowlisted office number (decided only by the InfraDealer backend) can
+select or create a customer account and post listings onto it:
+
+    customer 9876543210          select an existing customer
+    create customer 9876543210   create a new customer (agent asks the name, no OTP)
+    customer change / clear      drop the selected customer
+    customer                     show the selected customer
+
+Office mode is fail-closed: it stays off unless the Meta App Secret is set, so
+every inbound message was signature-verified and the sender number is genuine.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import time
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy.orm import Session
+
+from ..models import AiConversation, AiOfficeSession
+from .tools import _payload
+
+log = logging.getLogger("infradealer.ai.office_mode")
+
+TARGET_TTL = timedelta(hours=12)
+OPERATOR_REVERIFY = timedelta(hours=1)
+_DENY_TTL_S = 600
+_denied: dict[str, float] = {}
+
+_CREATE = re.compile(r"^\s*(?:create|new|add|naya|nayi|banao)\s+(?:customer|account|grahak)\b(.*)$", re.I | re.S)
+_CUSTOMER = re.compile(r"^\s*(?:customer|grahak)\b(.*)$", re.I | re.S)
+_CHANGE = re.compile(r"^\s*(?:change|badlo|switch)\s*$", re.I)
+_CLEAR = re.compile(r"^\s*(?:clear|remove|hatao|reset)\s*$", re.I)
+_STATUS = re.compile(r"^\s*(?:status|\?|kaun|kon|who)?\s*$", re.I)
+_CANCEL = re.compile(r"^\s*(?:cancel|stop|rehne\s*do|mat\s*karo|nahi|no)\s*[.!]*\s*$", re.I)
+_NAME_OK = re.compile(r"^[A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .'-]{1,79}$")
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _digits10(value: str) -> str:
+    return "".join(ch for ch in str(value or "") if ch.isdigit())[-10:]
+
+
+def _phone_from(rest: str) -> str:
+    compact = re.sub(r"[\s\-:+().]", "", rest or "")
+    if re.fullmatch(r"(?:91|0)?[6-9]\d{9}", compact):
+        return compact[-10:]
+    return ""
+
+
+def signature_enforced(db: Session) -> bool:
+    """Meta signature is only checked when the App Secret is set (else fail-open)."""
+    from ..services import get_or_create_settings
+
+    try:
+        return bool((get_or_create_settings(db).app_secret or "").strip())
+    except Exception:
+        log.exception("office_mode: meta settings unavailable")
+        return False
+
+
+def _client(db: Session):
+    from ..infradealer.service import get_integration_service
+
+    return get_integration_service(db)._client()
+
+
+def _call(db: Session, method: str, *args) -> dict | None:
+    client = _client(db)
+    if not client:
+        return None
+    try:
+        return getattr(client, method)(*args)
+    except Exception:
+        log.exception("office_mode: %s failed", method)
+        return None
+
+
+def _denied_recently(mobile: str) -> bool:
+    ts = _denied.get(mobile)
+    return bool(ts and time.time() - ts < _DENY_TTL_S)
+
+
+def _get_session(db: Session, mobile: str) -> AiOfficeSession | None:
+    return db.query(AiOfficeSession).filter(AiOfficeSession.operator_mobile == mobile).first()
+
+
+def _drop_session(db: Session, mobile: str) -> None:
+    row = _get_session(db, mobile)
+    if row:
+        db.delete(row)
+        db.flush()
+    _denied[mobile] = time.time()
+
+
+def _ensure_session(db: Session, mobile: str) -> AiOfficeSession:
+    row = _get_session(db, mobile)
+    if row:
+        return row
+    now = _now()
+    row = AiOfficeSession(operator_mobile=mobile, created_at=now, updated_at=now)
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _touch(row: AiOfficeSession) -> None:
+    row.updated_at = _now()
+
+
+def _clear_target(row: AiOfficeSession) -> None:
+    row.target_phone = ""
+    row.target_user_id = ""
+    row.target_name = ""
+    row.target_username = ""
+    _touch(row)
+
+
+def _set_target(row: AiOfficeSession, customer: dict, name: str = "") -> None:
+    row.target_phone = _digits10(customer.get("phone"))
+    row.target_user_id = str(customer.get("user_id") or "")[:32]
+    row.target_name = str(name or customer.get("name") or customer.get("username") or "")[:120]
+    row.target_username = str(customer.get("username") or "")[:64]
+    row.step = ""
+    row.pending_phone = ""
+    _touch(row)
+
+
+def _target_expired(row: AiOfficeSession) -> bool:
+    stamp = row.updated_at or row.created_at
+    return bool(stamp and _now() - stamp > TARGET_TTL)
+
+
+def active_target(row: AiOfficeSession | None) -> dict | None:
+    if not row or not row.target_user_id:
+        return None
+    if _target_expired(row):
+        return None
+    return {
+        "user_id": row.target_user_id,
+        "phone": row.target_phone,
+        "name": row.target_name or row.target_username,
+        "username": row.target_username,
+    }
+
+
+def _forbidden(res: dict | None) -> bool:
+    return bool(res) and int(res.get("http_status") or 0) == 403
+
+
+def operator_session(db: Session, conv: AiConversation) -> AiOfficeSession | None:
+    """Backend-verified office operator session for this sender, else None."""
+    if not signature_enforced(db):
+        return None
+    mobile = _digits10(conv.mobile)
+    if not mobile or _denied_recently(mobile):
+        return None
+    row = _get_session(db, mobile)
+    stale = row is not None and (row.updated_at or row.created_at) and _now() - (row.updated_at or row.created_at) > OPERATOR_REVERIFY
+    if row is not None and not stale:
+        return row
+    if row is None and str(_payload(conv).get("account_type") or "").lower() != "office":
+        return None
+    res = _call(db, "office_customer_lookup", mobile, mobile)
+    if _forbidden(res):
+        _drop_session(db, mobile)
+        return None
+    if not res or not res.get("ok"):
+        return row
+    row = _ensure_session(db, mobile)
+    if row.target_user_id and _target_expired(row):
+        _clear_target(row)
+    else:
+        _touch(row)
+    return row
+
+
+def _customer_card(target: dict) -> str:
+    lines = [
+        f"Name: {target.get('name') or '-'}",
+        f"Mobile: {target.get('phone') or '-'}",
+        f"User ID: {target.get('username') or '-'}",
+    ]
+    return "\n".join(lines)
+
+
+def _select_hint() -> str:
+    return "Customer select karein: customer 98XXXXXXXX\nNaya account: create customer 98XXXXXXXX"
+
+
+def _server_error() -> str:
+    return "⚠️ InfraDealer server se jawab nahi mila. Thodi der baad dobara bhejein."
+
+
+def _cmd_select(db: Session, mobile: str, phone: str) -> str | None:
+    res = _call(db, "office_customer_lookup", mobile, phone)
+    if _forbidden(res):
+        _drop_session(db, mobile)
+        return None
+    if not res or not res.get("ok"):
+        return _server_error()
+    row = _ensure_session(db, mobile)
+    body = res.get("body") or {}
+    if not body.get("found"):
+        row.step = ""
+        row.pending_phone = ""
+        _touch(row)
+        return (
+            f"❌ Is mobile par koi account nahi hai: {phone}\n"
+            f"Naya account banane ke liye bhejein: create customer {phone}"
+        )
+    customer = body.get("customer") or {}
+    _set_target(row, customer)
+    return (
+        "✅ Customer selected\n"
+        f"{_customer_card(active_target(row) or {})}\n\n"
+        "Ab bheji gayi listings isi account par post hongi.\n"
+        "Badalne ke liye: customer change"
+    )
+
+
+def _cmd_create_start(db: Session, mobile: str, phone: str) -> str | None:
+    res = _call(db, "office_customer_lookup", mobile, phone)
+    if _forbidden(res):
+        _drop_session(db, mobile)
+        return None
+    if not res or not res.get("ok"):
+        return _server_error()
+    row = _ensure_session(db, mobile)
+    body = res.get("body") or {}
+    if body.get("found"):
+        _set_target(row, body.get("customer") or {})
+        return (
+            "ℹ️ Is mobile par account pehle se hai — wahi select kar diya.\n"
+            f"{_customer_card(active_target(row) or {})}\n\n"
+            "Ab bheji gayi listings isi account par post hongi."
+        )
+    row.step = "await_name"
+    row.pending_phone = phone
+    _touch(row)
+    return f"Naye customer ({phone}) ka naam bhejein.\nRokne ke liye: cancel"
+
+
+def _cmd_create_finish(db: Session, row: AiOfficeSession, mobile: str, text: str) -> str | None:
+    msg = (text or "").strip()
+    if _CANCEL.match(msg):
+        row.step = ""
+        row.pending_phone = ""
+        _touch(row)
+        return "Account creation cancel kar diya."
+    name = re.sub(r"\s+", " ", msg)
+    if not _NAME_OK.match(name):
+        return "Sirf customer ka naam bhejein (jaise: Ramesh Kumar).\nRokne ke liye: cancel"
+    phone = row.pending_phone
+    res = _call(db, "office_customer_create", mobile, phone, name)
+    if _forbidden(res):
+        _drop_session(db, mobile)
+        return "⚠️ Ye number office operator ke liye authorized nahi hai."
+    if not res:
+        return _server_error()
+    body = res.get("body") or {}
+    code = str(body.get("code") or "").upper()
+    if code == "ACCOUNT_EXISTS" and body.get("customer"):
+        _set_target(row, body["customer"])
+        return (
+            "ℹ️ Is mobile par account pehle se hai — wahi select kar diya.\n"
+            f"{_customer_card(active_target(row) or {})}"
+        )
+    if not res.get("ok"):
+        row.step = ""
+        row.pending_phone = ""
+        _touch(row)
+        reason = str(body.get("message") or "Account nahi ban paya.")
+        return f"❌ {reason}"
+    customer = body.get("customer") or {}
+    _set_target(row, customer, name=name)
+    return (
+        "✅ New account created\n"
+        f"Mobile: {row.target_phone}\n"
+        f"Name: {name}\n"
+        f"Username: {row.target_username}\n"
+        "Created by: Office / Postdesk\n\n"
+        "Koi OTP nahi bheja gaya. Customer 'Forgot Password' se apna password set kar sakta hai.\n"
+        "Ab bheji gayi listings isi account par post hongi."
+    )
+
+
+def handle_office_turn(db: Session, conv: AiConversation, text: str, lang: str = "") -> str | None:
+    """Reply for office commands / guards, or None to continue the normal flow."""
+    if not signature_enforced(db):
+        return None
+    mobile = _digits10(conv.mobile)
+    if not mobile or _denied_recently(mobile):
+        return None
+    msg = (text or "").strip()
+    if not msg:
+        return None
+
+    m_create = _CREATE.match(msg)
+    if m_create:
+        phone = _phone_from(m_create.group(1))
+        if phone:
+            return _cmd_create_start(db, mobile, phone)
+        return None
+
+    m_cust = _CUSTOMER.match(msg)
+    if m_cust:
+        rest = m_cust.group(1)
+        phone = _phone_from(rest)
+        if phone:
+            return _cmd_select(db, mobile, phone)
+        if _CHANGE.match(rest) or _CLEAR.match(rest) or _STATUS.match(rest):
+            row = operator_session(db, conv)
+            if not row:
+                return None
+            if _STATUS.match(rest):
+                target = active_target(row)
+                if not target:
+                    return "Abhi koi customer select nahi hai.\n" + _select_hint()
+                return "📌 Selected customer\n" + _customer_card(target)
+            _clear_target(row)
+            row.step = ""
+            row.pending_phone = ""
+            if _CHANGE.match(rest):
+                return "Customer hata diya. Naya customer select karein:\ncustomer 98XXXXXXXX"
+            return "Customer selection clear. Listing post karne se pehle customer select karein.\n" + _select_hint()
+        return None
+
+    row = _get_session(db, mobile)
+    if row is not None and row.step == "await_name":
+        row = operator_session(db, conv)
+        if row is not None and row.step == "await_name":
+            return _cmd_create_finish(db, row, mobile, msg)
+
+    if _payload(conv).get("awaiting_confirm"):
+        from .confirm import _POST_CONFIRM, is_yes
+
+        if is_yes(msg) or _POST_CONFIRM.search(msg):
+            row = _known_operator(db, conv)
+            if row is not None and not active_target(row):
+                return "⚠️ Listing kis customer ke account par post karni hai?\n" + _select_hint()
+    return None
+
+
+def _known_operator(db: Session, conv: AiConversation) -> AiOfficeSession | None:
+    """Existing session, or verify once when the backend reported account_type=office."""
+    if not signature_enforced(db):
+        return None
+    mobile = _digits10(conv.mobile)
+    if not mobile or _denied_recently(mobile):
+        return None
+    row = _get_session(db, mobile)
+    if row is not None:
+        return row
+    if str(_payload(conv).get("account_type") or "").lower() != "office":
+        return None
+    return operator_session(db, conv)
+
+
+def is_office_session(db: Session, conv: AiConversation) -> bool:
+    """True when this sender is a verified office operator (skip same-number rule)."""
+    try:
+        return _known_operator(db, conv) is not None
+    except Exception:
+        log.exception("office_mode: session check failed")
+        return False
+
+
+def decorate_office_reply(db: Session, conv: AiConversation, reply: str) -> str:
+    """Show which customer account a listing will post to at the confirm step."""
+    if not reply or "Post to:" in reply:
+        return reply
+    try:
+        if not _payload(conv).get("awaiting_confirm"):
+            return reply
+        row = _known_operator(db, conv)
+        if row is None:
+            return reply
+        target = active_target(row)
+        if target:
+            return (
+                f"{reply}\n\n📌 Post to: {target['name'] or '-'}, {target['phone'] or '-'}\n"
+                "Confirm? YES/NO"
+            )
+        return f"{reply}\n\n⚠️ Customer select nahi hai.\n{_select_hint()}"
+    except Exception:
+        log.exception("office_mode: decorate failed")
+        return reply
+
+
+def office_listing_context(db: Session, conv: AiConversation, account_type: str = "") -> dict | None:
+    """Office fields for listing.push, or None for normal customers.
+
+    office_mode=False only ever downgrades: the backend still decides from its
+    own allowlist whether the sender is an office operator.
+    """
+    mobile = _digits10(conv.mobile if conv else "")
+    if not mobile:
+        return None
+    row = _get_session(db, mobile)
+    if row is None and str(account_type or "").lower() not in {"office", "staff", "admin"}:
+        return None
+    if not signature_enforced(db):
+        return {"office_mode": False, "target": None}
+    return {"office_mode": True, "target": active_target(row)}
