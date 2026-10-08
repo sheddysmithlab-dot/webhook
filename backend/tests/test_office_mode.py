@@ -87,18 +87,17 @@ def test_select_accepts_country_code_and_spaces(db, client):
     assert "Customer selected" in om.handle_office_turn(db, conv, "Customer +91 98765 43210")
 
 
-def test_unknown_customer_suggests_create(db, client):
+def test_unknown_customer_is_created_automatically(db, client):
     conv = _conv(db)
     reply = om.handle_office_turn(db, conv, "customer 9123456780")
-    assert "create customer 9123456780" in reply
-    assert om.active_target(db.query(AiOfficeSession).one()) is None
+    assert reply.startswith("✅ New account created") and "naam" not in reply.lower()
+    assert client.created == [("9123456780", "Customer 6780")]
+    assert om.active_target(db.query(AiOfficeSession).one())["user_id"] == "501"
 
 
-def test_create_customer_asks_name_then_creates_without_otp(db, client):
+def test_create_customer_with_name_creates_without_otp(db, client):
     conv = _conv(db)
-    ask = om.handle_office_turn(db, conv, "create customer 9123456780")
-    assert "naam" in ask.lower()
-    done = om.handle_office_turn(db, conv, "Suresh Patel")
+    done = om.handle_office_turn(db, conv, "create customer 9123456780 Suresh Patel")
     assert done.startswith("✅ New account created")
     assert "Mobile: 9123456780" in done and "Name: Suresh Patel" in done
     assert "Username: suresh.patel" in done and "Created by: Office / Postdesk" in done
@@ -113,11 +112,22 @@ def test_create_for_existing_number_selects_it(db, client):
     assert client.created == []
 
 
-def test_create_name_step_can_be_cancelled(db, client):
+def test_stale_name_step_does_not_block_a_number(db, client):
     conv = _conv(db)
-    om.handle_office_turn(db, conv, "create customer 9123456780")
-    assert "cancel" in om.handle_office_turn(db, conv, "cancel").lower()
-    assert client.created == []
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    row = db.query(AiOfficeSession).one()
+    row.step, row.pending_phone = "await_name", "9334096024"
+    db.flush()
+    reply = om.handle_office_turn(db, conv, "+91 93340 96024")
+    assert reply.startswith("✅ New account created")
+    assert client.created == [("9334096024", "Customer 6024")]
+
+
+def test_create_customer_without_name_uses_default(db, client):
+    conv = _conv(db)
+    done = om.handle_office_turn(db, conv, "create customer 9123456780")
+    assert done.startswith("✅ New account created")
+    assert client.created == [("9123456780", "Customer 6780")]
 
 
 def test_non_operator_commands_fall_through(db, client):
@@ -248,13 +258,11 @@ def test_natural_sentence_selects_customer(db, client):
     assert om.active_target(db.query(AiOfficeSession).one())["user_id"] == "77"
 
 
-def test_natural_sentence_unknown_number_offers_create(db, client):
+def test_natural_sentence_unknown_number_creates_account(db, client):
     conv = _conv(db, account_type="office")
-    reply = om.handle_office_turn(db, conv, "91115 54173 is account related detail check karo")
-    assert "koi account nahi hai: 9111554173" in reply and "naam" in reply
-    done = om.handle_office_turn(db, conv, "Shivraj Singh")
+    done = om.handle_office_turn(db, conv, "91115 54173 is account related detail check karo")
     assert done.startswith("✅ New account created") and "Mobile: 9111554173" in done
-    assert client.created == [("9111554173", "Shivraj Singh")]
+    assert client.created == [("9111554173", "Customer 4173")]
 
 
 def test_natural_sentence_ignored_for_regular_users(db, client):
@@ -303,10 +311,11 @@ def test_short_operator_messages_with_mobile_select(db, client, text):
     assert "Customer selected" in om.handle_office_turn(db, conv, text)
 
 
-def test_operator_select_unknown_bare_number_offers_create(db, client):
+def test_operator_select_unknown_bare_number_creates_account(db, client):
     conv = _conv(db, account_type="office")
-    reply = om.handle_office_turn(db, conv, "9111554173")
-    assert "koi account nahi hai: 9111554173" in reply
+    reply = om.handle_office_turn(db, conv, "+91 93340 96024")
+    assert reply.startswith("✅ New account created")
+    assert client.created == [("9334096024", "Customer 6024")]
 
 
 def test_vehicle_description_with_seller_mobile_is_not_hijacked(db, client):

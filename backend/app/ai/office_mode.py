@@ -357,13 +357,7 @@ def _cmd_select(db: Session, mobile: str, phone: str, res: dict | None = None) -
     row = _ensure_session(db, mobile)
     body = res.get("body") or {}
     if not body.get("found"):
-        row.step = ""
-        row.pending_phone = ""
-        _touch(row)
-        return (
-            f"❌ Is mobile par koi account nahi hai: {phone}\n"
-            f"Naya account banane ke liye bhejein: create customer {phone}"
-        )
+        return _create_customer(db, row, mobile, phone)
     customer = body.get("customer") or {}
     _set_target(row, customer)
     return (
@@ -393,7 +387,7 @@ def _cmd_details(db: Session, row: AiOfficeSession, mobile: str) -> str | None:
     return "📋 Customer account\n" + _account_details(active_target(row) or target, customer)
 
 
-def _cmd_create_start(db: Session, mobile: str, phone: str) -> str | None:
+def _cmd_create_start(db: Session, mobile: str, phone: str, name: str = "") -> str | None:
     res = _call(db, "office_customer_lookup", mobile, phone)
     if _forbidden(res):
         _drop_session(db, mobile)
@@ -409,10 +403,7 @@ def _cmd_create_start(db: Session, mobile: str, phone: str) -> str | None:
             f"{_customer_card(active_target(row) or {})}\n\n"
             "Ab bheji gayi listings isi account par post hongi."
         )
-    row.step = "await_name"
-    row.pending_phone = phone
-    _touch(row)
-    return f"Naye customer ({phone}) ka naam bhejein.\nRokne ke liye: cancel"
+    return _create_customer(db, row, mobile, phone, name)
 
 
 def _cmd_create_finish(db: Session, row: AiOfficeSession, mobile: str, text: str) -> str | None:
@@ -425,7 +416,17 @@ def _cmd_create_finish(db: Session, row: AiOfficeSession, mobile: str, text: str
     name = re.sub(r"\s+", " ", msg)
     if not _NAME_OK.match(name):
         return "Sirf customer ka naam bhejein (jaise: Ramesh Kumar).\nRokne ke liye: cancel"
-    phone = row.pending_phone
+    return _create_customer(db, row, mobile, row.pending_phone, name)
+
+
+def _create_customer(db: Session, row: AiOfficeSession, mobile: str, phone: str, name: str = "") -> str | None:
+    """Create the customer account straight from the office line — no OTP, no password, no questions."""
+    name = re.sub(r"\s+", " ", name or "").strip()
+    if not _NAME_OK.match(name):
+        name = f"Customer {phone[-4:]}"
+    row.step = ""
+    row.pending_phone = ""
+    _touch(row)
     res = _call(db, "office_customer_create", mobile, phone, name)
     if _forbidden(res):
         _drop_session(db, mobile)
@@ -492,15 +493,7 @@ def _natural_select(db: Session, conv: AiConversation, mobile: str, msg: str) ->
         return _server_error()
     if (res.get("body") or {}).get("found"):
         return _cmd_select(db, mobile, phone, res)
-    row = _ensure_session(db, mobile)
-    row.step = "await_name"
-    row.pending_phone = phone
-    _touch(row)
-    return (
-        f"❌ Is mobile par koi account nahi hai: {phone}\n"
-        "Naya account banane ke liye customer ka naam bhejein (bina OTP).\n"
-        "Rokne ke liye: cancel"
-    )
+    return _create_customer(db, _ensure_session(db, mobile), mobile, phone)
 
 
 def _target_id(db: Session, mobile: str) -> str:
@@ -623,9 +616,12 @@ def _handle_office_turn(db: Session, conv: AiConversation, text: str, lang: str 
 
     m_create = _CREATE.match(msg)
     if m_create:
-        phone = _phone_from(m_create.group(1))
+        rest = m_create.group(1)
+        found = _PHONE_IN_TEXT.search(rest)
+        phone = _phone_from(found.group(0)) if found else ""
         if phone:
-            return _cmd_create_start(db, mobile, phone)
+            name = _PHONE_IN_TEXT.sub(" ", rest).strip(" ,.:-")
+            return _cmd_create_start(db, mobile, phone, name)
         return None
 
     m_cust = _CUSTOMER.match(msg)
@@ -655,7 +651,11 @@ def _handle_office_turn(db: Session, conv: AiConversation, text: str, lang: str 
     if row is not None and row.step == "await_name":
         row = operator_session(db, conv)
         if row is not None and row.step == "await_name":
-            return _cmd_create_finish(db, row, mobile, msg)
+            if _CANCEL.match(msg) or _NAME_OK.match(re.sub(r"\s+", " ", msg)):
+                return _cmd_create_finish(db, row, mobile, msg)
+            row.step = ""
+            row.pending_phone = ""
+            _touch(row)
 
     natural = _natural_select(db, conv, mobile, msg)
     if natural:
