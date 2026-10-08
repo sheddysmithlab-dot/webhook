@@ -53,10 +53,14 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def listing_push_request_id(draft_id: int, *, rejected: bool = False) -> str:
+def listing_push_request_id(draft_id: int, *, rejected: bool = False, created_at=None) -> str:
+    """Stable per draft row; the creation stamp keeps a reused draft id (after a
+    webhook DB reset) from replaying InfraDealer's cached response for the old one."""
     if rejected:
         return str(uuid.uuid4())
-    return f"listing-draft-{int(draft_id)}"
+    if created_at is None:
+        return f"listing-draft-{int(draft_id)}"
+    return f"listing-draft-{int(draft_id)}-{int(created_at.timestamp())}"
 
 
 def account_mobile(mobile: str | None) -> str:
@@ -656,7 +660,10 @@ class InfraDealerIntegrationService:
         flags = load_event_flags(row.event_flags_json)
         state = self.get_or_create_account_state(conv.mobile, conversation_id=conv.id)
         user_id = state.infradealer_user_id if state else ""
-        rid = listing_push_request_id(draft.id, rejected=rejected)
+        if draft.created_at is None:
+            self.db.flush()
+            self.db.refresh(draft, ["created_at"])
+        rid = listing_push_request_id(draft.id, rejected=rejected, created_at=draft.created_at)
         listing_payload = build_listing_payload(self.db, conv, draft, payload, rid, user_id)
         if event_enabled(flags, "media_push"):
             listing_payload = self._push_media_then_listing(listing_payload)

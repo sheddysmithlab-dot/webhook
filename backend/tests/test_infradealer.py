@@ -117,8 +117,13 @@ def test_callback_event_aliases_and_listing_fields():
 def test_listing_push_idempotent_request_id(db_session):
     from app.infradealer.service import listing_push_request_id
 
+    from datetime import datetime
+
     assert listing_push_request_id(42) == "listing-draft-42"
     assert listing_push_request_id(42, rejected=True) != listing_push_request_id(42)
+    aug, oct_ = datetime(2026, 8, 20, 10, 0), datetime(2026, 10, 8, 10, 0)
+    assert listing_push_request_id(42, created_at=aug) == listing_push_request_id(42, created_at=aug)
+    assert listing_push_request_id(42, created_at=aug) != listing_push_request_id(42, created_at=oct_)
 
 
 def test_post_ad_card_mapping():
