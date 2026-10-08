@@ -586,6 +586,30 @@ def test_unposted_card_is_kept(db, client):
     assert conv.draft_id == draft.id and _payload(conv).get("brand") == "Tata"
 
 
+def test_registered_vehicle_text_is_not_an_account_request(db, client):
+    from app.ai.account import wants_create_account
+
+    text = "Tata Tip Trailer Single Axle\nRJ Registered\nLocation - MP\nDemand - 17lac"
+    assert not wants_create_account(text)
+    assert wants_create_account("register karo")
+
+
+def test_office_line_never_gets_account_already_here(db, client):
+    conv = _conv(db, account_type="office", account_onboarded=True)
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    assert handle_same_number_account_policy(db, conv, "naya account bana do", "hinglish") is None
+    regular = _conv(db, mobile="9000111333", account_type="free", account_onboarded=True)
+    assert handle_same_number_account_policy(db, regular, "naya account bana do", "hinglish")
+
+
+def test_forwarded_trailer_listing_fields():
+    from app.ai.data_filteration import extract_fields
+
+    out = extract_fields(["Tata Tip Trailer Single Axle\nHorse YOM - 2013\nLocation - MP\nDemand - 17lac + gst"])
+    assert out["category"] == "Truck" and out["brand"] == "Tata"
+    assert out["state"] == "Madhya Pradesh" and out["price"] == 1700000
+
+
 def test_running_km_in_lakh_is_extracted():
     from app.ai.data_filteration import extract_fields
 

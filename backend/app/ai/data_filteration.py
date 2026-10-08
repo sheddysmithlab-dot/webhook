@@ -583,7 +583,7 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
             break
 
     if _blank(out.get("city")) and _blank(out.get("location")) and _blank(out.get("state")):
-        loc = normalize_location(location=blob)
+        loc = normalize_location(location=re.sub(r"\b(location|loc|state)\s*[-:=]+\s*", r"\1 ", blob, flags=re.I))
         if loc.get("city"):
             out["city"] = loc["city"]
             out["location"] = loc["city"]

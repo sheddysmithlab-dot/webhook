@@ -127,6 +127,7 @@ CATEGORY_SCHEMAS: dict[str, dict] = {
 _CAT_ALIASES = {
     "truck": "Truck", "truk": "Truck", "lorry": "Truck", "lory": "Truck",
     "ट्रक": "Truck",
+    "trailer": "Truck", "trailor": "Truck", "treller": "Truck", "trolla": "Truck", "ट्रेलर": "Truck",
     "dumper": "Dumper", "dump": "Dumper", "डम्पर": "Dumper", "डंपर": "Dumper",
     "tipper": "Tipper", "tiper": "Tipper", "tipar": "Tipper", "टिपर": "Tipper", "टिपर": "Tipper",
     "crane": "Crane", "crain": "Crane", "krane": "Crane", "क्रेन": "Crane",

@@ -131,7 +131,7 @@ _CREATE_ACCOUNT = re.compile(
     r"(bana\s*do|banao|banwa\s*do|banwao|create|signup|sign\s*up|open\s*kar)"
     r"|(create|make|start|open).{0,20}(new\s+)?(account|akount)"
     r"|account\s*(chahiye|banana|banwana|bana\s*do)"
-    r"|signup|sign\s*up|register\s*(karo|kardo|kar\s*do)?"
+    r"|signup|sign\s*up|\bregister(?![a-z])\s*(karo|kardo|kar\s*do)?"
     r")",
     re.I,
 )
@@ -253,9 +253,9 @@ def handle_same_number_account_policy(
     payload = _payload(conv)
     others = extract_other_mobiles(msg, conv.mobile)
 
-    if others or wants_other_number_account(msg, conv.mobile):
-        from .office_mode import is_office_session
+    from .office_mode import is_office_session
 
+    if others or wants_other_number_account(msg, conv.mobile):
         # Verified office operator posts for other customers' numbers.
         if is_office_session(db, conv):
             return None
@@ -264,6 +264,9 @@ def handle_same_number_account_policy(
         )
 
     if wants_create_account(msg, payload) and payload.get("account_onboarded"):
+        # The office line creates customer accounts, never its own.
+        if is_office_session(db, conv):
+            return None
         return reply_account_already_here(lang, conv.mobile)
 
     return None
