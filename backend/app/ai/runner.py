@@ -134,6 +134,12 @@ def attach_media(db: Session, conv: AiConversation, wamid: str, media: dict | No
 
     payload = _payload(conv)
     awaiting_choice = conv.state == "AWAITING_VEHICLE_CHOICE" or payload.get("awaiting_vehicle_choice")
+    if not awaiting_choice and kind in {"image", "photo"} and not payload.get("listing_edit_mode"):
+        from .confirm import card_submitted, start_new_listing
+
+        if card_submitted(db, conv):
+            start_new_listing(db, conv, {}, [])
+            payload = _payload(conv)
     target_draft_id = conv.draft_id
     if not awaiting_choice and kind in {"image", "photo"}:
         if not target_draft_id:

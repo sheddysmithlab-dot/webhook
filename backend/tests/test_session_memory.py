@@ -37,7 +37,17 @@ def test_wants_update_last_listing():
     assert wants_update_last_listing("pichhli listing update karo")
     assert wants_update_last_listing("usme rate change kar do")
     assert not wants_update_last_listing("Tata 1618 bechna hai")
+    assert wants_update_last_listing("listing ki price badlo")
     print("OK wants_update_last_listing")
+
+
+def test_new_listing_text_is_not_an_update():
+    # "Madhya Pradesh ... price" used to read as "ad ... price".
+    assert not wants_update_last_listing(
+        "Mahindra 575 DI tractor bechna hai, 2018 model, Indore Madhya Pradesh, price 4.5 lakh, 2500 hours"
+    )
+    assert not wants_update_last_listing("listing daal do JCB 2019 model price 20 lakh")
+    assert not wants_update_last_listing("Ashok Leyland 2518 Pradesh se, rate 18 lakh, post kar do")
 
 
 def test_idle_reset_forgets_topic():

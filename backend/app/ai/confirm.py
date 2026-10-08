@@ -295,9 +295,18 @@ def start_new_listing(db: Session, conv: AiConversation, fields: dict | None = N
         "submission", "filter_result", "missing_fields",
     ):
         payload[key] = [] if key == "media_ids" else ({} if key.endswith("json") or key in {"filter_result", "submission", "summary_json", "confirmed_json"} else None)
+    from copy import deepcopy
+
+    from .cards import CARD_SESSION_KEYS
+    from .schema import empty_payload
+
+    defaults = empty_payload()
+    intent = payload.get("intent")
+    for key in CARD_SESSION_KEYS + _CARD_PUSH_KEYS:
+        payload[key] = deepcopy(defaults.get(key))
     payload["media_ids"] = list(media_ids or [])
     payload["draft_version"] = 1
-    payload["intent"] = (fields or {}).get("intent") or payload.get("intent") or "SELL"
+    payload["intent"] = (fields or {}).get("intent") or intent or "SELL"
     if fields:
         for k, v in fields.items():
             if v is not None:
@@ -305,3 +314,60 @@ def start_new_listing(db: Session, conv: AiConversation, fields: dict | None = N
     _write_payload(conv, payload)
     draft = _draft_for(db, conv)
     return draft
+
+
+_CARD_PUSH_KEYS = (
+    "push_stage", "submission", "pending_notification", "listing_edit_mode", "editing_draft_id",
+    "confirmed_version", "rm_state", "workflow_state", "master_workflow_state", "chat_cleared",
+)
+_SUBMITTED = {"READY_FOR_REVIEW", "PENDING_REVIEW", "POSTED", "APPROVED", "LIVE", "PUBLISHED"}
+_NEW_CARD_KEYS = (
+    "brand", "model", "year", "expected_price", "state", "city", "location",
+    "operating_hours", "running_km", "category",
+)
+
+
+def _norm(value) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def card_submitted(db: Session, conv: AiConversation) -> bool:
+    """Active card was already sent to InfraDealer — a new vehicle needs a new card."""
+    if not conv.draft_id:
+        return False
+    draft = db.query(AiListingDraft).filter(AiListingDraft.id == conv.draft_id).first()
+    return bool(draft) and (draft.status or "").upper() in _SUBMITTED
+
+
+def maybe_start_new_card(db: Session, conv: AiConversation, fields: dict | None) -> bool:
+    """Open a fresh card when the message describes another vehicle.
+
+    Always after the active card was submitted; for the office line also when a
+    different brand/model arrives on an unsubmitted card (operators paste
+    listings back to back for different customers).
+    """
+    fields = fields or {}
+    if not conv.draft_id or not (fields.get("brand") or fields.get("model")):
+        return False
+    if sum(1 for k in _NEW_CARD_KEYS if fields.get(k)) < 2:
+        return False
+    payload = _payload(conv)
+    if payload.get("listing_edit_mode"):
+        return False
+    fresh = card_submitted(db, conv)
+    if not fresh:
+        cur_brand, cur_model = _norm(payload.get("brand")), _norm(payload.get("model"))
+        new_brand, new_model = _norm(fields.get("brand")), _norm(fields.get("model"))
+        different = bool(
+            (new_brand and cur_brand and new_brand != cur_brand)
+            or (new_model and cur_model and new_model != cur_model and (not new_brand or new_brand == cur_brand))
+        )
+        if different:
+            from .office_mode import is_office_session
+
+            fresh = is_office_session(db, conv)
+    if not fresh:
+        return False
+    log.info("new vehicle → new card mobile=***%s", (conv.mobile or "")[-4:])
+    start_new_listing(db, conv, {}, [])
+    return True

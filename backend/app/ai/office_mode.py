@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from ..models import AiConversation, AiOfficeSession
-from .tools import _payload
+from .tools import _payload, _write_payload
 
 log = logging.getLogger("infradealer.ai.office_mode")
 
@@ -498,8 +498,75 @@ def _natural_select(db: Session, conv: AiConversation, mobile: str, msg: str) ->
     )
 
 
+def _target_id(db: Session, mobile: str) -> str:
+    target = active_target(_get_session(db, mobile)) if mobile else None
+    return target["user_id"] if target else ""
+
+
+def _last_draft_id(db: Session, mobile: str) -> int:
+    from sqlalchemy import func
+
+    from ..models import AiListingDraft
+
+    return int(db.query(func.max(AiListingDraft.id)).filter(AiListingDraft.mobile == mobile).scalar() or 0)
+
+
+def _on_target_change(db: Session, conv: AiConversation, mobile: str, before: str, after: str) -> str:
+    """New customer → the listing being built belongs to nobody else; start a fresh card."""
+    from .confirm import card_submitted, start_new_listing
+
+    payload = _payload(conv)
+    payload["office_draft_floor"] = _last_draft_id(db, mobile)
+    _write_payload(conv, payload)
+    if not conv.draft_id:
+        return ""
+    if not (before or card_submitted(db, conv) or payload.get("listing_edit_mode")):
+        return ""
+    has_data = bool(payload.get("brand") or payload.get("model") or payload.get("awaiting_confirm"))
+    start_new_listing(db, conv, {}, [])
+    if before and has_data and after:
+        return "\n\n🆕 Pichle customer ka adhoora card band kar diya. Is customer ki listing details + photos bhejein."
+    return ""
+
+
+def last_listing_allowed(db: Session, conv: AiConversation, draft) -> bool:
+    """Office line may only reopen a card made for the currently selected customer."""
+    mobile = _digits10(conv.mobile)
+    if _get_session(db, mobile) is None and not _reported_office(db, conv):
+        return True
+    row = _get_session(db, mobile)
+    if not active_target(row):
+        return False
+    floor = _payload(conv).get("office_draft_floor")
+    if floor in (None, ""):
+        return False
+    try:
+        if int(draft.id) <= int(floor):
+            return False
+    except (TypeError, ValueError):
+        return False
+    from .confirm import _SUBMITTED
+
+    confirmed = str(getattr(draft, "confirmed_json", "") or "").strip()
+    return (draft.status or "").upper() in _SUBMITTED or confirmed not in ("", "{}", "null")
+
+
 def handle_office_turn(db: Session, conv: AiConversation, text: str, lang: str = "") -> str | None:
     """Reply for office commands / guards, or None to continue the normal flow."""
+    mobile = _digits10(conv.mobile)
+    before = _target_id(db, mobile)
+    reply = _handle_office_turn(db, conv, text, lang)
+    if reply and mobile:
+        after = _target_id(db, mobile)
+        if after != before:
+            try:
+                reply += _on_target_change(db, conv, mobile, before, after)
+            except Exception:
+                log.exception("office_mode: card reset on customer change failed")
+    return reply
+
+
+def _handle_office_turn(db: Session, conv: AiConversation, text: str, lang: str = "") -> str | None:
     msg = (text or "").strip()
     if not msg:
         return None

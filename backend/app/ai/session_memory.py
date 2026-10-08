@@ -27,21 +27,22 @@ log = logging.getLogger("infradealer.ai.session_memory")
 # Minutes of silence after the user's last message before live chat topic is forgotten.
 MEMORY_IDLE_MINUTES = CLEANUP_MINUTES  # 10
 
+# Word-bounded on purpose: "Madhya Pradesh ... price" must not read as "ad ... price",
+# and a new listing that says "listing ... price 5 lakh" is not an edit request.
 _UPDATE_LAST = re.compile(
     r"("
-    r"(last|pichhli|pichli|pehle|previous|akhir|purani|wahi).{0,40}"
-    r"(listing|post|card|ad|gaadi|gadi|wali)"
+    r"\b(last|pichhli|pichli|pehle|previous|akhir|purani|wahi)\b.{0,40}"
+    r"\b(listing|post|card|ad|gaadi|gadi|wali)\b"
     r"|"
-    r"(listing|post|card|ad).{0,40}"
-    r"(change|update|badlo|sahi|galat|edit|correct|fix|price|rate|year|model|photo)"
+    r"\b(listing|post|card|ad)\b.{0,40}"
+    r"\b(change|update|badlo|badal\w*|galat|edit|correct|fix)\b"
     r"|"
-    r"(price|rate|year|model|photo|km|location).{0,24}"
-    r"(badlo|change|update|kar\s*do|sahi\s*kar)"
-    r".{0,30}(listing|post|card|wahi|last|pichhli)?"
+    r"\b(price|rate|year|model|photo|km|location)\b.{0,24}"
+    r"\b(badlo|badal\w*|change|update|sahi\s*kar)\b"
     r"|"
     r"\b(update\s+(my\s+)?listing|edit\s+(my\s+)?listing|listing\s+update)\b"
     r"|"
-    r"(usme|isme|us\s*me|is\s*me).{0,20}(change|badlo|update|price|rate)"
+    r"\b(usme|isme|us\s*me|is\s*me)\b.{0,20}\b(change|badlo|update|price|rate)\b"
     r")",
     re.I,
 )
@@ -54,7 +55,7 @@ _IDENTITY_KEEP = (
     "ai_introduced", "language", "verification_status", "infradealer_user_id",
     "listing_url", "infradealer_listing_id", "listing_status", "push_stage",
     "rejection_reason", "summary_json", "confirmed_json", "submission",
-    "next_listing_not_before", "last_listing_submitted_at",
+    "next_listing_not_before", "last_listing_submitted_at", "office_draft_floor",
 )
 
 
@@ -222,6 +223,12 @@ def prepare_turn(db: Session, conv: AiConversation, text: str) -> dict[str, Any]
     payload = _payload(conv)
     update = wants_update_last_listing(text)
     idle = is_memory_idle(conv, payload)
+    if update:
+        candidate = find_last_listing_draft(db, conv.mobile)
+        if candidate is not None:
+            from .office_mode import last_listing_allowed
+
+            update = last_listing_allowed(db, conv, candidate)
 
     if update:
         draft = resume_last_listing_for_update(db, conv)

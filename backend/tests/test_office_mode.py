@@ -380,6 +380,112 @@ def test_operator_recognised_from_cached_account_state(db, client):
     assert "Customer selected" in om.handle_office_turn(db, conv, "is number se listing daal do 9876543210")
 
 
+def _card(db, conv, status="COLLECTING", **fields):
+    from app.models import AiListingDraft
+
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status=status, title="x",
+                           card_id=f"CARD-{db.query(AiListingDraft).count() + 1:03d}")
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    pl = _payload(conv)
+    pl.update(fields)
+    _write_payload(conv, pl)
+    return draft
+
+
+SECOND = {"user_id": "88", "username": "shiv", "name": "shiv", "phone": "9111554173", "status": "active"}
+
+
+def test_switching_customer_starts_a_fresh_card(db, client):
+    client.customers["9111554173"] = SECOND
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    old = _card(db, conv, brand="Mahindra", model="575", expected_price=450000, city="Indore")
+    reply = om.handle_office_turn(db, conv, "is number se listing daal do 9111554173")
+    assert "Customer selected" in reply and "adhoora card band" in reply
+    pl = _payload(conv)
+    assert conv.draft_id != old.id
+    assert not pl.get("brand") and not pl.get("expected_price") and not pl.get("city")
+
+
+def test_first_selection_keeps_details_already_sent(db, client):
+    conv = _conv(db, account_type="office")
+    draft = _card(db, conv, brand="Tata", model="3118")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    assert conv.draft_id == draft.id and _payload(conv)["brand"] == "Tata"
+
+
+def test_selection_after_posted_card_starts_fresh(db, client):
+    conv = _conv(db, account_type="office")
+    posted = _card(db, conv, status="POSTED", brand="Tata", model="407", infradealer_listing_id="55")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    assert conv.draft_id != posted.id
+    assert not _payload(conv).get("infradealer_listing_id")
+
+
+def test_new_vehicle_after_submitted_card_opens_new_card(db, client):
+    from app.ai.confirm import maybe_start_new_card
+
+    conv = _conv(db, mobile="9000111333", account_type="free")
+    posted = _card(db, conv, status="PENDING_REVIEW", brand="Mahindra", model="575", operating_hours=2500)
+    assert maybe_start_new_card(db, conv, {"brand": "Tata", "model": "3118", "year": 2018})
+    assert conv.draft_id != posted.id and not _payload(conv).get("operating_hours")
+
+
+def test_office_paste_of_another_vehicle_opens_new_card(db, client):
+    from app.ai.confirm import maybe_start_new_card
+
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    draft = _card(db, conv, brand="Mahindra", model="575", operating_hours=2500, city="Indore")
+    assert maybe_start_new_card(db, conv, {"brand": "Tata", "model": "3118", "year": 2018, "city": "Khandwa"})
+    assert conv.draft_id != draft.id
+    assert not _payload(conv).get("operating_hours")
+
+
+def test_regular_user_brand_correction_keeps_card(db, client):
+    from app.ai.confirm import maybe_start_new_card
+
+    conv = _conv(db, mobile="9000111333", account_type="free")
+    draft = _card(db, conv, brand="Tata", model="1618", city="Indore")
+    assert not maybe_start_new_card(db, conv, {"brand": "Eicher", "model": "1618", "year": 2019})
+    assert conv.draft_id == draft.id
+
+
+def test_office_cannot_reopen_previous_customers_card(db, client):
+    from app.ai.session_memory import prepare_turn
+
+    client.customers["9111554173"] = SECOND
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    _card(db, conv, status="POSTED", brand="Mahindra", model="575")
+    om.handle_office_turn(db, conv, "customer 9111554173")
+    prep = prepare_turn(db, conv, "last listing me price badlo")
+    assert prep["mode"] != "engine_update"
+
+
+def test_office_can_edit_card_made_for_current_customer(db, client):
+    from app.ai.session_memory import prepare_turn
+
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    _card(db, conv, status="POSTED", brand="Tata", model="407")
+    prep = prepare_turn(db, conv, "last listing me price badlo")
+    assert prep["mode"] == "engine_update"
+
+
+def test_hindi_tata_dump_extracts_price_and_city():
+    from app.ai.engine import extract_turn
+
+    text = ("Tata 3118  hayva BS 4*\n12 टायर टिपर (हाइवा)\nसितम्बर 2018 मॉडल\n"
+            "*👉 लोकेशन -\nखंडवा, मध्य प्रदेश*\n👉 कीमत - 23. लाख रुपए मात्र")
+    fields = extract_turn(text)
+    assert fields["brand"] == "Tata" and fields["model"] == "3118" and fields["year"] == 2018
+    assert fields["expected_price"] == 2300000
+    assert fields["city"] == "Khandwa" and fields["state"] == "Madhya Pradesh"
+
+
 def test_operator_told_why_office_mode_is_off(db, client, monkeypatch):
     monkeypatch.setattr(om, "signature_enforced", lambda db: False)
     office = _conv(db, account_type="office")

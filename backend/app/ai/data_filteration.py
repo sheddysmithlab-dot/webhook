@@ -541,11 +541,14 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
             out["year"] = y["value"]
 
     if _blank(out.get("expected_price")) and _blank(out.get("price")):
+        price_blob = re.sub(r"लाख़?", " lakh", blob)
+        price_blob = re.sub(r"करोड़|करोड", " crore", price_blob)
+        price_blob = re.sub(r"(\d)\.\s+(?=lakh|lac|crore)", r"\1 ", price_blob, flags=re.I)
         # Prefer segments with lakh/crore/₹
         for m in re.finditer(
             r"(?:₹|rs\.?\s*)?\d+(?:[.,]\d+)?\s*(?:lakh|lac|lacs|l|crore|cr)\b|"
             r"(?:₹|rs\.?\s*)\d[\d,]{3,}",
-            blob,
+            price_blob,
             re.I,
         ):
             cur = normalize_currency(m.group(0))

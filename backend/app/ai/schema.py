@@ -298,6 +298,7 @@ def empty_payload() -> dict:
         "memory_reset_reason": None,
         "listing_edit_mode": False,
         "editing_draft_id": None,
+        "office_draft_floor": None,
     }
 
 

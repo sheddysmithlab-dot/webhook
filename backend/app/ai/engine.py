@@ -173,6 +173,16 @@ def extract_turn(text: str, extra_reps=None, media_note: str = "") -> dict:
     return fields
 
 
+def _new_card_if_new_vehicle(db, conv: AiConversation, fields: dict | None) -> bool:
+    try:
+        from .confirm import maybe_start_new_card
+
+        return maybe_start_new_card(db, conv, fields)
+    except Exception:
+        log.exception("new card check failed")
+        return False
+
+
 def apply_extraction(db, conv: AiConversation, text: str, extra_reps=None, media_note: str = "", fields=None) -> dict:
     if account_busy(_payload(conv)) and (_payload(conv).get("account_step") == "password"):
         return {}
@@ -495,6 +505,7 @@ def prepare_prompt_state(db, conv: AiConversation, text: str, media_note: str = 
     """Phase-2: materialize listing state before LLM (extract → rm_state → next_ask)."""
     payload = _payload(conv)
     fields = extract_turn(text, media_note=media_note)
+    _new_card_if_new_vehicle(db, conv, fields)
     apply_extraction(db, conv, text, media_note=media_note, fields=fields)
     apply_followup(db, conv, text)
     payload = _payload(conv)
@@ -1045,6 +1056,8 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
     if slot:
         return attach_intro(db, conv, lang, avoid_repeat(db, conv, lang, _sanitize_reply(slot, posted=False, lang=lang), recents))
 
+    if _new_card_if_new_vehicle(db, conv, fields):
+        payload0 = _payload(conv)
     fields = apply_extraction(db, conv, text, extra_reps=extra, media_note=media_note, fields=fields)
     apply_followup(db, conv, text)
 

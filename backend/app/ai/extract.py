@@ -40,6 +40,15 @@ def infer_state_from_city(city: str) -> str | None:
         "ujjain": "Madhya Pradesh",
         "jabalpur": "Madhya Pradesh",
         "gwalior": "Madhya Pradesh",
+        "khandwa": "Madhya Pradesh",
+        "khargone": "Madhya Pradesh",
+        "dewas": "Madhya Pradesh",
+        "ratlam": "Madhya Pradesh",
+        "burhanpur": "Madhya Pradesh",
+        "harda": "Madhya Pradesh",
+        "sehore": "Madhya Pradesh",
+        "mandsaur": "Madhya Pradesh",
+        "barwani": "Madhya Pradesh",
         "mumbai": "Maharashtra",
         "pune": "Maharashtra",
         "nagpur": "Maharashtra",
@@ -58,15 +67,43 @@ def infer_state_from_city(city: str) -> str | None:
     return mapping.get((city or "").strip().lower())
 
 
+_HINDI_CITIES = {
+    "इंदौर": "Indore",
+    "भोपाल": "Bhopal",
+    "उज्जैन": "Ujjain",
+    "जबलपुर": "Jabalpur",
+    "ग्वालियर": "Gwalior",
+    "खंडवा": "Khandwa",
+    "खण्डवा": "Khandwa",
+    "खरगोन": "Khargone",
+    "देवास": "Dewas",
+    "रतलाम": "Ratlam",
+    "बुरहानपुर": "Burhanpur",
+    "हरदा": "Harda",
+    "सीहोर": "Sehore",
+    "मंदसौर": "Mandsaur",
+    "बड़वानी": "Barwani",
+    "मुंबई": "Mumbai",
+    "पुणे": "Pune",
+    "नागपुर": "Nagpur",
+    "जयपुर": "Jaipur",
+    "दिल्ली": "Delhi",
+}
+
+
 def _fuzzy_city(text: str) -> str | None:
     cities = (
         "Indore", "Bhopal", "Ujjain", "Jabalpur", "Gwalior",
+        "Khandwa", "Khargone", "Dewas", "Ratlam", "Burhanpur", "Harda", "Sehore", "Mandsaur", "Barwani",
         "Mumbai", "Pune", "Nagpur", "Jaipur", "Ahmedabad", "Surat",
         "Delhi", "Lucknow", "Kanpur", "Hyderabad", "Chennai", "Bengaluru", "Kolkata",
     )
     low = (text or "").lower()
     for city in cities:
         if re.search(rf"(?<![a-z]){re.escape(city.lower())}(?![a-z])", low):
+            return city
+    for hindi, city in _HINDI_CITIES.items():
+        if hindi in (text or ""):
             return city
     return None
 
