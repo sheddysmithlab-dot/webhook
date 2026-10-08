@@ -405,8 +405,8 @@ class AiSettingsIn(BaseModel):
     ai_reply_language: str = "auto"
     # Phase 1: vision (Z.AI glm-4.6v-flash) + voice (Groq Whisper).
     ai_vision_model: str = "glm-4.6v-flash"
-    ai_vision_enabled: bool = False
-    ai_voice_enabled: bool = False
+    ai_vision_enabled: bool | None = None
+    ai_voice_enabled: bool | None = None
     groq_api_key: str = ""
 
 
@@ -429,8 +429,11 @@ def save_ai_settings(body: AiSettingsIn, db: Session = Depends(get_db), _: None 
     # Phase 1: vision + voice config. Groq is a transcription service, NOT a chat
     # provider, so the Z.AI-only rule applies to ai_api_base (chat) — not to Groq.
     row.ai_vision_model = (body.ai_vision_model or "glm-4.6v-flash").strip()[:80]
-    row.ai_vision_enabled = bool(body.ai_vision_enabled)
-    row.ai_voice_enabled = bool(body.ai_voice_enabled)
+    # Omitted toggles keep their saved value (the AI setup form may not send them).
+    if body.ai_vision_enabled is not None:
+        row.ai_vision_enabled = bool(body.ai_vision_enabled)
+    if body.ai_voice_enabled is not None:
+        row.ai_voice_enabled = bool(body.ai_voice_enabled)
     incoming_groq = (body.groq_api_key or "").strip()
     if incoming_groq:
         row.groq_api_key = incoming_groq[:1024]

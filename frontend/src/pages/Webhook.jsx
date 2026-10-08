@@ -539,6 +539,7 @@ export default function Webhook() {
         ai_model: s.ai_model || "glm-4.5-flash",
         ai_reply_language: s.ai_reply_language || "auto",
         ai_api_key: aiKey,
+        ai_vision_enabled: !!s.ai_vision_enabled,
       });
       setS(saved);
       setAiKey("");
@@ -849,6 +850,15 @@ export default function Webhook() {
               onChange={(e) => field("ai_enabled", e.target.checked)}
             />
             WhatsApp AI agent on
+          </label>
+          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              className="wa-check"
+              type="checkbox"
+              checked={!!s.ai_vision_enabled}
+              onChange={(e) => field("ai_vision_enabled", e.target.checked)}
+            />
+            Photo se details padhna (AI vision)
           </label>
           <label>Reply language</label>
           <select
