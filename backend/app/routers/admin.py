@@ -304,12 +304,37 @@ class SettingsIn(BaseModel):
     field_phone_name_update: bool = True
 
 
+def _check_app_secret(app_id: str, app_secret: str, graph_version: str) -> None:
+    """Refuse to store a wrong App Secret: once set, every inbound webhook must match it."""
+    import httpx
+
+    if not (app_id or "").strip():
+        raise HTTPException(400, "App secret se pehle App ID set karein.")
+    try:
+        resp = httpx.get(
+            f"https://graph.facebook.com/{graph_version or 'v23.0'}/oauth/access_token",
+            params={"client_id": app_id, "client_secret": app_secret, "grant_type": "client_credentials"},
+            timeout=15,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Meta se App secret check nahi ho paya. Secret save nahi kiya, dobara try karein.") from exc
+    try:
+        token = (resp.json() or {}).get("access_token") if resp.status_code == 200 else None
+    except ValueError:
+        token = None
+    if not token:
+        raise HTTPException(400, "App secret is App ID ke liye galat hai. Meta App → Settings → Basic se sahi secret copy karein.")
+
+
 @router.put("/settings")
 def save_settings(body: SettingsIn, db: Session = Depends(get_db), _: None = Depends(require_admin)):
     row = get_or_create_settings(db)
     if body.test_recipient and not valid_mobile(body.test_recipient):
         raise HTTPException(400, "Valid test recipient chahiye (6-9 se shuru 10-digit).")
-    row.app_secret = body.app_secret.strip()
+    new_secret = body.app_secret.strip()
+    if new_secret and new_secret != (row.app_secret or ""):
+        _check_app_secret(body.app_id.strip() or row.app_id, new_secret, body.graph_version or row.graph_version)
+    row.app_secret = new_secret
     row.app_id = body.app_id.strip()
     row.waba_id = body.waba_id.strip()
     row.phone_number_id = body.phone_number_id.strip()

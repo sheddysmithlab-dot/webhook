@@ -38,6 +38,10 @@ _CLEAR = re.compile(r"^\s*(?:clear|remove|hatao|reset)\s*$", re.I)
 _STATUS = re.compile(r"^\s*(?:status|\?|kaun|kon|who)?\s*$", re.I)
 _CANCEL = re.compile(r"^\s*(?:cancel|stop|rehne\s*do|mat\s*karo|nahi|no)\s*[.!]*\s*$", re.I)
 _NAME_OK = re.compile(r"^[A-Za-z\u0900-\u097F][A-Za-z\u0900-\u097F .'-]{1,79}$")
+_PHONE_IN_TEXT = re.compile(r"(?<!\d)(?:\+?\s*91[\s\-]*|0)?[6-9](?:[\s\-]*\d){9}(?!\d)")
+_ACCOUNT_WORD = re.compile(
+    r"\b(?:account|acount|accont|accout|a/c|khata|customer|costumer|grahak|user\s*id|profile)\b", re.I
+)
 
 
 def _now() -> datetime:
@@ -53,6 +57,30 @@ def _phone_from(rest: str) -> str:
     if re.fullmatch(r"(?:91|0)?[6-9]\d{9}", compact):
         return compact[-10:]
     return ""
+
+
+def _customer_phone_in_text(text: str, own: str) -> str:
+    """The single customer mobile written anywhere in a sentence ("91115 54173"), else ""."""
+    found = {_digits10(m.group(0)) for m in _PHONE_IN_TEXT.finditer(text or "")}
+    found.discard(own)
+    return found.pop() if len(found) == 1 else ""
+
+
+def _office_disabled_notice(conv: AiConversation, msg: str) -> str | None:
+    """Tell the office number why customer commands do nothing while office mode is off."""
+    if str(_payload(conv).get("account_type") or "").lower() != "office":
+        return None
+    own = _digits10(conv.mobile)
+    looks_office = bool(_CREATE.match(msg) or _CUSTOMER.match(msg)) or bool(
+        _ACCOUNT_WORD.search(msg) and _customer_phone_in_text(msg, own)
+    )
+    if not looks_office:
+        return None
+    return (
+        "⚠️ Office mode abhi band hai, isliye customer account select/create nahi ho sakta.\n"
+        "Wajah: WhatsApp webhook par Meta App Secret set nahi hai.\n"
+        "Admin webhook.infradealer.com → Webhook → App secret set kare, uske baad dobara bhejein."
+    )
 
 
 def signature_enforced(db: Session) -> bool:
@@ -199,8 +227,9 @@ def _server_error() -> str:
     return "⚠️ InfraDealer server se jawab nahi mila. Thodi der baad dobara bhejein."
 
 
-def _cmd_select(db: Session, mobile: str, phone: str) -> str | None:
-    res = _call(db, "office_customer_lookup", mobile, phone)
+def _cmd_select(db: Session, mobile: str, phone: str, res: dict | None = None) -> str | None:
+    if res is None:
+        res = _call(db, "office_customer_lookup", mobile, phone)
     if _forbidden(res):
         _drop_session(db, mobile)
         return None
@@ -292,15 +321,41 @@ def _cmd_create_finish(db: Session, row: AiOfficeSession, mobile: str, text: str
     )
 
 
+def _natural_select(db: Session, conv: AiConversation, mobile: str, msg: str) -> str | None:
+    """"91115 54173 wale account se post karna hai" → select (or offer to create) that customer."""
+    if not _ACCOUNT_WORD.search(msg):
+        return None
+    phone = _customer_phone_in_text(msg, mobile)
+    if not phone or _known_operator(db, conv) is None:
+        return None
+    res = _call(db, "office_customer_lookup", mobile, phone)
+    if _forbidden(res):
+        _drop_session(db, mobile)
+        return None
+    if not res or not res.get("ok"):
+        return _server_error()
+    if (res.get("body") or {}).get("found"):
+        return _cmd_select(db, mobile, phone, res)
+    row = _ensure_session(db, mobile)
+    row.step = "await_name"
+    row.pending_phone = phone
+    _touch(row)
+    return (
+        f"❌ Is mobile par koi account nahi hai: {phone}\n"
+        "Naya account banane ke liye customer ka naam bhejein (bina OTP).\n"
+        "Rokne ke liye: cancel"
+    )
+
+
 def handle_office_turn(db: Session, conv: AiConversation, text: str, lang: str = "") -> str | None:
     """Reply for office commands / guards, or None to continue the normal flow."""
-    if not signature_enforced(db):
-        return None
-    mobile = _digits10(conv.mobile)
-    if not mobile or _denied_recently(mobile):
-        return None
     msg = (text or "").strip()
     if not msg:
+        return None
+    if not signature_enforced(db):
+        return _office_disabled_notice(conv, msg)
+    mobile = _digits10(conv.mobile)
+    if not mobile or _denied_recently(mobile):
         return None
 
     m_create = _CREATE.match(msg)
@@ -338,6 +393,10 @@ def handle_office_turn(db: Session, conv: AiConversation, text: str, lang: str =
         row = operator_session(db, conv)
         if row is not None and row.step == "await_name":
             return _cmd_create_finish(db, row, mobile, msg)
+
+    natural = _natural_select(db, conv, mobile, msg)
+    if natural:
+        return natural
 
     if _payload(conv).get("awaiting_confirm"):
         from .confirm import _POST_CONFIRM, is_yes

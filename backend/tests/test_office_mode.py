@@ -241,6 +241,43 @@ def test_listing_payload_downgrades_office_without_signature(db, client, monkeyp
     assert "target_user_id" not in body["customer"]
 
 
+def test_natural_sentence_selects_customer(db, client):
+    conv = _conv(db, account_type="office")
+    reply = om.handle_office_turn(db, conv, "98765 43210\n\nis nummber wale account se ek vehicle post krna h")
+    assert "Customer selected" in reply and "User ID: ramesh.kumar" in reply
+    assert om.active_target(db.query(AiOfficeSession).one())["user_id"] == "77"
+
+
+def test_natural_sentence_unknown_number_offers_create(db, client):
+    conv = _conv(db, account_type="office")
+    reply = om.handle_office_turn(db, conv, "91115 54173 is account related detail check karo")
+    assert "koi account nahi hai: 9111554173" in reply and "naam" in reply
+    done = om.handle_office_turn(db, conv, "Shivraj Singh")
+    assert done.startswith("✅ New account created") and "Mobile: 9111554173" in done
+    assert client.created == [("9111554173", "Shivraj Singh")]
+
+
+def test_natural_sentence_ignored_for_regular_users(db, client):
+    conv = _conv(db, mobile="9000111333", account_type="free")
+    assert om.handle_office_turn(db, conv, "98765 43210 wale account se post karna hai") is None
+    assert db.query(AiOfficeSession).count() == 0
+
+
+def test_natural_sentence_needs_account_word(db, client):
+    conv = _conv(db, account_type="office")
+    assert om.handle_office_turn(db, conv, "seller contact 98765 43210, JCB 3DX 2019") is None
+
+
+def test_operator_told_why_office_mode_is_off(db, client, monkeypatch):
+    monkeypatch.setattr(om, "signature_enforced", lambda db: False)
+    office = _conv(db, account_type="office")
+    assert "Meta App Secret" in om.handle_office_turn(db, office, "91115 54173 wale account se post karna h")
+    assert "Meta App Secret" in om.handle_office_turn(db, office, "customer 9876543210")
+    assert om.handle_office_turn(db, office, "JCB bechni hai") is None
+    regular = _conv(db, mobile="9000111333", account_type="free")
+    assert om.handle_office_turn(db, regular, "customer 9876543210") is None
+
+
 def test_revoked_operator_session_is_dropped(db, client):
     conv = _conv(db)
     om.handle_office_turn(db, conv, "customer 9876543210")
