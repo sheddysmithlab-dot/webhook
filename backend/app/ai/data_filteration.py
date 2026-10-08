@@ -551,6 +551,8 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
             price_blob,
             re.I,
         ):
+            if re.match(r"\s*(?:km|kms|kilomet|hours?|hrs?\b|घंटे)", price_blob[m.end():], re.I):
+                continue
             cur = normalize_currency(m.group(0))
             if cur:
                 out["expected_price"] = cur["value"]
