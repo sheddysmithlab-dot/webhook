@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import time
+from contextlib import contextmanager
 
 from sqlalchemy.orm import Session
 
@@ -34,6 +35,38 @@ def _ai_respond(db: Session, conv: AiConversation, text: str, media_note: str = 
     from .orchestrator import handle_message
 
     return handle_message(db, conv, text, media_note)
+
+
+MEDIA_LOCK_ATTEMPTS = 4
+
+
+@contextmanager
+def _inbound_lock(mobile: str, attempts: int = 1):
+    """mobile_lock, retried for media so a burst of photos is never dropped."""
+    for attempt in range(max(1, attempts)):
+        with mobile_lock(mobile) as held:
+            if held or attempt == attempts - 1:
+                yield held
+                return
+
+
+def _newer_inbound_exists(db: Session, mobile: str, wamid: str) -> bool:
+    """DB truth (arrival order) — Redis latest can be overwritten by out-of-order jobs."""
+    if not wamid:
+        return False
+    mine = db.query(Chat.id).filter(Chat.wamid == wamid, Chat.direction == "inbound").first()
+    if not mine:
+        return False
+    newer = (
+        db.query(Chat.id)
+        .filter(
+            Chat.direction == "inbound",
+            Chat.id > mine[0],
+            Chat.conversation_id.in_([f"CONV_{mobile}", f"CONV_{mobile[-10:]}", f"CONV_91{mobile[-10:]}"]),
+        )
+        .first()
+    )
+    return newer is not None
 
 
 def _is_latest_inbound(db: Session, conversation_id: str, wamid: str, mobile: str = "") -> bool:
@@ -220,7 +253,8 @@ def process_inbound(
     if wamid:
         set_latest_wamid(mobile, wamid)
 
-    with mobile_lock(mobile) as held:
+    is_media = bool(media and media.get("id"))
+    with _inbound_lock(mobile, MEDIA_LOCK_ATTEMPTS if is_media else 1) as held:
         t_lock = (time.perf_counter() - t0) * 1000
         if not held:
             log.info("ai.lock_busy mobile=***%s", mobile[-4:] if mobile else "")
@@ -245,6 +279,17 @@ def process_inbound(
 
         # Media always attaches to draft/card pipeline (legacy ai_simple_chat removed).
         media_note = attach_media(db, conv, wamid, media)
+
+        # Photo burst: save every photo, but only the newest message gets an AI turn.
+        if (
+            is_media
+            and (media.get("kind") or "").lower() in {"image", "photo"}
+            and not (media.get("caption") or "").strip()
+            and _newer_inbound_exists(db, mobile, wamid)
+        ):
+            log.info("ai.photo_batch_skip mobile=***%s %s", mobile[-4:] if mobile else "", media_note[:60])
+            set_processing(mobile, "done")
+            return None
 
         # Phase 2: transcribe voice notes via Groq Whisper before the agent runs,
         # so the transcript replaces the dead "[voice note]" placeholder and the

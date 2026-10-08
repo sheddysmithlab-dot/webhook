@@ -25,10 +25,12 @@ def _send_listing_button(db: Session, conv: AiConversation, lang: str) -> None:
         payload = _payload(conv)
         if payload.get("listing_review_notified"):
             return  # the "approved" message with the link already went out
-        listing_url = str(payload.get("listing_url") or "").strip()
+        from .data_push import public_listing_url
+
+        listing_url = str(payload.get("listing_url") or "").strip().replace("/listing/", "/listings/")
         listing_id = str(payload.get("infradealer_listing_id") or "").strip()
         if not listing_url and listing_id:
-            listing_url = f"https://infradealer.com/listing/{listing_id}"
+            listing_url = public_listing_url(listing_id)
         if not listing_url:
             return
         meta = get_or_create_settings(db)

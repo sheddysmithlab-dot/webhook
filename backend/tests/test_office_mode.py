@@ -801,6 +801,129 @@ def test_listing_button_uses_single_cta_url(monkeypatch):
         "display_text": "View listing", "url": "https://infradealer.com/listing/1"}}
 
 
+def _ready_excavator(db, monkeypatch, **extra):
+    from app.ai import engine as eng
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "ai_prompt_chat", True)
+    conv = _conv(db, mobile="9000222555", account_type="free")
+    pl = _payload(conv)
+    pl.update({
+        "intent": "SELL", "category": "Excavator", "brand": "Kobelco", "model": "SK220XD", "year": 2022,
+        "expected_price": 3200000, "state": "Uttar Pradesh", "city": "Saharanpur",
+        "photos_complete": True, "photo_count": 4,
+        "account_eligibility": "ELIGIBLE", "account_can_post": True, "account_onboarded": True,
+        **extra,
+    })
+    _write_payload(conv, pl)
+    monkeypatch.setattr(eng, "prepare_prompt_state", lambda db, conv, text, media_note: _payload(conv))
+    monkeypatch.setattr(eng, "handle_account_info", lambda *a, **k: None)
+    monkeypatch.setattr(eng, "needs_account_gate", lambda payload: False)
+    monkeypatch.setattr(eng, "prompt_chat_enabled", lambda db: True)
+    return eng, conv
+
+
+def test_excavator_asks_hours_instead_of_handing_off_to_llm(db, client, monkeypatch):
+    eng, conv = _ready_excavator(db, monkeypatch)
+    monkeypatch.setattr(eng, "llm_configured", lambda db: True)
+    monkeypatch.setattr(eng, "llm_reply", lambda *a, **k: pytest.fail("LLM must not run"))
+    out = eng.prompt_chat_turn(db, conv, "Sell kr do isey")
+    assert out and ("hours" in out.lower() or "ऑवर्स" in out)
+    assert conv.error_message == "ask:hours"
+
+
+def test_hours_unknown_skips_to_summary(db, client, monkeypatch):
+    from app.ai import confirm
+
+    eng, conv = _ready_excavator(db, monkeypatch)
+    monkeypatch.setattr(confirm, "send_summary", lambda db, conv, lang: "SUMMARY")
+    conv.error_message = "ask:hours"
+    assert eng.prompt_chat_turn(db, conv, "pata nahi") == "SUMMARY"
+    assert "hours" in _payload(conv)["skipped_asks"]
+
+
+def test_hours_present_goes_straight_to_summary(db, client, monkeypatch):
+    from app.ai import confirm
+
+    eng, conv = _ready_excavator(db, monkeypatch, operating_hours="6500")
+    monkeypatch.setattr(confirm, "send_summary", lambda db, conv, lang: "SUMMARY")
+    assert eng.prompt_chat_turn(db, conv, "haan") == "SUMMARY"
+
+
+def test_llm_cannot_fake_a_submission(db, client, monkeypatch):
+    eng, conv = _ready_excavator(db, monkeypatch, year=None)
+    monkeypatch.setattr(eng, "llm_configured", lambda db: True)
+    monkeypatch.setattr(
+        eng, "llm_reply",
+        lambda *a, **k: "लिस्टिंग सबमिट कर रहे हैं\n• लिस्टिंग के लिए भेज दिया गया है\n• लिस्टिंग ID: CARD-018",
+    )
+    out = eng.prompt_chat_turn(db, conv, "Haan")
+    assert "CARD-018" not in out and "भेज दिया" not in out
+
+
+def test_claims_submission_patterns():
+    from app.ai.engine import _claims_submission
+
+    assert _claims_submission("• लिस्टिंग ID: CARD-018")
+    assert _claims_submission("Aapki listing submit ho gayi hai")
+    assert not _claims_submission("Kitne operating hours hain?")
+
+
+def test_photo_burst_saves_all_but_replies_once(db):
+    from app.ai.runner import _newer_inbound_exists
+    from app.models import Chat
+
+    for i in range(3):
+        db.add(Chat(wamid=f"w{i}", conversation_id="CONV_918224000829", from_mobile="918224000829",
+                    direction="inbound", body="[photo]"))
+    db.flush()
+    assert _newer_inbound_exists(db, "918224000829", "w0")
+    assert _newer_inbound_exists(db, "918224000829", "w1")
+    assert not _newer_inbound_exists(db, "918224000829", "w2")
+
+
+def test_media_lock_retries_instead_of_dropping(monkeypatch):
+    from contextlib import contextmanager
+
+    from app.ai import runner
+
+    calls = []
+
+    @contextmanager
+    def fake_lock(mobile):
+        calls.append(mobile)
+        yield len(calls) >= 3
+
+    monkeypatch.setattr(runner, "mobile_lock", fake_lock)
+    with runner._inbound_lock("8224000829", runner.MEDIA_LOCK_ATTEMPTS) as held:
+        assert held
+    assert len(calls) == 3
+    calls.clear()
+    with runner._inbound_lock("8224000829", 1) as held:
+        assert not held
+
+
+def test_listing_button_uses_public_listings_url(db, client, monkeypatch):
+    from app import services
+    from app.ai.confirm import _send_listing_button
+
+    sent = []
+    monkeypatch.setattr(services, "send_whatsapp_button", lambda *a, **k: sent.append(a) or {})
+    conv = _conv(db)
+    pl = _payload(conv)
+    pl["infradealer_listing_id"] = "113"
+    _write_payload(conv, pl)
+    _send_listing_button(db, conv, "hi")
+    assert sent[0][3][0]["url"] == "https://infradealer.com/listings/113"
+
+
+def test_removed_listing_stops_status_poll():
+    from app.infradealer.service import InfraDealerIntegrationService as Svc
+
+    assert Svc._remote_listing_status({"code": "LISTING_REMOVED"}) == "removed"
+    assert Svc._remote_listing_status({"code": "LISTING_POSTED"}) == "posted"
+
+
 def test_revoked_operator_session_is_dropped(db, client):
     conv = _conv(db)
     om.handle_office_turn(db, conv, "customer 9876543210")

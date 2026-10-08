@@ -1132,6 +1132,8 @@ class InfraDealerIntegrationService:
             return "posted"
         if code == "LISTING_REJECTED":
             return "rejected"
+        if code in {"LISTING_REMOVED", "LISTING_NOT_FOUND"}:
+            return "removed"
         if code in {"LISTING_PENDING_REVIEW", "PENDING_REVIEW", "PENDING"}:
             return "pending"
         for src in (listing, extra, data):
@@ -1209,6 +1211,9 @@ class InfraDealerIntegrationService:
             remote = self._remote_listing_status(body)
             checked += 1
             if remote == "pending":
+                continue
+            if remote == "removed":
+                req.business_code = "LISTING_REMOVED"
                 continue
             notify_payload = dict(body)
             notify_payload.setdefault("request_id", req.request_id)

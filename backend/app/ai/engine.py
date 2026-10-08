@@ -671,22 +671,81 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         log.exception("prepare_prompt_state failed — continuing to LLM")
         payload = _payload(conv)
 
+    # Hard: machine categories also need usage (hours) before the summary — ask once, then skip.
+    if not payload.get("customer_confirmed") and not payload.get("awaiting_confirm"):
+        gap = _usage_gap(payload)
+        if gap:
+            if _ask_key(conv.error_message) == gap and not re.search(r"\d", msg):
+                payload["skipped_asks"] = list(dict.fromkeys([*(payload.get("skipped_asks") or []), gap]))
+                _write_payload(conv, payload)
+            else:
+                conv.error_message = f"ask:{gap}"
+                payload["next_ask"] = gap
+                _write_payload(conv, payload)
+                return _with_ack(lang, gap, payload)
+
     # Hard: collection ready → Python summary (do not let LLM invent confirm copy)
     if collection_ready(payload) and not payload.get("customer_confirmed") and not payload.get("awaiting_confirm"):
-        from .confirm import send_summary
-
-        # A sell listing needs its 2 photos before the confirm summary (same rule as chat_memory).
-        if str(payload.get("intent") or "").upper() == "SELL" and not payload.get("photos_complete"):
-            n = int(payload.get("photo_count") or 0)
-            return t(lang, "photo_need_min", count=n) if n else t(lang, "photos")
-        try:
-            return send_summary(db, conv, lang)
-        except Exception:
-            log.exception("send_summary in prompt_chat failed")
+        summary = _summary_or_photo_gate(db, conv, payload, lang)
+        if summary:
+            return summary
 
     if not llm_configured(db):
         return None
-    return llm_reply(db, conv, text, media_note)
+    reply = llm_reply(db, conv, text, media_note)
+    if reply and _claims_submission(reply):
+        from .confirm import card_submitted
+
+        if not card_submitted(db, conv):
+            # The model may not announce a submission or invent a listing ID — only the confirm flow submits.
+            log.warning("ai.llm_fake_submit_blocked mobile=***%s", conv.mobile[-4:] if conv.mobile else "")
+            payload = _payload(conv)
+            if collection_ready(payload) and not payload.get("awaiting_confirm"):
+                return _summary_or_photo_gate(db, conv, payload, lang) or t(lang, "more_detail")
+            return _next_question(payload, lang) or t(lang, "more_detail")
+    return reply
+
+
+_FAKE_SUBMIT = re.compile(
+    r"(listing\s*id|लिस्टिंग\s*id|CARD-\d+|सबमिट\s*(कर|हो)|भेज\s*दिया\s*गया|submit\s*(ho\s*gay|kar\s*(di|diya|rahe)|kiya)|"
+    r"submitted|bhej\s*diya\s*gaya)",
+    re.I,
+)
+
+
+def _claims_submission(reply: str) -> bool:
+    return bool(_FAKE_SUBMIT.search(reply or ""))
+
+
+def _usage_gap(payload: dict) -> str | None:
+    """hours/km required by the category schema but not part of the plain ask queue."""
+    if str(payload.get("intent") or "").upper() != "SELL":
+        return None
+    if [m for m in missing_fields(payload) if m != "customer_name"]:
+        return None
+    from .data_filteration import build_missing_fields
+
+    category = normalize_vehicle_category(payload.get("category") or payload.get("type") or "")
+    if not category:
+        return None
+    for gap in build_missing_fields(payload, category, "SELL"):
+        if gap.get("field") in {"hours", "km"}:
+            return gap["field"]
+    return None
+
+
+def _summary_or_photo_gate(db, conv: AiConversation, payload: dict, lang: str) -> str | None:
+    from .confirm import send_summary
+
+    # A sell listing needs its 2 photos before the confirm summary (same rule as chat_memory).
+    if str(payload.get("intent") or "").upper() == "SELL" and not payload.get("photos_complete"):
+        n = int(payload.get("photo_count") or 0)
+        return t(lang, "photo_need_min", count=n) if n else t(lang, "photos")
+    try:
+        return send_summary(db, conv, lang)
+    except Exception:
+        log.exception("send_summary in prompt_chat failed")
+    return None
 
 
 def _fast_rule_reply(db, conv: AiConversation, text: str, media_note: str, fields: dict, lang: str) -> str | None:
@@ -760,6 +819,9 @@ def apply_followup(db, conv: AiConversation, text: str) -> None:
         pkey = "budget" if key == "budget" or "budget" in last_l else "expected_price"
         if not payload.get(pkey):
             execute_tool(db, conv, "save_vehicle_data", {pkey: msg[:80], "source": "customer"})
+    hours_num = re.search(r"\d[\d,]*", msg) if key == "hours" else None
+    if hours_num and not payload.get("operating_hours"):
+        execute_tool(db, conv, "save_vehicle_data", {"operating_hours": hours_num.group(0).replace(",", ""), "source": "customer"})
     run_hit = key == "running" or "kilometer" in last_l or "hours" in last_l or " km" in last_l or last_l.endswith("km")
     if run_hit and re.search(r"\d", msg) and not payload.get("running"):
         execute_tool(db, conv, "save_vehicle_data", {"running": msg[:80], "source": "customer"})
