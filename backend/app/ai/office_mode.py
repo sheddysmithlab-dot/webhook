@@ -684,8 +684,14 @@ def decorate_office_reply(db: Session, conv: AiConversation, reply: str) -> str:
     if not reply:
         return reply
     try:
-        if _COOLDOWN_LINE.search(reply) and _known_operator(db, conv) is not None:
-            reply = _COOLDOWN_LINE.sub("", reply).rstrip() + (
+        operator = _known_operator(db, conv) if _COOLDOWN_LINE.search(reply) else None
+        if operator is not None:
+            # Office listings go live immediately — never say "team will review".
+            target = active_target(operator) or {}
+            who = target.get("name") or target.get("phone") or "customer"
+            posted = str(_payload(conv).get("listing_status") or "").upper() == "POSTED"
+            reply = (
+                f"✅ Listing {who} ke account par {'post ho gayi (live)' if posted else 'submit ho gayi'}."
                 "\n\nAgli listing: isi customer ki agli gaadi bhejein, ya naya customer select karein (98XXXXXXXX)."
             )
     except Exception:

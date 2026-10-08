@@ -264,10 +264,10 @@ def normalize_units(raw: Any, *, prefer_hours: bool = False) -> dict | None:
     text = str(raw).strip()
     low = text.lower()
     mult = 1
-    if re.search(r"हजार|haz[a]?ar|\bk\b", low):
-        mult = 1000
-    elif re.search(r"lakh|lac", low):
+    if re.search(r"lakh|lac|लाख", low):
         mult = 100_000
+    elif re.search(r"हजार|haz[a]?ar|\d\s*k\b", low):
+        mult = 1000
     nums = re.findall(r"\d+(?:\.\d+)?", text.replace(",", ""))
     if not nums:
         return None
@@ -568,7 +568,7 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
 
     if _blank(out.get("running_km")) and _blank(out.get("operating_hours")) and _blank(out.get("km")):
         for m in re.finditer(
-            r"(\d+(?:[.,]\d+)?\s*(?:हजार|k|km|hours?|hrs?|घंटे?))",
+            r"(\d+(?:[.,]\d+)?\s*(?:(?:lakh|lac|लाख)\s*)?(?:हजार|kms?|k|hours?|hrs?|घंटे?))",
             blob,
             re.I,
         ):

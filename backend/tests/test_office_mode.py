@@ -481,9 +481,37 @@ def test_office_submit_reply_has_no_cooldown(db, client):
     conv = _conv(db, account_type="office")
     om.handle_office_turn(db, conv, "customer 9876543210")
     out = om.decorate_office_reply(db, conv, t("hi", "submitted"))
-    assert "10 मिनट" not in out and "सबमिट" in out and "Agli listing" in out
+    assert "10 मिनट" not in out and "रिव्यू" not in out and "Agli listing" in out
+    assert "ramesh.kumar" in out and "submit ho gayi" in out
+    pl = _payload(conv)
+    pl["listing_status"] = "POSTED"
+    _write_payload(conv, pl)
+    assert "post ho gayi (live)" in om.decorate_office_reply(db, conv, t("hi", "submitted"))
     regular = _conv(db, mobile="9000111333", account_type="free")
     assert "10 मिनट" in om.decorate_office_reply(db, regular, t("hi", "submitted"))
+
+
+def test_listing_button_skipped_after_approved_message(db, client, monkeypatch):
+    from app import services
+    from app.ai.confirm import _send_listing_button
+
+    sent = []
+    monkeypatch.setattr(services, "send_whatsapp_button", lambda *a, **k: sent.append(a) or {})
+    conv = _conv(db)
+    pl = _payload(conv)
+    pl["listing_url"] = "https://infradealer.com/listings/5"
+    pl["listing_review_notified"] = True
+    _write_payload(conv, pl)
+    _send_listing_button(db, conv, "hi")
+    assert sent == []
+
+
+def test_running_km_in_lakh_is_extracted():
+    from app.ai.data_filteration import extract_fields
+
+    out = extract_fields(["Ashok Leyland 2518 tipper, 2017 model, Price 15 lakh, Running 3.2 lakh km"])
+    assert out["price"] == 1500000
+    assert out["km"] == 320000
 
 
 def test_office_line_skips_listing_cooldown(db, client):
