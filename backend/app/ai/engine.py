@@ -502,11 +502,19 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
 def prepare_prompt_state(db, conv: AiConversation, text: str, media_note: str = "") -> dict:
     """Phase-2: materialize listing state before LLM (extract → rm_state → next_ask)."""
     payload = _payload(conv)
+    prev_ask = payload.get("next_ask")
     fields = extract_turn(text, media_note=media_note)
     _new_card_if_new_vehicle(db, conv, fields)
     apply_extraction(db, conv, text, media_note=media_note, fields=fields)
     apply_followup(db, conv, text)
     payload = _payload(conv)
+    if prev_ask == "brand" and not payload.get("brand"):
+        from .data_filteration import brand_from_answer
+
+        brand = brand_from_answer(text)
+        if brand:
+            payload["brand"] = brand
+            _write_payload(conv, payload)
 
     intent = str(payload.get("intent") or "").upper()
     if intent in {"BUY", "SELL"}:

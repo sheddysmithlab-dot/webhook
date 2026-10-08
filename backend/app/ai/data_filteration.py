@@ -124,7 +124,97 @@ _BRAND_ALIASES = {
     "sany": "SANY",
     "liugong": "LiuGong",
     "case": "CASE",
+    "kobelco": "Kobelco", "कोबेल्को": "Kobelco",
+    "hyundai": "Hyundai", "हुंडई": "Hyundai",
+    "tata hitachi": "Tata Hitachi",
+    "doosan": "Doosan",
+    "l&t": "L&T", "larsen": "L&T", "l & t": "L&T",
+    "beml": "BEML",
+    "escorts": "Escorts",
+    "ace": "ACE",
+    "bull": "Bull",
+    "xcmg": "XCMG",
+    "zoomlion": "Zoomlion",
+    "liebherr": "Liebherr",
+    "sumitomo": "Sumitomo",
+    "kubota": "Kubota",
+    "new holland": "New Holland",
+    "case new holland": "CASE", "casenewholland": "CASE",
+    "john deere": "John Deere",
+    "schwing": "Schwing Stetter",
+    "ajax": "Ajax Fiori",
+    "sml isuzu": "SML Isuzu", "isuzu": "Isuzu",
+    "scania": "Scania",
+    "mahindra earthmaster": "Mahindra",
 }
+
+_LABEL_PATTERNS = (
+    ("brand", r"brand|make|company|ब्रांड|ब्रान्ड|कंपनी"),
+    ("year", r"model\s*year|year|yom|वर्ष|ईयर|साल"),
+    ("model", r"model|मॉडल|माडल|मोडल"),
+    ("category", r"category|vehicle\s*type|कैटेगरी|श्रेणी"),
+    ("location", r"location|city|place|लोकेशन|शहर|जगह"),
+    ("_stop", r"price|कीमत|demand|rate|condition|photos?|km|running|hours?|owner|contact|state|राज्य"),
+)
+_LABEL_RE = re.compile(
+    r"(?<![A-Za-z\u0900-\u097F])(" + "|".join(p for _, p in _LABEL_PATTERNS) + r")\s*[:=\-–]\s*",
+    re.I,
+)
+_BRAND_WORD_RE = re.compile(
+    r"(?:\b([A-Za-z][A-Za-z&.\-]{1,20})\s+(?:brand|ब्रांड|company|कंपनी)(?![A-Za-z\u0900-\u097F])"
+    r"|(?<![A-Za-z\u0900-\u097F])(?:brand|ब्रांड)\s+(?:hai\s+|h\s+)?([A-Za-z][A-Za-z&.\-]{1,20})\b)",
+    re.I,
+)
+_NOT_A_BRAND = {
+    "hai", "h", "ka", "ki", "ke", "kya", "kaun", "konsa", "kon", "bata", "batao", "new", "naya", "the", "is",
+    "haan", "han", "ha", "hn", "ok", "okay", "yes", "no", "nahi", "nhi", "na", "theek", "thik", "sahi",
+    "pata", "malum", "skip", "baad", "me", "hello", "hi", "done", "confirm", "cancel",
+}
+_MODEL_CODE_RE = re.compile(r"\b([A-Za-z]{1,3}\d{3,4}[A-Za-z]{0,4}|[A-Za-z]{1,3}\d{2}[A-Za-z]{1,4})\b")
+
+
+def _label_key(label: str) -> str:
+    for key, pat in _LABEL_PATTERNS:
+        if re.fullmatch(pat, label.strip(), re.I):
+            return key
+    return "_stop"
+
+
+def _labeled_fields(text: str) -> dict:
+    """"Brand: Kobelco Model: SK220XD Location: Saharanpur" → raw values per key."""
+    marks = list(_LABEL_RE.finditer(text or ""))
+    out: dict = {}
+    for i, m in enumerate(marks):
+        key = _label_key(m.group(1))
+        if key == "_stop" or key in out:
+            continue
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        value = text[m.end():end].split("\n")[0].strip(" ,;|.")
+        if value:
+            out[key] = value[:60]
+    return out
+
+
+def canonical_brand(value: str) -> str:
+    low = str(value or "").lower()
+    for cue, canon in sorted(_BRAND_ALIASES.items(), key=lambda x: len(x[0]), reverse=True):
+        if re.search(rf"(?<![a-z0-9]){re.escape(cue)}(?![a-z0-9])", low):
+            return canon
+    return ""
+
+
+def brand_from_answer(text: str) -> str:
+    """Short reply to "brand bata dijiye" ("Kobelco", "Kobelco brand hai") → brand, else ""."""
+    known = canonical_brand(text)
+    if known:
+        return known
+    words = [
+        w for w in re.findall(r"[A-Za-z][A-Za-z&.\-]*", text or "")
+        if w.lower() not in _NOT_A_BRAND and w.lower() not in {"brand", "company", "ji", "sir"}
+    ]
+    if re.search(r"\d", text or "") or not 1 <= len(words) <= 2:
+        return ""
+    return " ".join(w.capitalize() if w.islower() else w for w in words)[:40]
 
 _CITY_STATE = {
     "indore": ("Indore", "Madhya Pradesh"),
@@ -375,9 +465,12 @@ def _looks_like_place(text: str) -> bool:
     if re.search(
         r"lakh|lac|crore|\bcr\b|₹|rs\.?|\bkm\b|hour|hrs?|bech|sell|buy|kharid|"
         r"\btata\b|\bjcb\b|\beicher\b|tipper|dumper|truck|photo|otp|password|"
-        r"model|price|rate|budget|year|saal|post\s*kr|submit",
+        r"model|price|rate|budget|year|saal|post\s*kr|submit|brand|company|category|"
+        r"ब्रांड|मॉडल|कंपनी|कैटेगरी",
         low,
     ):
+        return False
+    if canonical_brand(raw):
         return False
     # Digits usually mean price/year/km — allow only sector/NH style
     if re.search(r"\d", raw) and not re.search(r"(?:sector|sec\.?|phase|nh)\s*\d", low):
@@ -518,22 +611,57 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
     if not blob:
         return out
 
+    labeled = _labeled_fields("\n".join(texts))
+    if _blank(out.get("category")) and labeled.get("category"):
+        cat = normalize_vehicle_category(labeled["category"])
+        if cat:
+            out["category"] = cat
+    if _blank(out.get("brand")) and labeled.get("brand"):
+        out["brand"] = canonical_brand(labeled["brand"]) or brand_from_answer(labeled["brand"]) or ""
+        if not out["brand"]:
+            out.pop("brand")
+    if _blank(out.get("model")) and labeled.get("model"):
+        out["model"] = labeled["model"].split()[0][:40]
+    if _blank(out.get("year")) and labeled.get("year"):
+        y = normalize_year(labeled["year"])
+        if y and y.get("status") != "INVALID":
+            out["year"] = y["value"]
+    if not labeled.get("location"):
+        m = re.search(r"\b(?:location|loc)\s+([A-Za-z\u0900-\u097F]{3,30})", blob, re.I)
+        if m and _looks_like_place(m.group(1)):
+            labeled["location"] = m.group(1)
+    if labeled.get("location") and _blank(out.get("city")) and _blank(out.get("location")):
+        place = labeled["location"].split("/")[-1].strip()
+        loc = normalize_location(location=place)
+        if loc.get("city"):
+            out["city"] = loc["city"]
+            out["location"] = loc["city"]
+        if loc.get("state") and _blank(out.get("state")):
+            out["state"] = loc["state"]
+
     if _blank(out.get("category")):
         cat = resolve_category(blob)
         if cat:
             out["category"] = cat
 
     if _blank(out.get("brand")):
-        low = blob.lower()
-        for cue, canon in sorted(_BRAND_ALIASES.items(), key=lambda x: len(x[0]), reverse=True):
-            if re.search(rf"(?<![a-z0-9]){re.escape(cue)}(?![a-z0-9])", low):
-                out["brand"] = canon
-                break
+        out["brand"] = canonical_brand(blob)
+        if not out["brand"]:
+            m = _BRAND_WORD_RE.search(blob)
+            word = (m.group(1) or m.group(2)) if m else ""
+            if word and word.lower() not in _NOT_A_BRAND:
+                out["brand"] = word.capitalize() if word.islower() else word
+        if not out["brand"]:
+            out.pop("brand")
 
     if _blank(out.get("model")):
         m = re.search(r"\b(\d{3,4}[A-Za-z]?|3DX|4DX|JS\d{2,3})\b", blob, re.I)
         if m and not re.fullmatch(r"(?:19|20)\d{2}", m.group(1)):
             out["model"] = m.group(1).upper() if m.group(1).isdigit() else m.group(1)
+        else:
+            m = _MODEL_CODE_RE.search(blob)
+            if m:
+                out["model"] = m.group(1).upper()
 
     if _blank(out.get("year")):
         y = normalize_year(blob)
@@ -560,7 +688,10 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
                 break
         # Bare rupee amounts: multiline dumps like "Tata\n2567\n2021\n2000000"
         # or a lone "2000000" when asking for price (no ₹/lakh marker).
-        if _blank(out.get("expected_price")) and _blank(out.get("price")):
+        usage_only = re.search(r"\d\s*(?:lakh|lac|हजार|k)?\s*(?:kms?|hours?|hrs?|घंटे)\b", blob, re.I) and not re.search(
+            r"price|rate|demand|kimat|keemat|कीमत|₹|\brs\b", blob, re.I
+        )
+        if _blank(out.get("expected_price")) and _blank(out.get("price")) and not usage_only:
             bare = _extract_bare_price(blob, year=out.get("year"))
             if bare:
                 out["expected_price"] = bare
@@ -568,7 +699,7 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
 
     if _blank(out.get("running_km")) and _blank(out.get("operating_hours")) and _blank(out.get("km")):
         for m in re.finditer(
-            r"(\d+(?:[.,]\d+)?\s*(?:(?:lakh|lac|लाख)\s*)?(?:हजार|kms?|k|hours?|hrs?|घंटे?))",
+            r"(\d+(?:[.,]\d+)?\s*(?:(?:lakh|lac|लाख)\s*)?(?:हजार|kms?\b|k\b|hours?\b|hrs?\b|घंटे?))",
             blob,
             re.I,
         ):

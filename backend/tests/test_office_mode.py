@@ -651,6 +651,37 @@ def test_photo_fills_only_missing_fields(db, client, monkeypatch, tmp_path):
     assert len(calls) == vision.MAX_VISION_READS_PER_CARD
 
 
+def test_labeled_kobelco_listing_is_read():
+    from app.ai.data_filteration import extract_fields
+
+    text = (
+        "Category: Excavator\nBrand: Kobelco\nModel: SK220XD\nYear: 2022\n"
+        "Location: Saranpur / Saharanpur\nPrice: ₹32 Lac\nCondition: Used"
+    )
+    out = extract_fields([text])
+    assert (out["category"], out["brand"], out["model"], out["year"]) == ("Excavator", "Kobelco", "SK220XD", 2022)
+    assert out["city"] == "Saharanpur" and out["price"] == 3200000
+    hindi = extract_fields(["ब्रांड: Kobelco मॉडल: SK220XD वर्ष: 2022 कीमत: ₹32 लाख कैटेगरी: Excavator"])
+    assert hindi["brand"] == "Kobelco" and hindi["model"] == "SK220XD"
+
+
+def test_brand_word_answers():
+    from app.ai.data_filteration import brand_from_answer, extract_fields
+
+    assert extract_fields(["Kobelco brand"]) == {"brand": "Kobelco"}
+    assert extract_fields(["Kobelco ब्रांड"]) == {"brand": "Kobelco"}
+    assert brand_from_answer("Sumitomo") == "Sumitomo"
+    assert brand_from_answer("haan") == "" and brand_from_answer("ok ji") == ""
+
+
+def test_usage_numbers_are_not_prices():
+    from app.ai.data_filteration import extract_fields
+
+    assert "price" not in extract_fields(["running 45000 km"])
+    assert "price" not in extract_fields(["1.5 lakh km"])
+    assert "km" not in extract_fields(["Tata 3118 tipper 2018 Khandwa 23 lakh"])
+
+
 def test_running_km_in_lakh_is_extracted():
     from app.ai.data_filteration import extract_fields
 
