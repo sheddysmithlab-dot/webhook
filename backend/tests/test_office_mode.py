@@ -529,6 +529,54 @@ def test_full_listing_text_asks_photos_before_summary(db, client, monkeypatch):
     assert not _payload(conv).get("awaiting_confirm")
 
 
+def test_account_switch_request_clears_customer(db, client):
+    conv = _conv(db)
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    reply = om.handle_office_turn(
+        db, conv, "Ab account change karke dusre number se dalna hai\nAnother account se posting dalna hai"
+    )
+    assert "customer 98XXXXXXXX" in reply
+    assert om.active_target(db.query(AiOfficeSession).one()) is None
+
+
+def test_vehicle_text_is_not_an_account_switch():
+    assert not om._wants_account_switch("Tata 3118 tipper 2018 model price 23 lakh, naya tyre")
+    assert not om._wants_account_switch("dusre customer 9876543210 ka account")
+    assert not om._wants_account_switch("photo change karni hai")
+
+
+def test_posted_card_is_closed_on_next_message(db, client):
+    from app.ai.tools import _draft_for
+    from app.models import AiListingDraft
+
+    conv = _conv(db)
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    pl = _payload(conv)
+    pl.update({"intent": "SELL", "brand": "Tata", "model": "3118", "office_draft_floor": 3})
+    _write_payload(conv, pl)
+    draft = _draft_for(db, conv)
+    draft.status = "POSTED"
+    db.flush()
+    om.handle_office_turn(db, conv, "Yes")
+    assert conv.draft_id is None
+    pl = _payload(conv)
+    assert not pl.get("brand") and pl.get("office_draft_floor") == 3
+    assert db.get(AiListingDraft, draft.id).status == "POSTED"
+
+
+def test_unposted_card_is_kept(db, client):
+    from app.ai.tools import _draft_for
+
+    conv = _conv(db)
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    pl = _payload(conv)
+    pl.update({"intent": "SELL", "brand": "Tata", "awaiting_confirm": True})
+    _write_payload(conv, pl)
+    draft = _draft_for(db, conv)
+    om.handle_office_turn(db, conv, "Yes")
+    assert conv.draft_id == draft.id and _payload(conv).get("brand") == "Tata"
+
+
 def test_running_km_in_lakh_is_extracted():
     from app.ai.data_filteration import extract_fields
 

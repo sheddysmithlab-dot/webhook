@@ -67,6 +67,11 @@ _DETAIL = re.compile(
 _DETAIL_SKIP = re.compile(
     r"\b(?:vehicle|gaa?di|machine|photo\w*|pic\w*|image\w*|video|bhej\w*|send|sending)\b", re.I
 )
+_SWITCH_WORD = re.compile(
+    r"\b(?:change|chang|badal\w*|badlo|switch|dusr\w*|doosr\w*|dusra|another|other|alag|naya|nayi|new)\b", re.I
+)
+_NUMBER_WORD = re.compile(r"\b(?:number|nummber|numbr|nmbr|mobile|no)\b", re.I)
+_LIVE_STATUSES = {"POSTED", "APPROVED", "LIVE", "PUBLISHED"}
 _GREETING = re.compile(
     r"^\s*(?:hi+|hii+|hel+o+|helo|hey+|namaste|namaskar|ram\s*ram|menu|help|start|options?|sir)\s*[.!?]*\s*$",
     re.I,
@@ -514,9 +519,15 @@ def _last_draft_id(db: Session, mobile: str) -> int:
 def _on_target_change(db: Session, conv: AiConversation, mobile: str, before: str, after: str) -> str:
     """New customer → the listing being built belongs to nobody else; start a fresh card."""
     from .confirm import card_submitted, start_new_listing
+    from .schema import empty_payload
+    from .tools import _PREVIOUS_LISTING_KEYS
 
     payload = _payload(conv)
     payload["office_draft_floor"] = _last_draft_id(db, mobile)
+    if not conv.draft_id:
+        defaults = empty_payload()
+        for key in _PREVIOUS_LISTING_KEYS:
+            payload[key] = defaults.get(key)
     _write_payload(conv, payload)
     if not conv.draft_id:
         return ""
@@ -551,9 +562,43 @@ def last_listing_allowed(db: Session, conv: AiConversation, draft) -> bool:
     return (draft.status or "").upper() in _SUBMITTED or confirmed not in ("", "{}", "null")
 
 
+def _close_posted_card(db: Session, conv: AiConversation) -> None:
+    """A live card is finished: the next message starts clean instead of re-confirming it."""
+    if not conv.draft_id or _known_operator(db, conv) is None:
+        return
+    from ..models import AiListingDraft
+    from .cards import clear_card_chat_data
+
+    draft = db.get(AiListingDraft, conv.draft_id)
+    if draft is None or (draft.status or "").upper() not in _LIVE_STATUSES:
+        return
+    payload = _payload(conv)
+    if payload.get("listing_edit_mode"):
+        return
+    floor = payload.get("office_draft_floor")
+    clear_card_chat_data(db, conv, draft)
+    if floor not in (None, ""):
+        payload = _payload(conv)
+        payload["office_draft_floor"] = floor
+        _write_payload(conv, payload)
+
+
+def _wants_account_switch(msg: str) -> bool:
+    """"account change karke dusre number se dalna hai" — no number given yet."""
+    if _PHONE_IN_TEXT.search(msg) or _LISTING_SIGNAL.search(msg):
+        return False
+    if len(msg.split()) > 25:
+        return False
+    return bool(_SWITCH_WORD.search(msg) and (_ACCOUNT_WORD.search(msg) or _NUMBER_WORD.search(msg)))
+
+
 def handle_office_turn(db: Session, conv: AiConversation, text: str, lang: str = "") -> str | None:
     """Reply for office commands / guards, or None to continue the normal flow."""
     mobile = _digits10(conv.mobile)
+    try:
+        _close_posted_card(db, conv)
+    except Exception:
+        log.exception("office_mode: closing posted card failed")
     before = _target_id(db, mobile)
     reply = _handle_office_turn(db, conv, text, lang)
     if reply and mobile:
@@ -615,6 +660,19 @@ def _handle_office_turn(db: Session, conv: AiConversation, text: str, lang: str 
     natural = _natural_select(db, conv, mobile, msg)
     if natural:
         return natural
+
+    if _wants_account_switch(msg):
+        row = _known_operator(db, conv)
+        if row is not None:
+            _clear_target(row)
+            row.step = ""
+            row.pending_phone = ""
+            _touch(row)
+            return (
+                "Theek hai, customer hata diya.\n"
+                "Jis customer ke account par listing daalni hai uska mobile number bhejein:\n"
+                "customer 98XXXXXXXX"
+            )
 
     if _GREETING.match(msg):
         row = _known_operator(db, conv)
