@@ -163,9 +163,9 @@ def unique_photo_ids(db: Session, conv: AiConversation | None, payload: dict | N
             draft_id = None
 
     draft_rows = [row for row in rows if draft_id and row.draft_id == draft_id]
-    # Prefer draft-scoped images; if none tagged, fall back to all conversation images
-    # only when wanted was empty (avoid mixing old listing photos into a new draft).
-    extras = draft_rows if draft_rows else ([] if ordered else rows)
+    # Images are tagged with their card; never borrow another card's photos
+    # (office line posts for many customers from one conversation).
+    extras = draft_rows if draft_id else ([] if ordered else rows)
     for row in extras:
         if len(ordered) >= 5:
             break

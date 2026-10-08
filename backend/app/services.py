@@ -651,29 +651,32 @@ def send_whatsapp_button(
 
     Args:
         body_text: Main message text shown above buttons.
-        buttons: List of {"title": str, "url": str} dicts (max 2).
+        buttons: List of {"title": str, "url": str} dicts; only the first is sent.
     """
     to = to_whatsapp_id(to)
     if not meta.phone_number_id or not meta.system_user_token:
         raise RuntimeError("Phone Number ID aur System User Token save karo.")
     if not to:
         raise RuntimeError("Valid WhatsApp recipient missing.")
-    btn_list = []
-    for b in (buttons or [])[:2]:
-        title = str(b.get("title") or "Open")[:20]
-        url = str(b.get("url") or "https://infradealer.com")
-        btn_list.append({"type": "URL", "title": title, "url": url})
-    if not btn_list:
+    if not buttons:
         raise RuntimeError("At least one button required.")
+    # Cloud API allows a single URL button per message (interactive cta_url).
+    first = buttons[0]
     payload = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
         "to": to,
         "type": "interactive",
         "interactive": {
-            "type": "button",
+            "type": "cta_url",
             "body": {"text": body_text[:1024]},
-            "action": {"buttons": btn_list},
+            "action": {
+                "name": "cta_url",
+                "parameters": {
+                    "display_text": str(first.get("title") or "Open")[:20],
+                    "url": str(first.get("url") or "https://infradealer.com"),
+                },
+            },
         },
     }
     url = graph_url(meta, f"{meta.phone_number_id}/messages")

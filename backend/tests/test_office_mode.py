@@ -516,6 +516,67 @@ def test_operator_told_why_office_mode_is_off(db, client, monkeypatch):
     assert om.handle_office_turn(db, regular, "customer 9876543210") is None
 
 
+def test_new_card_never_borrows_previous_cards_photos(db, client):
+    from app.identity import unique_photo_ids
+    from app.models import AiMedia
+
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    tractor = _card(db, conv, brand="Mahindra", model="575")
+    db.add(AiMedia(conversation_id=conv.id, draft_id=tractor.id, kind="image", local_path="/m/1.jpg", meta_media_id="a"))
+    db.flush()
+    assert len(unique_photo_ids(db, conv, _payload(conv))) == 1
+    _card(db, conv, brand="Tata", model="3118", media_ids=[])
+    assert unique_photo_ids(db, conv, _payload(conv)) == []
+
+
+def test_listing_button_uses_single_cta_url(monkeypatch):
+    import app.services as services
+
+    sent = {}
+
+    class _Resp:
+        status_code = 200
+        is_success = True
+        content = b"{}"
+
+        def json(self):
+            return {"messages": [{"id": "wamid.X"}]}
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, json=None, headers=None):
+            sent.update(json)
+            return _Resp()
+
+    monkeypatch.setattr(services.httpx, "Client", _Client)
+
+    class _Meta:
+        phone_number_id = "123"
+        system_user_token = "tok"
+        graph_version = "v21.0"
+
+    services.send_whatsapp_button(_Meta(), "9876543210", "Live!", [
+        {"title": "View listing", "url": "https://infradealer.com/listing/1"},
+        {"title": "Browse", "url": "https://infradealer.com"},
+    ])
+    inter = sent["interactive"]
+    assert inter["type"] == "cta_url"
+    assert inter["action"] == {"name": "cta_url", "parameters": {
+        "display_text": "View listing", "url": "https://infradealer.com/listing/1"}}
+
+
 def test_revoked_operator_session_is_dropped(db, client):
     conv = _conv(db)
     om.handle_office_turn(db, conv, "customer 9876543210")
