@@ -220,6 +220,8 @@ def empty_payload() -> dict:
         "reg_email": None,
         "reg_password": None,
         "pw_reset_otp": None,
+        "otp_sent_at": None,
+        "otp_wrong": 0,
         "expected_price": None,
         "budget": None,
         "budget_max": None,

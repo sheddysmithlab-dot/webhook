@@ -633,7 +633,7 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
                 return t(lang, "otp_ok_review")
             return t(lang, "otp_ok_pending")
         if not digits:
-            return t(lang, "otp_ask")
+            return t(lang, "account_otp_pending" if step == "otp" else "otp_ask")
 
     # Hard: user asks to post / skip optionals — let chat_memory confirm path run
     from .chat_memory import detect_intent as _detect_rm_intent

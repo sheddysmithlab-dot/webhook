@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -421,7 +422,11 @@ def should_intercept_account(payload: dict, text: str) -> bool:
         )
     if step == "otp":
         digits = re.sub(r"\D", "", msg)
-        return len(digits) == 6 or says_has_account(msg)
+        if len(digits) == 6 or says_has_account(msg):
+            return True
+        if wants_otp_resend(msg) or disputes_otp(msg):
+            return True
+        return 4 <= len(digits) <= 8 and len(digits) >= len(re.sub(r"\s", "", msg)) - 2
     if step == "password":
         if _PASS_SKIP.search(msg):
             return True
@@ -452,9 +457,17 @@ _OTP_RESEND = re.compile(
     r"|\b(otp|code)\b.{0,20}\b(resend|re-send|dobara|bhejo|bhej\s*do|send)\b"
     r"|(nahi|nahin|nhi|not).{0,16}(aya|aaya|aayi|ayi|mila|received|aaya\s*otp|otp)"
     r"|otp.{0,12}(nahi|nahin|nhi|not).{0,12}(aya|aaya|mila|received)"
+    r"|^\W*(resend|re-send|naya\s*otp|new\s*otp|otp\s*naya|dobara\s*bhej(o|do)?)\W*$"
     r")",
     re.I,
 )
+# "OTP sahi hai" after a mismatch — the user insists the code was right.
+_OTP_DISPUTE = re.compile(
+    r"^\W*(otp\s*)?(to\s*|toh\s*)?(sahi|sahee|shi|sai|thik|theek|correct|right|wahi|wohi|same)\b.{0,25}$",
+    re.I,
+)
+_OTP_MAX_TRIES = 5
+_OTP_RESEND_GAP_SEC = 60
 _OTP_CANCEL = re.compile(
     r"\b(cancel|band\s*karo|chhodo|mat\s*karo|skip|baad\s*me)\b",
     re.I,
@@ -467,6 +480,11 @@ def wants_password_reset(text: str) -> bool:
 
 def wants_otp_resend(text: str) -> bool:
     return bool(_OTP_RESEND.search(text or ""))
+
+
+def disputes_otp(text: str) -> bool:
+    msg = (text or "").strip()
+    return len(msg) <= 40 and not re.search(r"\d{4,}", msg) and bool(_OTP_DISPUTE.search(msg))
 
 
 def clear_stale_listing_otp(conv: AiConversation, payload: dict | None = None) -> dict:
@@ -760,6 +778,7 @@ def _submit_registration_and_otp(db: Session, conv: AiConversation, payload: dic
         if st and st.account_status == "OTP_PENDING" and st.registration_id:
             payload["account_step"] = "otp"
             conv.error_message = "ask:otp"
+            _note_signup_otp_sent(payload)
             _write_payload(conv, payload)
             return t(lang, "account_otp")
         biz = ""
@@ -789,6 +808,8 @@ def _local_otp_then(db, conv, payload, lang, prefix, infra_create=False) -> str:
             if item:
                 svc.process_outbox_item(item)
                 db.flush()
+                _note_signup_otp_sent(payload)
+                _write_payload(conv, payload)
                 head = prefix or t(lang, "confirm_ok")
                 return head + "\n\n" + t(lang, "account_otp")
         except Exception:
@@ -796,8 +817,62 @@ def _local_otp_then(db, conv, payload, lang, prefix, infra_create=False) -> str:
     otp = execute_tool(db, conv, "send_otp", {})
     if not otp.get("ok"):
         return t(lang, "otp_send_fail")
+    _note_signup_otp_sent(payload)
+    _write_payload(conv, payload)
     head = prefix or t(lang, "confirm_ok")
     return head + "\n\n" + t(lang, "account_otp")
+
+
+def _note_signup_otp_sent(payload: dict) -> None:
+    payload["otp_sent_at"] = datetime.now(timezone.utc).isoformat()
+    payload["otp_wrong"] = 0
+
+
+def _otp_resend_wait(payload: dict) -> int:
+    try:
+        sent = datetime.fromisoformat(str(payload.get("otp_sent_at") or ""))
+    except ValueError:
+        return 0
+    if sent.tzinfo is None:
+        sent = sent.replace(tzinfo=timezone.utc)
+    left = _OTP_RESEND_GAP_SEC - (datetime.now(timezone.utc) - sent).total_seconds()
+    return max(0, int(left + 0.999))
+
+
+def _resend_signup_otp(db: Session, conv: AiConversation, payload: dict, lang: str, reason_key: str = "") -> str:
+    """Send a fresh signup OTP; only claims "sent" when the backend confirmed it."""
+    head = (t(lang, reason_key) + "\n\n") if reason_key else ""
+    wait = _otp_resend_wait(payload)
+    if wait:
+        return head + t(lang, "account_otp_wait", secs=wait)
+    svc = _infra(db)
+    st = _state(db, conv.mobile)
+    if svc and st and st.registration_id:
+        item = None
+        try:
+            item = svc.request_otp(conv)
+            if item:
+                svc.process_outbox_item(item)
+                db.flush()
+        except Exception:
+            log.exception("signup OTP resend failed for ***%s", (conv.mobile or "")[-4:])
+        if item and item.status == "DONE":
+            _note_signup_otp_sent(payload)
+            _write_payload(conv, payload)
+            return head + t(lang, "account_otp_resent")
+        err = str(getattr(item, "last_error", "") or "").upper()
+        if item and item.status == "RETRY":
+            # A delayed retry would deliver an SMS the user is no longer waiting for.
+            item.status = "FAILED"
+        if err == "OTP_REQUEST_FAILED":
+            return head + t(lang, "account_otp_limit")
+        return head + t(lang, "otp_send_fail")
+    otp = execute_tool(db, conv, "send_otp", {})
+    if not otp.get("ok"):
+        return head + t(lang, "otp_send_fail")
+    _note_signup_otp_sent(payload)
+    _write_payload(conv, payload)
+    return head + t(lang, "account_otp_resent")
 
 
 def _complete_after_otp(db: Session, conv: AiConversation, lang: str) -> str:
@@ -995,28 +1070,52 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
                 return _finish_existing(db, conv, lang, t(lang, "account_already"))
             return t(lang, "account_otp")
         digits = re.sub(r"\D", "", msg)
-        if len(digits) == 6:
-            svc = _infra(db)
+        if len(digits) != 6:
+            if wants_otp_resend(msg):
+                return _resend_signup_otp(db, conv, payload, lang)
+            if disputes_otp(msg):
+                return _resend_signup_otp(db, conv, payload, lang, "account_otp_disputed")
+            if 4 <= len(digits) <= 8:
+                return t(lang, "account_otp_need6", n=len(digits))
+            return t(lang, "account_otp_pending")
+        svc = _infra(db)
+        st = _state(db, conv.mobile)
+        if svc and st and st.registration_id:
+            item = svc.verify_otp_external(conv, digits)
+            if item:
+                svc.process_outbox_item(item)
+                db.flush()
             st = _state(db, conv.mobile)
-            if svc and st and st.registration_id:
-                item = svc.verify_otp_external(conv, digits)
-                if item:
-                    svc.process_outbox_item(item)
-                    db.flush()
-                st = _state(db, conv.mobile)
-                if st and st.account_status == "ACCOUNT_CREATED":
-                    return _complete_after_otp(db, conv, lang)
-                if st and item and (item.business_status == "OTP_EXPIRED" or item.last_error == "OTP_EXPIRED"):
-                    nxt = svc.request_otp(conv)
-                    if nxt:
-                        svc.process_outbox_item(nxt)
-                    return t(lang, "otp_ask")
-                return t(lang, "otp_mismatch")
-            result = execute_tool(db, conv, "verify_otp", {"code": digits})
-            if not result.get("ok"):
-                return t(lang, "otp_mismatch")
-            return _complete_after_otp(db, conv, lang)
-        return t(lang, "otp_ask")
+            if st and st.account_status == "ACCOUNT_CREATED":
+                return _complete_after_otp(db, conv, lang)
+            code = str((item.business_status or item.last_error) if item else "").upper()
+            if code == "OTP_EXPIRED":
+                payload.pop("otp_sent_at", None)
+                return _resend_signup_otp(db, conv, payload, lang, "account_otp_expired")
+            if code == "OTP_INVALID":
+                wrong = int(payload.get("otp_wrong") or 0) + 1
+                payload["otp_wrong"] = wrong
+                _write_payload(conv, payload)
+                left = _OTP_MAX_TRIES - wrong
+                log.info("signup OTP mismatch mobile=***%s try=%s", (conv.mobile or "")[-4:], wrong)
+                if left > 0:
+                    return t(lang, "account_otp_wrong", otp=digits, left=left)
+                payload.pop("otp_sent_at", None)
+                return _resend_signup_otp(db, conv, payload, lang, "account_otp_locked")
+            if code == "OTP_ATTEMPTS_EXCEEDED":
+                payload.pop("otp_sent_at", None)
+                return _resend_signup_otp(db, conv, payload, lang, "account_otp_locked")
+            log.warning(
+                "signup OTP verify failed mobile=***%s status=%s code=%s",
+                (conv.mobile or "")[-4:],
+                getattr(item, "status", None),
+                code,
+            )
+            return t(lang, "account_otp_verify_error")
+        result = execute_tool(db, conv, "verify_otp", {"code": digits})
+        if not result.get("ok"):
+            return t(lang, "otp_mismatch")
+        return _complete_after_otp(db, conv, lang)
 
     if step == "password":
         if _PASS_SKIP.search(msg) or len(msg) < 4:

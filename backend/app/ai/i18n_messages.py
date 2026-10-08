@@ -490,6 +490,56 @@ MESSAGES = {
         "hi": "*OTP भेज दिया*\n• SMS चेक कीजिए (WhatsApp पर नहीं आएगा)\n• यहाँ *6 अंकों का OTP* टाइप कीजिए",
         "en": "*OTP sent*\n• Check SMS (not on WhatsApp)\n• Type the *6-digit OTP* here",
     },
+    "account_otp_resent": {
+        "hinglish": "*Naya OTP bhej diya*\n• SMS check kijiye (WhatsApp pe nahi aayega)\n• Purana OTP ab kaam nahi karega\n• Sirf *naye SMS* wala 6-digit OTP yahan type kijiye",
+        "hi": "*नया OTP भेज दिया*\n• SMS चेक कीजिए (WhatsApp पर नहीं आएगा)\n• पुराना OTP अब काम नहीं करेगा\n• सिर्फ *नए SMS* वाला 6 अंकों का OTP यहाँ टाइप कीजिए",
+        "en": "*New OTP sent*\n• Check SMS (not on WhatsApp)\n• The old OTP will no longer work\n• Type only the 6-digit OTP from the *new SMS*",
+    },
+    "account_otp_wrong": {
+        "hinglish": "*OTP match nahi hua*\n• Aapne bheja: *{otp}*\n• SMS mein aaya *sabse naya* OTP dhyan se dekh kar dobara bhejiye\n• {left} try baaki\n• Naya OTP chahiye to *RESEND* likhiye",
+        "hi": "*OTP मैच नहीं हुआ*\n• आपने भेजा: *{otp}*\n• SMS में आया *सबसे नया* OTP ध्यान से देखकर दोबारा भेजिए\n• {left} कोशिश बाकी\n• नया OTP चाहिए तो *RESEND* लिखिए",
+        "en": "*OTP did not match*\n• You sent: *{otp}*\n• Check the *latest* OTP in your SMS and send it again\n• {left} tries left\n• Type *RESEND* for a new OTP",
+    },
+    "account_otp_disputed": {
+        "hinglish": "Jo OTP aapne bheja woh hamare system mein match nahi hua, isliye naya OTP bhej rahe hain.",
+        "hi": "आपने जो OTP भेजा वह हमारे सिस्टम में मैच नहीं हुआ, इसलिए नया OTP भेज रहे हैं।",
+        "en": "The OTP you sent did not match in our system, so we are sending a new one.",
+    },
+    "account_otp_expired": {
+        "hinglish": "Pichhla OTP expire ho gaya tha (10 minute valid rehta hai).",
+        "hi": "पिछला OTP एक्सपायर हो गया था (10 मिनट वैध रहता है)।",
+        "en": "The previous OTP had expired (valid for 10 minutes).",
+    },
+    "account_otp_locked": {
+        "hinglish": "Galat OTP ki limit poori ho gayi thi.",
+        "hi": "गलत OTP की सीमा पूरी हो गई थी।",
+        "en": "Too many wrong OTP attempts.",
+    },
+    "account_otp_wait": {
+        "hinglish": "*Thoda rukiye*\n• Naya OTP {secs} second baad mang sakte hain\n• Tab tak SMS mein aaya OTP yahan type kijiye\n• Phir *RESEND* likhiye",
+        "hi": "*थोड़ा रुकिए*\n• नया OTP {secs} सेकंड बाद माँग सकते हैं\n• तब तक SMS में आया OTP यहाँ टाइप कीजिए\n• फिर *RESEND* लिखिए",
+        "en": "*Please wait*\n• You can request a new OTP in {secs} seconds\n• Meanwhile type the OTP from your SMS here\n• Then type *RESEND*",
+    },
+    "account_otp_limit": {
+        "hinglish": "*OTP abhi nahi bhej paaye*\n• 1 ghante mein 5 se zyada OTP nahi bhej sakte\n• Thodi der baad *RESEND* likhiye",
+        "hi": "*OTP अभी नहीं भेज पाए*\n• 1 घंटे में 5 से ज़्यादा OTP नहीं भेज सकते\n• थोड़ी देर बाद *RESEND* लिखिए",
+        "en": "*Could not send OTP right now*\n• Max 5 OTPs per hour\n• Type *RESEND* a little later",
+    },
+    "account_otp_verify_error": {
+        "hinglish": "*OTP check nahi ho paya*\n• Server se jawab nahi aaya, aapki galti nahi hai\n• 1 minute baad wahi OTP dobara bhejiye",
+        "hi": "*OTP चेक नहीं हो पाया*\n• सर्वर से जवाब नहीं आया, आपकी गलती नहीं है\n• 1 मिनट बाद वही OTP दोबारा भेजिए",
+        "en": "*Could not check the OTP*\n• The server did not respond, this is not your mistake\n• Send the same OTP again in a minute",
+    },
+    "account_otp_need6": {
+        "hinglish": "OTP *6 digit* ka hota hai, aapne {n} digit bheje. SMS dekh kar poora OTP bhejiye.",
+        "hi": "OTP *6 अंकों* का होता है, आपने {n} अंक भेजे। SMS देखकर पूरा OTP भेजिए।",
+        "en": "The OTP has *6 digits*, you sent {n}. Please send the full OTP from the SMS.",
+    },
+    "account_otp_pending": {
+        "hinglish": "*OTP ka intezaar hai*\n• SMS mein aaya *6-digit OTP* yahan type kijiye\n• SMS nahi aaya ya OTP match nahi ho raha to *RESEND* likhiye",
+        "hi": "*OTP का इंतज़ार है*\n• SMS में आया *6 अंकों का OTP* यहाँ टाइप कीजिए\n• SMS नहीं आया या OTP मैच नहीं हो रहा तो *RESEND* लिखिए",
+        "en": "*Waiting for OTP*\n• Type the *6-digit OTP* from your SMS here\n• No SMS or OTP not matching? Type *RESEND*",
+    },
     "account_ask": {
         "hinglish": "Kya aapka InfraDealer account hai? Haan ya nahi bataiye.",
         "hi": "क्या आपका InfraDealer अकाउंट है? हाँ या नहीं बताइए।",
