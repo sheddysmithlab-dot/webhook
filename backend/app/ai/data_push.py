@@ -858,6 +858,7 @@ def push_listing(db: Session, conv: AiConversation) -> PushResult:
 
     # --- Final Data Filter safety pass ---
     gate = final_validation(db, conv)
+    draft = _draft_for(db, conv)
     payload = _payload(conv)
     if not gate.ready and gate.readiness in {"INVALID_DATA", "CONFLICT_REQUIRES_USER", "MISSING_REQUIRED_DATA"}:
         return PushResult(
@@ -873,7 +874,6 @@ def push_listing(db: Session, conv: AiConversation) -> PushResult:
     payload["confirmed_at"] = payload.get("confirmed_at") or _now_iso()
     payload["customer_confirmed"] = True
 
-    draft = _draft_for(db, conv)
     request_id = f"listing-draft-{draft.id}-v{version}"
     idem = generate_idempotency_key(draft.id, version)
 

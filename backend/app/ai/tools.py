@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from ..models import AiConversation, AiEvent, AiListingDraft, AiMedia, User
 from ..services import create_otp, deliver_otp, get_or_create_settings, hash_otp, utcnow
 from ..identity import looks_like_price, usable_person_name, wa_profile_name
-from .schema import ALLOWED_STATES, HUMAN_ONLY_STATUS, INTENTS, collection_state, dumps, listing_title, loads, missing_fields, normalize_vehicle_category
+from .schema import ALLOWED_STATES, HUMAN_ONLY_STATUS, INTENTS, collection_state, dumps, empty_payload, listing_title, loads, missing_fields, normalize_vehicle_category
 
 log = logging.getLogger("infradealer.ai")
 
@@ -193,8 +193,19 @@ def _draft_for(db: Session, conv: AiConversation) -> AiListingDraft:
     conv.draft_id = row.id
     payload = _payload(conv)
     payload["active_card_id"] = row.card_id
+    # A chat clear keeps the last listing's id/link; a new card must not
+    # inherit it or the push is skipped as "already pushed".
+    defaults = empty_payload()
+    for key in _PREVIOUS_LISTING_KEYS:
+        payload[key] = defaults.get(key)
     _write_payload(conv, payload)
     return row
+
+
+_PREVIOUS_LISTING_KEYS = (
+    "infradealer_listing_id", "listing_url", "listing_status", "push_stage", "submission",
+    "confirmed_version", "rejection_reason", "listing_review_notified", "posted_product_id",
+)
 
 
 def _log(db: Session, conv: AiConversation, event_type: str, detail: dict, wamid: str = "") -> None:

@@ -403,8 +403,6 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
     # Learn from past admin reject reasons so agent guides corrections better
     lessons = []
     try:
-        from .tools import _payload
-
         pl = _payload(conv) if conv else {}
         raw_lessons = list(pl.get("admin_rejection_lessons") or [])
         for item in raw_lessons[-5:]:

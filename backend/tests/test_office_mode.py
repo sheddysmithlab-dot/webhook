@@ -530,6 +530,26 @@ def test_new_card_never_borrows_previous_cards_photos(db, client):
     assert unique_photo_ids(db, conv, _payload(conv)) == []
 
 
+def test_new_card_after_chat_clear_is_not_treated_as_already_pushed(db, client):
+    from app.ai.cards import clear_card_chat_data
+    from app.ai.tools import _draft_for
+
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    posted = _card(db, conv, status="APPROVED", brand="Tata", model="3118",
+                   infradealer_listing_id="103", listing_url="https://infradealer.com/listings/103",
+                   listing_status="POSTED")
+    clear_card_chat_data(db, conv, posted)
+    assert conv.draft_id is None and _payload(conv)["infradealer_listing_id"] == "103"
+    pl = _payload(conv)
+    pl.update(brand="Ashok Leyland", model="2518", year=2017)
+    _write_payload(conv, pl)
+    fresh = _draft_for(db, conv)
+    pl = _payload(conv)
+    assert fresh.id != posted.id and pl["brand"] == "Ashok Leyland"
+    assert not pl.get("infradealer_listing_id") and not pl.get("listing_url") and not pl.get("listing_status")
+
+
 def test_listing_button_uses_single_cta_url(monkeypatch):
     import app.services as services
 
