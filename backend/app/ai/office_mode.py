@@ -7,6 +7,11 @@ select or create a customer account and post listings onto it:
     create customer 9876543210   create a new customer (agent asks the name, no OTP)
     customer change / clear      drop the selected customer
     customer                     show the selected customer
+    detail                       wallet, listing counts and recent listings of the selected customer
+    hi / menu                    office menu
+
+A bare mobile or a short sentence around one ("is number se listing daal do
+9111554173") selects that customer too.
 
 Office mode is fail-closed: it stays off unless the Meta App Secret is set, so
 every inbound message was signature-verified and the sender number is genuine.
@@ -42,6 +47,31 @@ _PHONE_IN_TEXT = re.compile(r"(?<!\d)(?:\+?\s*91[\s\-]*|0)?[6-9](?:[\s\-]*\d){9}
 _ACCOUNT_WORD = re.compile(
     r"\b(?:account|acount|accont|accout|a/c|khata|customer|costumer|grahak|user\s*id|profile)\b", re.I
 )
+_SELECT_INTENT = re.compile(
+    r"\b(?:number|nummber|numbr|nmbr|no|mobile|mob|phone|listing|listings|post|posting|daal\w*|dal|dalo|"
+    r"detail\w*|select|chuno|wale|wala|wali|se|par|pe|ka|ki|ke|check|dekh\w*|dikha\w*|bata\w*|"
+    r"kholo|open|access|login|use)\b",
+    re.I,
+)
+_LISTING_SIGNAL = re.compile(
+    r"\b(?:19[89]\d|20[0-3]\d)\b|₹|\b(?:lakh|lakhs|lac|lacs|price|rate|rs|km|kms|hours?|hrs|model|seller|"
+    r"contact|owner|malik|bechni|bechna|bikau|sale|sell|condition|tyre|engine)\b",
+    re.I,
+)
+_DETAIL = re.compile(
+    r"\b(?:detail\w*|detial\w*|deatil\w*|detal\w*|info\w*|jaa?nkari|summary|balance|tokens?|wallet|khata)\b"
+    r"|\blistings?\b.{0,30}\b(?:dikha\w*|dekh\w*|bata\w*|list|kitni|kitne|show|view|check)\b"
+    r"|\b(?:dikha\w*|dekh\w*|bata\w*|show|view|check|kitni|kitne)\b.{0,30}\blistings?\b",
+    re.I,
+)
+_DETAIL_SKIP = re.compile(
+    r"\b(?:vehicle|gaa?di|machine|photo\w*|pic\w*|image\w*|video|bhej\w*|send|sending)\b", re.I
+)
+_GREETING = re.compile(
+    r"^\s*(?:hi+|hii+|hel+o+|helo|hey+|namaste|namaskar|ram\s*ram|menu|help|start|options?|sir)\s*[.!?]*\s*$",
+    re.I,
+)
+_SHORT_WORDS = 14
 
 
 def _now() -> datetime:
@@ -194,7 +224,7 @@ def operator_session(db: Session, conv: AiConversation) -> AiOfficeSession | Non
     stale = row is not None and (row.updated_at or row.created_at) and _now() - (row.updated_at or row.created_at) > OPERATOR_REVERIFY
     if row is not None and not stale:
         return row
-    if row is None and str(_payload(conv).get("account_type") or "").lower() != "office":
+    if row is None and not _reported_office(db, conv):
         return None
     res = _call(db, "office_customer_lookup", mobile, mobile)
     if _forbidden(res):
@@ -217,6 +247,90 @@ def _customer_card(target: dict) -> str:
         f"User ID: {target.get('username') or '-'}",
     ]
     return "\n".join(lines)
+
+
+_STATUS_LABEL = {
+    "approved": "Live",
+    "pending": "Pending",
+    "rejected": "Rejected",
+    "expired": "Expired",
+}
+
+
+def _inr(value) -> str:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if amount <= 0:
+        return ""
+    if amount >= 1e7:
+        return f"₹{amount / 1e7:.2f}".rstrip("0").rstrip(".") + " Cr"
+    if amount >= 1e5:
+        return f"₹{amount / 1e5:.2f}".rstrip("0").rstrip(".") + " lakh"
+    return f"₹{amount:,.0f}"
+
+
+def _int(value) -> int:
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _account_details(target: dict, customer: dict) -> str:
+    """Selected customer card plus wallet / listings when the backend sent them."""
+    lines = [_customer_card(target)]
+    if not customer:
+        return lines[0]
+    status = str(customer.get("status") or "").strip()
+    if status:
+        lines.append(f"Status: {status}")
+    if "tokens" in customer:
+        lines.append(f"Wallet: {_int(customer.get('tokens'))} tokens")
+    if "listings_total" in customer:
+        lines.append(
+            f"Listings: {_int(customer.get('listings_total'))} total"
+            f" | Live {_int(customer.get('listings_live'))}"
+            f" | Pending {_int(customer.get('listings_pending'))}"
+            f" | Rejected {_int(customer.get('listings_rejected'))}"
+        )
+    recent = customer.get("recent_listings")
+    if isinstance(recent, list) and recent:
+        lines.append("")
+        lines.append("Recent listings:")
+        for i, item in enumerate(recent[:5], 1):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "Listing").strip()[:60]
+            bits = [title]
+            price = _inr(item.get("price"))
+            if price:
+                bits.append(price)
+            st = str(item.get("status") or "").lower()
+            bits.append(_STATUS_LABEL.get(st, st.title() or "-"))
+            lines.append(f"{i}. " + " — ".join(bits))
+            if item.get("url") and st == "approved":
+                lines.append(f"   {item['url']}")
+    elif "listings_total" in customer:
+        lines.append("Abhi is account par koi listing nahi hai.")
+    return "\n".join(lines)
+
+
+def _office_menu(target: dict | None) -> str:
+    head = "🏢 InfraDealer Office Mode (bina OTP / password)\n"
+    if target:
+        head += f"📌 Selected: {target.get('name') or '-'}, {target.get('phone') or '-'}\n"
+    else:
+        head += "📌 Abhi koi customer select nahi hai.\n"
+    return (
+        head + "\n"
+        "• Customer select: 98XXXXXXXX (ya: customer 98XXXXXXXX)\n"
+        "• Naya account: create customer 98XXXXXXXX\n"
+        "• Account detail / listings: detail\n"
+        "• Listing post: customer select karke vehicle details + photos bhejein\n"
+        "• Customer hatana: customer change"
+    )
 
 
 def _select_hint() -> str:
@@ -249,10 +363,29 @@ def _cmd_select(db: Session, mobile: str, phone: str, res: dict | None = None) -
     _set_target(row, customer)
     return (
         "✅ Customer selected\n"
-        f"{_customer_card(active_target(row) or {})}\n\n"
+        f"{_account_details(active_target(row) or {}, customer)}\n\n"
         "Ab bheji gayi listings isi account par post hongi.\n"
         "Badalne ke liye: customer change"
     )
+
+
+def _cmd_details(db: Session, row: AiOfficeSession, mobile: str) -> str | None:
+    target = active_target(row)
+    if not target:
+        return "Abhi koi customer select nahi hai. Kis customer ki detail chahiye?\n" + _select_hint()
+    res = _call(db, "office_customer_lookup", mobile, target["phone"])
+    if _forbidden(res):
+        _drop_session(db, mobile)
+        return None
+    if not res or not res.get("ok"):
+        return _server_error()
+    body = res.get("body") or {}
+    if not body.get("found"):
+        _clear_target(row)
+        return f"❌ Is mobile par ab koi account nahi hai: {target['phone']}\n" + _select_hint()
+    customer = body.get("customer") or {}
+    _set_target(row, customer)
+    return "📋 Customer account\n" + _account_details(active_target(row) or target, customer)
 
 
 def _cmd_create_start(db: Session, mobile: str, phone: str) -> str | None:
@@ -321,12 +454,30 @@ def _cmd_create_finish(db: Session, row: AiOfficeSession, mobile: str, text: str
     )
 
 
+def _short(msg: str) -> bool:
+    return len(_PHONE_IN_TEXT.sub(" ", msg).split()) <= _SHORT_WORDS
+
+
+def _wants_customer(msg: str) -> bool:
+    rest = _PHONE_IN_TEXT.sub(" ", msg)
+    if not re.sub(r"[\s,.:;!?\-+()]", "", rest):
+        return True
+    if _LISTING_SIGNAL.search(rest):
+        return bool(_ACCOUNT_WORD.search(rest)) and _short(msg)
+    if _ACCOUNT_WORD.search(rest):
+        return True
+    return bool(_SELECT_INTENT.search(rest)) and _short(msg)
+
+
 def _natural_select(db: Session, conv: AiConversation, mobile: str, msg: str) -> str | None:
-    """"91115 54173 wale account se post karna hai" → select (or offer to create) that customer."""
-    if not _ACCOUNT_WORD.search(msg):
-        return None
+    """"91115 54173 wale account se post karna hai" → select (or offer to create) that customer.
+
+    A vehicle description that merely contains a seller contact is left alone.
+    """
     phone = _customer_phone_in_text(msg, mobile)
-    if not phone or _known_operator(db, conv) is None:
+    if not phone or not _wants_customer(msg):
+        return None
+    if _known_operator(db, conv) is None:
         return None
     res = _call(db, "office_customer_lookup", mobile, phone)
     if _forbidden(res):
@@ -398,6 +549,18 @@ def handle_office_turn(db: Session, conv: AiConversation, text: str, lang: str =
     if natural:
         return natural
 
+    if _GREETING.match(msg):
+        row = _known_operator(db, conv)
+        if row is not None:
+            return _office_menu(active_target(row))
+        return None
+
+    if _DETAIL.search(msg) and _short(msg) and not (_LISTING_SIGNAL.search(msg) or _DETAIL_SKIP.search(msg)):
+        row = _known_operator(db, conv)
+        if row is not None:
+            return _cmd_details(db, row, mobile)
+        return None
+
     if _payload(conv).get("awaiting_confirm"):
         from .confirm import _POST_CONFIRM, is_yes
 
@@ -418,9 +581,23 @@ def _known_operator(db: Session, conv: AiConversation) -> AiOfficeSession | None
     row = _get_session(db, mobile)
     if row is not None:
         return row
-    if str(_payload(conv).get("account_type") or "").lower() != "office":
+    if not _reported_office(db, conv):
         return None
     return operator_session(db, conv)
+
+
+def _reported_office(db: Session, conv: AiConversation) -> bool:
+    """Backend said account_type=office (conversation payload or cached account state)."""
+    if str(_payload(conv).get("account_type") or "").lower() == "office":
+        return True
+    try:
+        from .account_filter import read_account_details
+
+        remote = read_account_details(db, conv.mobile).remote or {}
+        return str(remote.get("account_type") or "").lower() == "office"
+    except Exception:
+        log.exception("office_mode: account state read failed")
+        return False
 
 
 def is_office_session(db: Session, conv: AiConversation) -> bool:

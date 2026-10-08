@@ -268,6 +268,118 @@ def test_natural_sentence_needs_account_word(db, client):
     assert om.handle_office_turn(db, conv, "seller contact 98765 43210, JCB 3DX 2019") is None
 
 
+DETAILED = {
+    **CUSTOMER,
+    "tokens": 12,
+    "listings_total": 3,
+    "listings_live": 1,
+    "listings_pending": 1,
+    "listings_rejected": 1,
+    "recent_listings": [
+        {"id": "41", "title": "JCB 3DX 2019", "status": "approved", "price": 2500000,
+         "url": "https://infradealer.com/listings/41"},
+        {"id": "40", "title": "Tata 407", "status": "pending", "price": 550000},
+    ],
+}
+
+
+def test_screenshot_sentence_selects_customer_without_account_word(db, client):
+    client.customers["9111554173"] = {**CUSTOMER, "user_id": "88", "phone": "9111554173", "username": "shiv"}
+    conv = _conv(db, account_type="office")
+    reply = om.handle_office_turn(db, conv, "is number se listing daal do 9111554173")
+    assert "Customer selected" in reply and "Mobile: 9111554173" in reply
+    assert om.active_target(db.query(AiOfficeSession).one())["user_id"] == "88"
+
+
+@pytest.mark.parametrize("text", [
+    "9876543210",
+    "+91 98765 43210",
+    "98765 43210 wale ki listing dikhao",
+    "9876543210 ka detail do",
+    "9876543210 select karo",
+])
+def test_short_operator_messages_with_mobile_select(db, client, text):
+    conv = _conv(db, account_type="office")
+    assert "Customer selected" in om.handle_office_turn(db, conv, text)
+
+
+def test_operator_select_unknown_bare_number_offers_create(db, client):
+    conv = _conv(db, account_type="office")
+    reply = om.handle_office_turn(db, conv, "9111554173")
+    assert "koi account nahi hai: 9111554173" in reply
+
+
+def test_vehicle_description_with_seller_mobile_is_not_hijacked(db, client):
+    conv = _conv(db, account_type="office")
+    text = "JCB 3DX 2019 model, price 25 lakh, owner contact 9876543210, Indore"
+    assert om.handle_office_turn(db, conv, text) is None
+
+
+def test_select_shows_wallet_and_listings(db, client):
+    client.customers["9876543210"] = DETAILED
+    conv = _conv(db, account_type="office")
+    reply = om.handle_office_turn(db, conv, "customer 9876543210")
+    assert "Wallet: 12 tokens" in reply
+    assert "Listings: 3 total | Live 1 | Pending 1 | Rejected 1" in reply
+    assert "JCB 3DX 2019 — ₹25 lakh — Live" in reply
+    assert "https://infradealer.com/listings/41" in reply
+    assert "Tata 407 — ₹5.5 lakh — Pending" in reply
+
+
+def test_account_detail_shows_selected_customer_not_office(db, client):
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    client.customers["9876543210"] = DETAILED
+    reply = om.handle_office_turn(db, conv, "MERE ACCOUNT KI DETAILDO")
+    assert reply.startswith("📋 Customer account")
+    assert "Mobile: 9876543210" in reply and "Wallet: 12 tokens" in reply
+
+
+def test_account_detail_without_selection_asks_for_customer(db, client):
+    conv = _conv(db, account_type="office")
+    reply = om.handle_office_turn(db, conv, "account ki detail do")
+    assert "koi customer select nahi" in reply and "customer 98XXXXXXXX" in reply
+
+
+def test_listing_list_request_shows_details(db, client):
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    client.customers["9876543210"] = DETAILED
+    assert "Recent listings:" in om.handle_office_turn(db, conv, "listing dikhao")
+
+
+def test_vehicle_detail_message_is_not_account_detail(db, client):
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    assert om.handle_office_turn(db, conv, "vehicle detail bhej raha hu") is None
+
+
+def test_greeting_shows_office_menu(db, client):
+    conv = _conv(db, account_type="office")
+    menu = om.handle_office_turn(db, conv, "HII")
+    assert "Office Mode" in menu and "koi customer select nahi" in menu
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    assert "Selected: ramesh.kumar, 9876543210" in om.handle_office_turn(db, conv, "hi")
+
+
+def test_regular_user_greeting_and_detail_fall_through(db, client):
+    conv = _conv(db, mobile="9000111333", account_type="free")
+    assert om.handle_office_turn(db, conv, "hii") is None
+    assert om.handle_office_turn(db, conv, "mere account ki detail do") is None
+    assert om.handle_office_turn(db, conv, "9876543210") is None
+    assert db.query(AiOfficeSession).count() == 0
+
+
+def test_operator_recognised_from_cached_account_state(db, client):
+    from app.models import InfraDealerAccountState
+
+    db.add(InfraDealerAccountState(mobile=OPERATOR, account_status="ACCOUNT_FOUND",
+                                   meta_json='{"account_type": "office"}'))
+    db.flush()
+    conv = _conv(db)
+    assert "Customer selected" in om.handle_office_turn(db, conv, "is number se listing daal do 9876543210")
+
+
 def test_operator_told_why_office_mode_is_off(db, client, monkeypatch):
     monkeypatch.setattr(om, "signature_enforced", lambda db: False)
     office = _conv(db, account_type="office")
