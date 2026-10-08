@@ -667,6 +667,10 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
     if collection_ready(payload) and not payload.get("customer_confirmed") and not payload.get("awaiting_confirm"):
         from .confirm import send_summary
 
+        # A sell listing needs its 2 photos before the confirm summary (same rule as chat_memory).
+        if str(payload.get("intent") or "").upper() == "SELL" and not payload.get("photos_complete"):
+            n = int(payload.get("photo_count") or 0)
+            return t(lang, "photo_need_min", count=n) if n else t(lang, "photos")
         try:
             return send_summary(db, conv, lang)
         except Exception:

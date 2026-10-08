@@ -506,6 +506,29 @@ def test_listing_button_skipped_after_approved_message(db, client, monkeypatch):
     assert sent == []
 
 
+def test_full_listing_text_asks_photos_before_summary(db, client, monkeypatch):
+    from app.ai import engine as eng
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "ai_prompt_chat", True)
+    monkeypatch.setattr(eng, "llm_configured", lambda db: False)
+    conv = _conv(db, mobile="9000222444", account_type="free")
+    pl = _payload(conv)
+    pl.update({
+        "intent": "SELL", "category": "Truck", "brand": "Eicher", "model": "3015", "year": 2019,
+        "expected_price": 1200000, "running_km": 250000, "state": "Madhya Pradesh", "city": "Sagar",
+        "account_eligibility": "ELIGIBLE", "account_can_post": True, "account_onboarded": True,
+    })
+    _write_payload(conv, pl)
+    monkeypatch.setattr(eng, "prepare_prompt_state", lambda db, conv, text, media_note: _payload(conv))
+    monkeypatch.setattr(eng, "handle_account_info", lambda *a, **k: None)
+    monkeypatch.setattr(eng, "needs_account_gate", lambda payload: False)
+    monkeypatch.setattr(eng, "prompt_chat_enabled", lambda db: True)
+    out = eng.prompt_chat_turn(db, conv, "Eicher Pro 3015 truck 2019 Sagar 12 lakh")
+    assert "photo" in (out or "").lower() or "फोटो" in (out or "")
+    assert not _payload(conv).get("awaiting_confirm")
+
+
 def test_running_km_in_lakh_is_extracted():
     from app.ai.data_filteration import extract_fields
 
