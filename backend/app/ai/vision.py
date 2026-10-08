@@ -9,6 +9,7 @@ casual vehicle photo. Never raises; returns "" on any failure.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import re
@@ -167,3 +168,83 @@ def extract_text_from_image(
         log.warning("vision.empty: no content keys=%s", list(data.keys()))
         return ""
     return content
+
+
+_VEHICLE_PROMPT = (
+    "This photo shows a commercial vehicle or construction machine for sale in India. "
+    "Look at the whole image: the vehicle body, brand badge/logo, model name written on it, "
+    "and any visible text or stickers. Reply with ONLY a JSON object using these keys, "
+    "omitting any you cannot see clearly: "
+    '"category" (one of Truck, Dumper, Tipper, Crane, Poclain, Loader, Backhoe Loader, JCB, '
+    'Excavator, Grader, Crusher), "brand", "model", "year" (only if a year is printed). '
+    "Never guess."
+)
+
+VISION_FILL_KEYS = ("category", "brand", "model", "year")
+MAX_VISION_READS_PER_CARD = 2
+
+
+def extract_vehicle_fields(db: Session, conv: AiConversation, media_row: AiMedia) -> dict:
+    """Listing fields read from a vehicle photo ({} when nothing reliable)."""
+    from datetime import date
+
+    from .data_filteration import extract_fields
+    from .schema import normalize_vehicle_category
+
+    raw = extract_text_from_image(db, conv, media_row, prompt=_VEHICLE_PROMPT)
+    m = re.search(r"\{.*\}", raw or "", re.S)
+    if not m:
+        return {}
+    try:
+        data = json.loads(m.group(0))
+    except ValueError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict = {}
+    cat = normalize_vehicle_category(str(data.get("category") or ""))
+    if cat and cat != "Other":
+        out["category"] = cat
+    brand = str(data.get("brand") or "").strip()
+    if brand:
+        out["brand"] = extract_fields([brand]).get("brand") or brand.title()[:40]
+    model = re.sub(r"\s+", " ", str(data.get("model") or "")).strip()
+    if model and model.lower() not in {"unknown", "n/a", "na", "none"}:
+        out["model"] = model[:40]
+    try:
+        year = int(str(data.get("year") or "").strip()[:4])
+    except ValueError:
+        year = 0
+    if 1980 <= year <= date.today().year:
+        out["year"] = year
+    return out
+
+
+def fill_listing_from_photo(db: Session, conv: AiConversation, media_row: AiMedia) -> dict:
+    """Fill only blank card fields from a vehicle photo; capped per card. Returns what was filled."""
+    from .tools import _payload, _write_payload
+
+    payload = _payload(conv)
+    missing = [k for k in VISION_FILL_KEYS if payload.get(k) in (None, "", [], {})]
+    if not missing:
+        return {}
+    reads = payload.get("vision_reads") if isinstance(payload.get("vision_reads"), dict) else {}
+    if reads.get("draft") != conv.draft_id:
+        reads = {"draft": conv.draft_id, "n": 0}
+    if int(reads.get("n") or 0) >= MAX_VISION_READS_PER_CARD:
+        return {}
+    reads["n"] = int(reads.get("n") or 0) + 1
+    payload["vision_reads"] = reads
+    _write_payload(conv, payload)
+
+    found = extract_vehicle_fields(db, conv, media_row)
+    filled = {k: v for k, v in found.items() if k in missing}
+    if filled:
+        payload = _payload(conv)
+        for k, v in filled.items():
+            if payload.get(k) in (None, "", [], {}):
+                payload[k] = v
+        _write_payload(conv, payload)
+        media_row.extracted_text = json.dumps(found, ensure_ascii=False) if found else ""
+        media_row.extract_kind = "vehicle_fields"
+    return filled

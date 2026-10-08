@@ -68,8 +68,11 @@ _DETAIL_SKIP = re.compile(
     r"\b(?:vehicle|gaa?di|machine|photo\w*|pic\w*|image\w*|video|bhej\w*|send|sending)\b", re.I
 )
 _SWITCH_WORD = re.compile(
-    r"\b(?:change|chang|badal\w*|badlo|switch|dusr\w*|doosr\w*|dusra|another|other|alag|naya|nayi|new)\b", re.I
+    r"\b(?:change|chang|badal\w*|badlo|switch|dusr\w*|doosr\w*|dusra|another|other|alag)\b"
+    r"|\b(?:naya|nayi|new)\s+(?:account|acount|customer|grahak|number|mobile)\b",
+    re.I,
 )
+_SAME_WORD = re.compile(r"\b(?:same|isi|issi|wahi|wohi|yahi|usi|ussi|current|purane?)\b", re.I)
 _NUMBER_WORD = re.compile(r"\b(?:number|nummber|numbr|nmbr|mobile|no)\b", re.I)
 _LIVE_STATUSES = {"POSTED", "APPROVED", "LIVE", "PUBLISHED"}
 _GREETING = re.compile(
@@ -578,7 +581,7 @@ def _close_posted_card(db: Session, conv: AiConversation) -> None:
 
 def _wants_account_switch(msg: str) -> bool:
     """"account change karke dusre number se dalna hai" — no number given yet."""
-    if _PHONE_IN_TEXT.search(msg) or _LISTING_SIGNAL.search(msg):
+    if _PHONE_IN_TEXT.search(msg) or _LISTING_SIGNAL.search(msg) or _SAME_WORD.search(msg):
         return False
     if len(msg.split()) > 25:
         return False
@@ -745,11 +748,11 @@ def decorate_office_reply(db: Session, conv: AiConversation, reply: str) -> str:
         operator = _known_operator(db, conv) if _COOLDOWN_LINE.search(reply) else None
         if operator is not None:
             # Office listings go live immediately — never say "team will review".
+            # Office listings are approved on creation; a failed push never reaches this text.
             target = active_target(operator) or {}
             who = target.get("name") or target.get("phone") or "customer"
-            posted = str(_payload(conv).get("listing_status") or "").upper() == "POSTED"
             reply = (
-                f"✅ Listing {who} ke account par {'post ho gayi (live)' if posted else 'submit ho gayi'}."
+                f"✅ Listing {who} ke account par post ho gayi (live)."
                 "\n\nAgli listing: isi customer ki agli gaadi bhejein, ya naya customer select karein (98XXXXXXXX)."
             )
     except Exception:

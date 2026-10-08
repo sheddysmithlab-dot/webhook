@@ -491,11 +491,7 @@ def test_office_submit_reply_has_no_cooldown(db, client):
     om.handle_office_turn(db, conv, "customer 9876543210")
     out = om.decorate_office_reply(db, conv, t("hi", "submitted"))
     assert "10 मिनट" not in out and "रिव्यू" not in out and "Agli listing" in out
-    assert "ramesh.kumar" in out and "submit ho gayi" in out
-    pl = _payload(conv)
-    pl["listing_status"] = "POSTED"
-    _write_payload(conv, pl)
-    assert "post ho gayi (live)" in om.decorate_office_reply(db, conv, t("hi", "submitted"))
+    assert "ramesh.kumar" in out and "post ho gayi (live)" in out
     regular = _conv(db, mobile="9000111333", account_type="free")
     assert "10 मिनट" in om.decorate_office_reply(db, regular, t("hi", "submitted"))
 
@@ -608,6 +604,51 @@ def test_forwarded_trailer_listing_fields():
     out = extract_fields(["Tata Tip Trailer Single Axle\nHorse YOM - 2013\nLocation - MP\nDemand - 17lac + gst"])
     assert out["category"] == "Truck" and out["brand"] == "Tata"
     assert out["state"] == "Madhya Pradesh" and out["price"] == 1700000
+
+
+def test_same_account_new_listing_keeps_customer(db, client):
+    conv = _conv(db)
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    assert om.handle_office_turn(db, conv, "Ab new listing daal do same account se") is None
+    assert om.active_target(db.query(AiOfficeSession).one())["user_id"] == "77"
+    assert om._wants_account_switch("new account se posting karni hai")
+
+
+def test_office_submit_reply_says_live(db, client):
+    from app.ai.i18n import t
+
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    out = om.decorate_office_reply(db, conv, t("hi", "submitted"))
+    assert "post ho gayi (live)" in out and "submit ho gayi" not in out
+
+
+def test_photo_fills_only_missing_fields(db, client, monkeypatch, tmp_path):
+    from app.ai import vision
+    from app.models import AiMedia
+
+    conv = _conv(db, intent="SELL", brand="Tata", expected_price=1700000)
+    img = tmp_path / "p.jpg"
+    img.write_bytes(b"x")
+    row = AiMedia(conversation_id=conv.id, kind="image", local_path=str(img), mime="image/jpeg")
+    db.add(row)
+    db.flush()
+    calls = []
+
+    def fake(db_, conv_, media_row, prompt=""):
+        calls.append(1)
+        return 'Sure: {"category": "Truck", "brand": "Ashok Leyland", "model": "4525", "year": "2019"}'
+
+    monkeypatch.setattr(vision, "extract_text_from_image", fake)
+    filled = vision.fill_listing_from_photo(db, conv, row)
+    assert filled == {"category": "Truck", "model": "4525", "year": 2019}
+    pl = _payload(conv)
+    assert pl["brand"] == "Tata" and pl["model"] == "4525"
+    pl["model"] = ""
+    _write_payload(conv, pl)
+    vision.fill_listing_from_photo(db, conv, row)
+    vision.fill_listing_from_photo(db, conv, row)
+    assert len(calls) == vision.MAX_VISION_READS_PER_CARD
 
 
 def test_running_km_in_lakh_is_extracted():
