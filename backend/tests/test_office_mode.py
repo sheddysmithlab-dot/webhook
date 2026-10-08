@@ -475,6 +475,26 @@ def test_office_can_edit_card_made_for_current_customer(db, client):
     assert prep["mode"] == "engine_update"
 
 
+def test_office_submit_reply_has_no_cooldown(db, client):
+    from app.ai.i18n import t
+
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    out = om.decorate_office_reply(db, conv, t("hi", "submitted"))
+    assert "10 मिनट" not in out and "सबमिट" in out and "Agli listing" in out
+    regular = _conv(db, mobile="9000111333", account_type="free")
+    assert "10 मिनट" in om.decorate_office_reply(db, regular, t("hi", "submitted"))
+
+
+def test_office_line_skips_listing_cooldown(db, client):
+    from app.ai.chat_memory import _office_line
+
+    op = _conv(db, account_type="office")
+    om.handle_office_turn(db, op, "customer 9876543210")
+    assert _office_line(db, op) is True
+    assert _office_line(db, _conv(db, mobile="9000111333", account_type="free")) is False
+
+
 def test_hindi_tata_dump_extracts_price_and_city():
     from app.ai.engine import extract_turn
 

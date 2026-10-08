@@ -779,7 +779,8 @@ def submit_confirmed_listing(db: Session, conv: AiConversation) -> dict:
             return result
     _set_rm_state(payload, "SUBMITTED_TO_ADMIN")
     payload["listing_status"] = payload.get("listing_status") or "PENDING_REVIEW"
-    _set_next_listing_cooldown(payload, minutes=10)
+    if not _office_line(db, conv):
+        _set_next_listing_cooldown(payload, minutes=10)
     _write_payload(conv, payload)
     execute_tool(db, conv, "save_conversation", {"state": "READY_FOR_REVIEW"})
     return result
@@ -934,6 +935,16 @@ def _listing_cooldown_active(payload: dict) -> bool:
             dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
         return datetime.utcnow() < dt
     except ValueError:
+        return False
+
+
+def _office_line(db: Session, conv: AiConversation) -> bool:
+    """Office operator posts back to back for many customers — no per-number cooldown."""
+    try:
+        from .office_mode import is_office_session
+
+        return is_office_session(db, conv)
+    except Exception:
         return False
 
 
@@ -1275,7 +1286,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
 
         elif intent in {"REJECT_CORRECTION", "PROVIDE_FIELD", "SELL", "BUY", "UPLOAD_PHOTO", "OTHER", "RESOLVE_CONFLICT"}:
             # Soft cooldown after a successful listing submit (10 minutes).
-            if intent in {"SELL", "BUY"} and _listing_cooldown_active(payload):
+            if intent in {"SELL", "BUY"} and _listing_cooldown_active(payload) and not _office_line(db, conv):
                 response_type = "ERROR_MESSAGE"
                 reply = t(lang, "listing_cooldown")
                 _write_payload(conv, payload)

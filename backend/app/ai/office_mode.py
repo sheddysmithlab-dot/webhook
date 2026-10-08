@@ -676,9 +676,21 @@ def is_office_session(db: Session, conv: AiConversation) -> bool:
         return False
 
 
+_COOLDOWN_LINE = re.compile(r"^.*(?:\b10\s*(?:minute|minutes|min)\b|10\s*मिनट).*$\n?", re.I | re.M)
+
+
 def decorate_office_reply(db: Session, conv: AiConversation, reply: str) -> str:
     """Show which customer account a listing will post to at the confirm step."""
-    if not reply or "Post to:" in reply:
+    if not reply:
+        return reply
+    try:
+        if _COOLDOWN_LINE.search(reply) and _known_operator(db, conv) is not None:
+            reply = _COOLDOWN_LINE.sub("", reply).rstrip() + (
+                "\n\nAgli listing: isi customer ki agli gaadi bhejein, ya naya customer select karein (98XXXXXXXX)."
+            )
+    except Exception:
+        log.exception("office_mode: cooldown strip failed")
+    if "Post to:" in reply:
         return reply
     try:
         if not _payload(conv).get("awaiting_confirm"):
