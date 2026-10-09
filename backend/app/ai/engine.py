@@ -758,10 +758,6 @@ def _usage_gap(payload: dict) -> str | None:
 def _summary_or_photo_gate(db, conv: AiConversation, payload: dict, lang: str) -> str | None:
     from .confirm import send_summary
 
-    # A sell listing needs its 2 photos before the confirm summary (same rule as chat_memory).
-    if str(payload.get("intent") or "").upper() == "SELL" and not payload.get("photos_complete"):
-        n = int(payload.get("photo_count") or 0)
-        return t(lang, "photo_need_min", count=n) if n else t(lang, "photos")
     try:
         return send_summary(db, conv, lang)
     except Exception:

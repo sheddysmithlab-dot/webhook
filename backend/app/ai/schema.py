@@ -4,7 +4,8 @@ import re
 FILTER_VERSION = "df-2.4"
 SCHEMA_VERSION = "infra-vehicle-v12"
 
-SELL_ASK = ["category", "brand", "model", "year", "expected_price", "state"]
+# A sell listing only needs the category and a vehicle name (brand or model); everything else is optional.
+SELL_ASK = ["category", "brand"]
 BUY_ASK = ["category", "brand", "budget", "state"]
 HUMAN_ONLY_STATUS = {"POSTED", "APPROVED", "LIVE", "published", "PUBLISHED"}
 ALLOWED_STATES = {
@@ -22,8 +23,8 @@ VEHICLE_CATEGORIES = (
 )
 
 # Category-driven schemas for Data Filter (required fields vary by category).
-_BASE_SELL_REQUIRED = ["brand", "model", "year", "location", "price"]
-_BASE_SELL_OPTIONAL = ["km", "fuel", "owners", "condition", "photos"]
+_BASE_SELL_REQUIRED = ["brand"]
+_BASE_SELL_OPTIONAL = ["model", "year", "location", "price", "km", "fuel", "owners", "condition", "photos"]
 _BASE_PRIORITIES = {
     "category": 100,
     "brand": 95,
@@ -42,85 +43,85 @@ CATEGORY_SCHEMAS: dict[str, dict] = {
     "Truck": {
         "category": "Truck",
         "schema_version": "truck-v12",
-        "required": ["brand", "model", "year", "location", "price"],
-        "optional": ["km", "fuel", "owners", "condition", "photos"],
+        "required": ["brand"],
+        "optional": ["model", "year", "location", "price", "km", "fuel", "owners", "condition", "photos"],
         "priorities": dict(_BASE_PRIORITIES),
     },
     "Tipper": {
         "category": "Tipper",
         "schema_version": "tipper-v12",
-        "required": ["brand", "model", "year", "location", "price"],
-        "optional": ["km", "fuel", "owners", "condition", "photos"],
+        "required": ["brand"],
+        "optional": ["model", "year", "location", "price", "km", "fuel", "owners", "condition", "photos"],
         "priorities": dict(_BASE_PRIORITIES),
     },
     "Dumper": {
         "category": "Dumper",
         "schema_version": "dumper-v12",
-        "required": ["brand", "model", "year", "location", "price"],
-        "optional": ["km", "fuel", "owners", "condition", "photos"],
+        "required": ["brand"],
+        "optional": ["model", "year", "location", "price", "km", "fuel", "owners", "condition", "photos"],
         "priorities": dict(_BASE_PRIORITIES),
     },
     "Excavator": {
         "category": "Excavator",
         "schema_version": "excavator-v12",
-        "required": ["brand", "model", "year", "hours", "location", "price"],
-        "optional": ["condition", "photos"],
+        "required": ["brand"],
+        "optional": ["model", "year", "hours", "location", "price", "condition", "photos"],
         "priorities": dict(_BASE_PRIORITIES),
     },
     "JCB": {
         "category": "JCB",
         "schema_version": "jcb-v12",
-        "required": ["brand", "model", "year", "hours", "location", "price"],
-        "optional": ["condition", "photos"],
+        "required": ["brand"],
+        "optional": ["model", "year", "hours", "location", "price", "condition", "photos"],
         "priorities": dict(_BASE_PRIORITIES),
     },
     "Poclain": {
         "category": "Poclain",
         "schema_version": "poclain-v12",
-        "required": ["brand", "model", "year", "hours", "location", "price"],
-        "optional": ["condition", "photos"],
+        "required": ["brand"],
+        "optional": ["model", "year", "hours", "location", "price", "condition", "photos"],
         "priorities": dict(_BASE_PRIORITIES),
     },
     "Loader": {
         "category": "Loader",
         "schema_version": "loader-v12",
-        "required": ["brand", "model", "year", "hours", "location", "price"],
-        "optional": ["condition", "photos"],
+        "required": ["brand"],
+        "optional": ["model", "year", "hours", "location", "price", "condition", "photos"],
         "priorities": dict(_BASE_PRIORITIES),
     },
     "Backhoe Loader": {
         "category": "Backhoe Loader",
         "schema_version": "backhoe-v12",
-        "required": ["brand", "model", "year", "hours", "location", "price"],
-        "optional": ["condition", "photos"],
+        "required": ["brand"],
+        "optional": ["model", "year", "hours", "location", "price", "condition", "photos"],
         "priorities": dict(_BASE_PRIORITIES),
     },
     "Crane": {
         "category": "Crane",
         "schema_version": "crane-v12",
-        "required": ["brand", "model", "year", "hours", "location", "price"],
-        "optional": ["condition", "photos"],
+        "required": ["brand"],
+        "optional": ["model", "year", "hours", "location", "price", "condition", "photos"],
         "priorities": dict(_BASE_PRIORITIES),
     },
     "Grader": {
         "category": "Grader",
         "schema_version": "grader-v12",
-        "required": ["brand", "model", "year", "hours", "location", "price"],
-        "optional": ["condition", "photos"],
+        "required": ["brand"],
+        "optional": ["model", "year", "hours", "location", "price", "condition", "photos"],
         "priorities": dict(_BASE_PRIORITIES),
     },
     "Crusher": {
         "category": "Crusher",
         "schema_version": "crusher-v12",
-        "required": ["brand", "model", "year", "location", "price"],
-        "optional": ["hours", "condition", "photos"],
+        "required": ["brand"],
+        "optional": ["model", "year", "location", "price", "hours", "condition", "photos"],
         "priorities": dict(_BASE_PRIORITIES),
     },
     "Other": {
         "category": "Other",
         "schema_version": "other-v12",
-        "required": ["brand", "model", "year", "location", "price"],
-        "optional": ["km", "hours", "condition", "photos"],
+        "required": ["brand"],
+        "optional": ["model", "year", "location", "price", "km", "hours", "condition", "photos"],
         "priorities": dict(_BASE_PRIORITIES),
     },
 }
@@ -355,6 +356,10 @@ def missing_fields(payload: dict) -> list[str]:
             if not normalize_vehicle_category(payload.get("category") or payload.get("type") or ""):
                 miss.append("category")
             continue
+        if key == "brand" and intent == "SELL":
+            if _blank(payload.get("brand")) and _blank(payload.get("model")):
+                miss.append("brand")
+            continue
         if key == "budget":
             if _blank(payload.get("budget")) and _blank(payload.get("budget_max")):
                 miss.append("budget")
@@ -378,16 +383,8 @@ def review_gaps(payload: dict) -> list[str]:
     if intent == "SELL":
         if not normalize_vehicle_category(payload.get("category") or payload.get("type") or ""):
             gaps.append("category")
-        if _blank(payload.get("brand")):
+        if _blank(payload.get("brand")) and _blank(payload.get("model")):
             gaps.append("brand")
-        if _blank(payload.get("model")):
-            gaps.append("model")
-        if _blank(payload.get("year")):
-            gaps.append("year")
-        if _blank(payload.get("expected_price")):
-            gaps.append("expected_price")
-        if _blank(payload.get("state")) and _blank(payload.get("location")):
-            gaps.append("state")
     else:
         if not normalize_vehicle_category(payload.get("category") or payload.get("type") or ""):
             gaps.append("category")

@@ -293,7 +293,7 @@ def build_listing_payload(
         "km": km_val,
         "kilometers": km_val,
         "km_unit": km_unit,
-        "price": int(price_num) if price_num else None,
+        "price": int(price_num) if price_num else 0,
         "expected_price": int(price_num) if price_num else price_raw,
         "description": description,
         "state": state,

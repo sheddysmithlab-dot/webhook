@@ -511,7 +511,7 @@ def test_listing_button_skipped_after_approved_message(db, client, monkeypatch):
     assert sent == []
 
 
-def test_full_listing_text_asks_photos_before_summary(db, client, monkeypatch):
+def test_full_listing_text_without_photos_goes_to_summary(db, client, monkeypatch):
     from app.ai import engine as eng
     from app.config import settings
 
@@ -530,8 +530,8 @@ def test_full_listing_text_asks_photos_before_summary(db, client, monkeypatch):
     monkeypatch.setattr(eng, "needs_account_gate", lambda payload: False)
     monkeypatch.setattr(eng, "prompt_chat_enabled", lambda db: True)
     out = eng.prompt_chat_turn(db, conv, "Eicher Pro 3015 truck 2019 Sagar 12 lakh")
-    assert "photo" in (out or "").lower() or "फोटो" in (out or "")
-    assert not _payload(conv).get("awaiting_confirm")
+    assert "Eicher" in out and "Photo nahi hai" in out
+    assert _payload(conv).get("awaiting_confirm")
 
 
 def test_account_switch_request_clears_customer(db, client):
@@ -823,13 +823,13 @@ def _ready_excavator(db, monkeypatch, **extra):
     return eng, conv
 
 
-def test_excavator_asks_hours_instead_of_handing_off_to_llm(db, client, monkeypatch):
+def test_excavator_without_hours_goes_straight_to_summary(db, client, monkeypatch):
     eng, conv = _ready_excavator(db, monkeypatch)
     monkeypatch.setattr(eng, "llm_configured", lambda db: True)
     monkeypatch.setattr(eng, "llm_reply", lambda *a, **k: pytest.fail("LLM must not run"))
     out = eng.prompt_chat_turn(db, conv, "Sell kr do isey")
-    assert out and ("hours" in out.lower() or "ऑवर्स" in out)
-    assert conv.error_message == "ask:hours"
+    assert "Kobelco" in out and "Hours" not in out
+    assert _payload(conv)["awaiting_confirm"] and conv.error_message != "ask:hours"
 
 
 def test_hours_unknown_skips_to_summary(db, client, monkeypatch):
@@ -839,7 +839,6 @@ def test_hours_unknown_skips_to_summary(db, client, monkeypatch):
     monkeypatch.setattr(confirm, "send_summary", lambda db, conv, lang: "SUMMARY")
     conv.error_message = "ask:hours"
     assert eng.prompt_chat_turn(db, conv, "pata nahi") == "SUMMARY"
-    assert "hours" in _payload(conv)["skipped_asks"]
 
 
 def test_hours_present_goes_straight_to_summary(db, client, monkeypatch):
@@ -862,11 +861,11 @@ def test_llm_cannot_fake_a_submission(db, client, monkeypatch):
 
 
 def test_bare_yes_never_reaches_llm(db, client, monkeypatch):
-    eng, conv = _ready_excavator(db, monkeypatch, year=None)
+    eng, conv = _ready_excavator(db, monkeypatch, brand=None, model=None)
     monkeypatch.setattr(eng, "llm_configured", lambda db: True)
     monkeypatch.setattr(eng, "llm_reply", lambda *a, **k: pytest.fail("LLM must not run"))
     out = eng.prompt_chat_turn(db, conv, "Haan")
-    assert out and ("saal" in out.lower() or "year" in out.lower())
+    assert out and not _payload(conv).get("awaiting_confirm")
 
 
 def test_summary_then_yes_pushes_and_sends_link(db, client, monkeypatch):
@@ -906,7 +905,7 @@ def test_skipped_hours_do_not_block_final_submit():
         "intent": "SELL", "category": "Excavator", "brand": "Kobelco", "model": "SK220XD", "year": 2022,
         "expected_price": 3200000, "state": "Uttar Pradesh", "city": "Saharanpur",
     }
-    assert "hours" in [m["field"] for m in filter_payload(pl).missing_fields]
+    assert filter_payload(pl).missing_fields == []
     done = filter_payload({**pl, "skipped_asks": ["hours"]})
     assert done.missing_fields == [] and done.readiness != "MISSING_REQUIRED_DATA"
 
@@ -942,6 +941,67 @@ def test_skip_and_filler_words_are_not_places():
     assert _looks_like_place("Saharanpur")
     loc = normalize_location(city="Saharanpur Uttar Pradesh", state="Uttar Pradesh")
     assert loc["city"] == "Saharanpur" and loc["state"] == "Uttar Pradesh"
+
+
+def test_hyundai_dump_reads_model_year_hours_state():
+    from app.ai.engine import extract_turn
+
+    text = ("HYUNDAI 140 LC-9 Excavator\nModel - 2020\nHmr - 10000\nLocation -  Rajasthan\n"
+            "Demand - 21 lac + gst on billing amount")
+    f = extract_turn(text)
+    assert (f["brand"], f["model"], f["year"], f["category"]) == ("Hyundai", "140 LC-9", 2020, "Excavator")
+    assert f["operating_hours"] == 10000 and f["expected_price"] == 2100000
+    assert f["state"] == "Rajasthan" and not f.get("city")
+    assert "city" not in extract_turn("excavator")
+
+
+def test_hyundai_dump_goes_straight_to_summary(db, client, monkeypatch):
+    from app.ai import engine as eng
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "ai_prompt_chat", True)
+    monkeypatch.setattr(eng, "handle_account_info", lambda *a, **k: None)
+    monkeypatch.setattr(eng, "needs_account_gate", lambda payload: False)
+    monkeypatch.setattr(eng, "prompt_chat_enabled", lambda db: True)
+    monkeypatch.setattr(eng, "llm_configured", lambda db: True)
+    monkeypatch.setattr(eng, "llm_reply", lambda *a, **k: pytest.fail("LLM must not run"))
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    text = ("HYUNDAI 140 LC-9 Excavator\nModel - 2020\nHmr - 10000\nLocation -  Rajasthan\n"
+            "Demand - 21 lac + gst on billing amount")
+    out = eng.prompt_chat_turn(db, conv, text)
+    assert "Hyundai 140 LC-9" in out and "Year: 2020" in out and "Hours: 10000" in out
+    assert "share the model" not in out.lower() and "City" not in out
+    assert _payload(conv)["awaiting_confirm"]
+
+
+def test_category_and_name_alone_reach_summary_and_submit(db, client, monkeypatch):
+    from app.ai import data_push
+
+    eng, conv = _ready_excavator(
+        db, monkeypatch, brand="Hyundai", model=None, year=None, expected_price=None, state=None, city=None,
+        photos_complete=False, photo_count=0,
+    )
+    monkeypatch.setattr(eng, "llm_configured", lambda db: True)
+    monkeypatch.setattr(eng, "llm_reply", lambda *a, **k: pytest.fail("LLM must not run"))
+    summary = eng.prompt_chat_turn(db, conv, "Hyundai excavator")
+    assert "Hyundai" in summary and "Photo nahi hai" in summary
+    assert _payload(conv)["awaiting_confirm"]
+
+    pushed = []
+    monkeypatch.setattr(data_push, "push_listing", lambda db_, conv_: pushed.append(conv_.id) or data_push.PushResult(
+        ok=True, status="POSTED", listing_id="300"))
+    eng.prompt_chat_turn(db, conv, "Haan")
+    assert pushed == [conv.id]
+
+
+def test_submission_gate_needs_only_category_and_name():
+    from app.ai.data_push import validate_submission
+
+    base = {"intent": "SELL", "category": "Excavator", "customer_confirmed": True}
+    ok = lambda pl: validate_submission(pl)[1] != "MISSING_REQUIRED_DATA"
+    assert ok({**base, "brand": "Hyundai"}) and ok({**base, "model": "140 LC-9"})
+    assert not ok(base) and not ok({"intent": "SELL", "brand": "Hyundai", "customer_confirmed": True})
 
 
 def test_claims_submission_patterns():

@@ -273,13 +273,8 @@ def validate_submission(payload: dict, conv: AiConversation | None = None) -> tu
         return False, "MISSING_REQUIRED_DATA"
     if _blank(payload.get("category") or payload.get("type")):
         return False, "MISSING_REQUIRED_DATA"
-    if intent == "SELL":
-        if _blank(payload.get("brand")) or _blank(payload.get("model")):
-            return False, "MISSING_REQUIRED_DATA"
-        if _blank(payload.get("expected_price") or payload.get("price")):
-            return False, "MISSING_REQUIRED_DATA"
-        if _blank(payload.get("state") or payload.get("location") or payload.get("city")):
-            return False, "MISSING_REQUIRED_DATA"
+    if intent == "SELL" and _blank(payload.get("brand")) and _blank(payload.get("model")):
+        return False, "MISSING_REQUIRED_DATA"
     return True, ""
 
 

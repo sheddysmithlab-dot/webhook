@@ -472,7 +472,7 @@ def _looks_like_place(text: str) -> bool:
         low,
     ):
         return False
-    if canonical_brand(raw):
+    if canonical_brand(raw) or normalize_vehicle_category(raw):
         return False
     # Digits usually mean price/year/km — allow only sector/NH style
     if re.search(r"\d", raw) and not re.search(r"(?:sector|sec\.?|phase|nh)\s*\d", low):
@@ -542,7 +542,11 @@ def normalize_location(city: Any = None, state: Any = None, location: Any = None
         result["state"] = (_match_state_name(state_s) or state_s)[:80]
     elif known_state:
         result["state"] = known_state
-    if loc_s and _looks_like_place(loc_s):
+    if loc_s and _STATE_ALIASES.get(loc_s.lower().strip(" .,")) and not city_s:
+        # "Location - Rajasthan" names a state, not a city.
+        result["state"] = _STATE_ALIASES[loc_s.lower().strip(" .,")]
+        result["location"] = result["state"]
+    elif loc_s and _looks_like_place(loc_s):
         # Free-text place only when it looks like a location (not a full chat turn)
         if not result.get("city"):
             result["city"] = loc_s[:80]
@@ -604,6 +608,32 @@ def _extract_bare_price(text: str, year: Any = None) -> int | None:
     return max(candidates)
 
 
+_MODEL_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-/.+]*")
+_UNIT_AFTER_RE = re.compile(r"^(?:lakh|lac|lacs|l|cr|crore|km|kms|hours?|hrs?|ghante|tyre|tyres|wheel|wheeler)$", re.I)
+_HMR_RE = re.compile(r"\b(?:hmr\s*[:=\-–]?|(?:hrs|hours?|meter\s*reading)\s*[:=\-–])\s*(\d[\d,]{1,7})\b", re.I)
+
+
+def _model_after_brand(text: str, brand: str) -> str:
+    """'HYUNDAI 140 LC-9 Excavator' → '140 LC-9': code-like tokens right after the brand on its line."""
+    m = re.search(rf"(?<![A-Za-z]){re.escape(brand)}(?![A-Za-z])[ \t]+([^\n]+)", text or "", re.I)
+    if not m:
+        return ""
+    tokens = [tok.strip(",;|*()") for tok in m.group(1).split()]
+    parts: list[str] = []
+    for i, tok in enumerate(tokens):
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+        if not tok or not _MODEL_TOKEN_RE.fullmatch(tok) or _YEAR_RE.match(tok) or _UNIT_AFTER_RE.match(nxt):
+            break
+        if not any(ch.isdigit() for ch in tok) or tok.upper().startswith("BS"):
+            break
+        if parts and tok.isdigit():
+            break
+        if not parts and tok.isdigit() and len(tok) < 3:
+            break
+        parts.append(tok)
+    return " ".join(parts)[:40]
+
+
 def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
     """Merge explicit fields with light NL extraction from latest messages."""
     out = dict(fields or {})
@@ -627,7 +657,12 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
         if not out["brand"]:
             out.pop("brand")
     if _blank(out.get("model")) and labeled.get("model"):
-        out["model"] = labeled["model"].split()[0][:40]
+        model = labeled["model"].split()[0][:40]
+        if _YEAR_RE.match(model):
+            # Sellers write the manufacturing year as "Model - 2020".
+            labeled.setdefault("year", model)
+        else:
+            out["model"] = model
     if _blank(out.get("year")) and labeled.get("year"):
         y = normalize_year(labeled["year"])
         if y and y.get("status") != "INVALID":
@@ -660,6 +695,11 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
         if not out["brand"]:
             out.pop("brand")
 
+    if _blank(out.get("model")) and out.get("brand"):
+        model = _model_after_brand("\n".join(texts), out["brand"])
+        if model:
+            out["model"] = model
+
     if _blank(out.get("model")):
         m = re.search(r"\b(\d{3,4}[A-Za-z]?|3DX|4DX|JS\d{2,3})\b", blob, re.I)
         if m and not re.fullmatch(r"(?:19|20)\d{2}", m.group(1)):
@@ -674,8 +714,13 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
         if y and y.get("status") != "INVALID":
             out["year"] = y["value"]
 
+    hmr = _HMR_RE.search(blob)
+    if hmr and _blank(out.get("operating_hours")) and _blank(out.get("running_km")) and _blank(out.get("km")):
+        out["operating_hours"] = int(hmr.group(1).replace(",", ""))
+    price_src = blob.replace(hmr.group(0), " ") if hmr else blob
+
     if _blank(out.get("expected_price")) and _blank(out.get("price")):
-        price_blob = re.sub(r"लाख़?", " lakh", blob)
+        price_blob = re.sub(r"लाख़?", " lakh", price_src)
         price_blob = re.sub(r"करोड़|करोड", " crore", price_blob)
         price_blob = re.sub(r"(\d)\.\s+(?=lakh|lac|crore)", r"\1 ", price_blob, flags=re.I)
         # Prefer segments with lakh/crore/₹
@@ -698,7 +743,7 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
             r"price|rate|demand|kimat|keemat|कीमत|₹|\brs\b", blob, re.I
         )
         if _blank(out.get("expected_price")) and _blank(out.get("price")) and not usage_only:
-            bare = _extract_bare_price(blob, year=out.get("year"))
+            bare = _extract_bare_price(price_src, year=out.get("year"))
             if bare:
                 out["expected_price"] = bare
                 out["price"] = bare
@@ -897,6 +942,7 @@ def build_missing_fields(normalized: dict, category: str, intent: str = "SELL") 
     priorities = dict(schema.get("priorities") or {})
     # Map schema keys onto normalized aliases
     aliases = {
+        "brand": ("brand", "model"),
         "price": ("price", "expected_price"),
         "location": ("state", "city", "location"),
         "budget": ("budget", "budget_max"),
@@ -1432,7 +1478,9 @@ def is_collection_ready(payload: dict) -> bool:
     normalized, _ = normalize_fields(payload)
     if intent:
         normalized["intent"] = intent
-    category = normalized.get("category") or normalize_vehicle_category(payload.get("category") or "")
+    category = normalized.get("category") or normalize_vehicle_category(payload.get("category") or payload.get("type") or "")
+    if intent == "SELL" and not category:
+        return False
     # Merge raw payload values for readiness so partially-normalized still works
     merged = dict(payload)
     merged.update({k: v for k, v in normalized.items() if not _blank(v)})

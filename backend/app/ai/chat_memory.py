@@ -613,11 +613,6 @@ def _next_ask_key(payload: dict) -> str | None:
             if key == "photos" and payload.get("photos_complete"):
                 continue
             return key
-    # Photos after required fields for SELL
-    if (payload.get("intent") or "").upper() == "SELL":
-        n = len(payload.get("media_ids") or [])
-        if not payload.get("photos_complete") and n < 2:
-            return "photos" if n > 0 or is_collection_ready(payload) else None
     return None
 
 
@@ -698,6 +693,12 @@ def build_confirmation_summary(
     photos = len(payload.get("media_ids") or [])
     if photos:
         lines.append(t(lang, "summary_photos", value=photos))
+    else:
+        from .confirm import no_photo_note
+
+        note = no_photo_note(payload, lang)
+        if note:
+            lines.append(note)
     if result.readiness == "DUPLICATE_WARNING":
         lines.append(t(lang, "duplicate"))
     if result.conflicts:
@@ -1228,9 +1229,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
             payload["skipped_asks"] = skipped
             ensure_model_fallback(payload)
             _write_payload(conv, payload)
-            if is_collection_ready(payload) and (
-                (payload.get("intent") or "").upper() != "SELL" or _photos_satisfied(payload)
-            ):
+            if is_collection_ready(payload):
                 # Already confirmed once earlier, or explicit post → submit directly
                 if payload.get("awaiting_confirm") or payload.get("customer_confirmed"):
                     result = submit_confirmed_listing(db, conv)
@@ -1349,13 +1348,8 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                         response_type = "ASK_QUESTION"
                         reply = build_next_question(payload, lang) or t(lang, "unclear")
                     elif result.readiness == "READY_FOR_USER_CONFIRMATION" or is_collection_ready(payload):
-                        if not _photos_satisfied(payload) and (payload.get("intent") or "").upper() == "SELL":
-                            response_type = "ASK_QUESTION"
-                            n = _photo_count(payload)
-                            reply = t(lang, "photo_need_min", count=n) if n else t(lang, "photos")
-                        else:
-                            response_type = "CONFIRMATION_REQUEST"
-                            reply = build_confirmation_summary(db, conv, lang, filter_result=result)
+                        response_type = "CONFIRMATION_REQUEST"
+                        reply = build_confirmation_summary(db, conv, lang, filter_result=result)
                     else:
                         response_type = "ASK_QUESTION"
                         reply = build_next_question(payload, lang) or t(lang, "unclear")

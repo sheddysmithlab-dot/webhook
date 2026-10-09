@@ -170,6 +170,8 @@ def summary_text(payload_or_snap: dict, lang: str = "hinglish", card_id: str = "
         ("State", "state"),
         ("City", "city"),
     ):
+        if key == "city" and str(snap.get("city") or "").strip().lower() == str(snap.get("state") or "").strip().lower():
+            continue
         if snap.get(key):
             lines.append(f"{label}: {snap[key]}")
     body = "\n".join(lines) if lines else "Listing details"
@@ -181,9 +183,24 @@ def summary_text(payload_or_snap: dict, lang: str = "hinglish", card_id: str = "
     return f"Please confirm details:\n{body}\n\nSahi hain to Haan likhiye."
 
 
+def no_photo_note(payload: dict, lang: str = "hinglish") -> str:
+    """Photos are optional: mention them on the summary instead of asking for them."""
+    if str(payload.get("intent") or "").upper() != "SELL" or payload.get("media_ids") or payload.get("photos_complete"):
+        return ""
+    code = (lang or "hinglish").lower()
+    if code in {"hi", "hindi"}:
+        return "फोटो नहीं है — हों तो हाँ से पहले भेज दें।"
+    if code in {"en", "english"}:
+        return "No photos yet — send them before replying YES if you have any."
+    return "Photo nahi hai — ho to Haan se pehle bhej dijiye."
+
+
 def send_summary(db: Session, conv: AiConversation, lang: str = "hinglish") -> str:
     payload = _payload(conv)
     text = summary_text(payload, lang=lang)
+    note = no_photo_note(payload, lang)
+    if note:
+        text += "\n" + note
     payload["awaiting_confirm"] = True
     payload["summary_json"] = snapshot(payload)
     _write_payload(conv, payload)

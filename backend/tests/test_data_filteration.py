@@ -59,10 +59,9 @@ def test_missing_price():
         "state": "Madhya Pradesh",
     }
     result = filter_payload(pl)
-    assert result.readiness == "MISSING_REQUIRED_DATA"
-    fields = [m["field"] for m in result.missing_fields]
-    assert "price" in fields
-    print("OK missing price")
+    assert result.readiness == "READY_FOR_CONFIRMATION"
+    assert result.missing_fields == []
+    print("OK missing price is optional")
 
 
 def test_future_year():
@@ -174,8 +173,8 @@ def test_data_filter_module_alias():
     assert out["success"] is True
     assert out["normalized_data"]["price"] == 2350000
     assert out["readiness"] == "READY_FOR_CONFIRMATION"
-    missing = validate_required_fields({"brand": "Tata"}, "Truck")
-    assert any(m["field"] == "price" for m in missing)
+    assert validate_required_fields({"brand": "Tata"}, "Truck") == []
+    assert [m["field"] for m in validate_required_fields({}, "Truck")] == ["brand"]
     assert data_filteration.FILTER_VERSION
     print("OK data_filteration module")
 
@@ -293,10 +292,9 @@ def test_build_missing_fields_complete():
 
 
 def test_build_missing_fields_empty():
-    missing = build_missing_fields({}, "Truck", "SELL")
-    fields = {m["field"] for m in missing}
-    assert "brand" in fields
-    assert "price" in fields
+    assert {m["field"] for m in build_missing_fields({}, "Truck", "SELL")} == {"brand"}
+    assert build_missing_fields({"model": "1618"}, "Truck", "SELL") == []
+    assert build_missing_fields({"brand": "Hyundai"}, "Excavator", "SELL") == []
 
 
 if __name__ == "__main__":
