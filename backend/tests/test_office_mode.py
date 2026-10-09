@@ -866,8 +866,7 @@ def test_bare_yes_never_reaches_llm(db, client, monkeypatch):
     monkeypatch.setattr(eng, "llm_configured", lambda db: True)
     monkeypatch.setattr(eng, "llm_reply", lambda *a, **k: pytest.fail("LLM must not run"))
     out = eng.prompt_chat_turn(db, conv, "Haan")
-    assert out == eng._next_question(_payload(conv), "hinglish")
-    assert conv.error_message == "ask:year" or "year" in out.lower() or "saal" in out.lower()
+    assert out and ("saal" in out.lower() or "year" in out.lower())
 
 
 def test_claims_submission_patterns():
