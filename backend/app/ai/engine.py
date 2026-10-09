@@ -508,7 +508,8 @@ def prepare_prompt_state(db, conv: AiConversation, text: str, media_note: str = 
     if prev_ask == "brand" and not payload.get("brand"):
         from .data_filteration import brand_from_answer
 
-        brand = brand_from_answer(text)
+        # "Bus HPV": the category word is not part of the brand.
+        brand = brand_from_answer(" ".join(w for w in (text or "").split() if not normalize_vehicle_category(w)))
         if brand:
             payload["brand"] = brand
             _write_payload(conv, payload)

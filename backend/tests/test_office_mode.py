@@ -1098,6 +1098,25 @@ def test_stale_category_word_city_dropped_from_summary(db, client, monkeypatch):
     assert "Eicher" in out and "City: bus" not in out and "Location: bus" not in out
 
 
+def test_year_shorthand_and_model_numbers_are_not_mixed_up():
+    from app.ai.engine import extract_turn
+
+    assert extract_turn("2019M") == {"year": 2019}
+    assert extract_turn("2019M excavator").get("year") == 2019
+    f = extract_turn("Tata 1918 2019")
+    assert f["year"] == 2019 and "price" not in f and "expected_price" not in f
+
+
+def test_brand_answer_drops_category_word(db, client, monkeypatch):
+    eng, conv = _office_prompt_conv(db, monkeypatch)
+    monkeypatch.setattr(eng, "llm_configured", lambda db: False)
+    eng.prompt_chat_turn(db, conv, "listing post krni hai")
+    eng.prompt_chat_turn(db, conv, "Bus")
+    out = eng.prompt_chat_turn(db, conv, "Bus HPV")
+    pl = _payload(conv)
+    assert (pl["category"], pl["brand"]) == ("Bus", "HPV") and "HPV Bus" in out
+
+
 def test_submission_gate_needs_only_category_and_name():
     from app.ai.data_push import validate_submission
 

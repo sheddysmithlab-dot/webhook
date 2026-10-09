@@ -378,9 +378,10 @@ def normalize_year(raw: Any) -> dict | None:
     if _blank(raw):
         return None
     text = str(raw).strip()
-    m = re.search(r"\b((?:19|20)\d{2})\b", text)
-    if m:
-        year = int(m.group(1))
+    found = [int(x) for x in re.findall(r"\b((?:19|20)\d{2})\b", text)]
+    if found:
+        # "Tata 1918 2019": 1918 is a model number; take the first plausible vehicle year.
+        year = next((y for y in found if _YEAR_MIN <= y <= _current_year()), found[0])
         status = "NORMALIZED"
         if year > _current_year():
             status = "INVALID"
@@ -598,7 +599,8 @@ def _extract_bare_price(text: str, year: Any = None) -> int | None:
         except (TypeError, ValueError):
             pass
     candidates: list[int] = []
-    for raw in re.findall(r"\d[\d,]{3,}", text.replace(" ", "")):
+    # Never join across spaces: "1918 2019" is a model and a year, not ₹1,91,82,019.
+    for raw in re.findall(r"\d[\d,]{3,}", text):
         digits = raw.replace(",", "")
         if _YEAR_RE.match(digits) or digits in year_skip:
             continue
@@ -717,7 +719,8 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
 
     if _blank(out.get("model")):
         m = re.search(r"\b(\d{3,4}[A-Za-z]?|3DX|4DX|JS\d{2,3})\b", blob, re.I)
-        if m and not re.fullmatch(r"(?:19|20)\d{2}", m.group(1)):
+        # "2019M" is shorthand for "2019 model" — a year, not a model code.
+        if m and not re.fullmatch(r"(?:19|20)\d{2}m?", m.group(1), re.I):
             out["model"] = m.group(1).upper() if m.group(1).isdigit() else m.group(1)
         else:
             m = _MODEL_CODE_RE.search(blob)
@@ -726,6 +729,11 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
 
     if _blank(out.get("year")):
         y = normalize_year(blob)
+        if y and y.get("status") != "INVALID":
+            out["year"] = y["value"]
+    if _blank(out.get("year")):
+        m = re.search(r"\b((?:19|20)\d{2})\s*(?:m|mdl|model)\b", blob, re.I)
+        y = normalize_year(m.group(1)) if m else None
         if y and y.get("status") != "INVALID":
             out["year"] = y["value"]
 
