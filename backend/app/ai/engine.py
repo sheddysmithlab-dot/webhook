@@ -518,9 +518,8 @@ def prepare_prompt_state(db, conv: AiConversation, text: str, media_note: str = 
         and not media_note
         and not fields
         and not normalize_vehicle_category(payload.get("category") or payload.get("type") or "")
-        and answer
-        and len(answer.split()) <= 4
-        and not re.search(r"\d", answer)
+        and re.fullmatch(r"[A-Za-z\u0900-\u097F]+(\s+[A-Za-z\u0900-\u097F]+)?", answer)
+        and not re.search(r"delete|clear|reset|cancel|naya|nayi|new|hata|mita|customer|account|listing", answer, re.I)
         and not is_yes(answer)
         and not is_no(answer)
     ):
@@ -779,6 +778,7 @@ def _usage_gap(payload: dict) -> str | None:
 def _summary_or_photo_gate(db, conv: AiConversation, payload: dict, lang: str) -> str | None:
     from .confirm import send_summary
 
+    _write_payload(conv, payload)
     try:
         return send_summary(db, conv, lang)
     except Exception:
@@ -858,6 +858,8 @@ def apply_followup(db, conv: AiConversation, text: str) -> None:
         if not payload.get(pkey):
             execute_tool(db, conv, "save_vehicle_data", {pkey: msg[:80], "source": "customer"})
     hours_num = re.search(r"\d[\d,]*", msg) if key == "hours" else None
+    if hours_num and (re.fullmatch(r"(?:19|20)\d{2}", hours_num.group(0)) or re.search(r"year|saal|model", msg, re.I)):
+        hours_num = None
     if hours_num and not payload.get("operating_hours"):
         execute_tool(db, conv, "save_vehicle_data", {"operating_hours": hours_num.group(0).replace(",", ""), "source": "customer"})
     run_hit = key == "running" or "kilometer" in last_l or "hours" in last_l or " km" in last_l or last_l.endswith("km")

@@ -1064,6 +1064,40 @@ def test_skipped_category_does_not_loop(db, client, monkeypatch):
     assert _payload(conv)["category"] == "Other"
 
 
+def test_misspelled_clear_chat_is_understood():
+    from app.ai.account import wants_clear_conversation
+
+    for msg in ("delete the priviousconversation", "delete the privious conversation",
+                "Delete the previous conversation", "previos chat delete", "clear chat"):
+        assert wants_clear_conversation(msg), msg
+
+
+def test_command_text_is_not_taken_as_category(db, client, monkeypatch):
+    eng, conv = _office_prompt_conv(db, monkeypatch)
+    eng.prompt_chat_turn(db, conv, "Eicher 2020")
+    eng.prompt_chat_turn(db, conv, "listing kr do")
+    assert not _payload(conv).get("category")
+
+
+def test_year_answer_is_not_saved_as_hours(db, client):
+    from app.ai.engine import apply_followup
+
+    conv = _conv(db, mobile="9000222777", intent="SELL", category="Bus", brand="Eicher")
+    conv.error_message = "ask:hours"
+    apply_followup(db, conv, "Year 2020")
+    apply_followup(db, conv, "2020")
+    assert not _payload(conv).get("operating_hours")
+
+
+def test_stale_category_word_city_dropped_from_summary(db, client, monkeypatch):
+    eng, conv = _office_prompt_conv(db, monkeypatch)
+    pl = _payload(conv)
+    pl.update({"intent": "SELL", "brand": "Eicher", "year": 2020, "city": "bus", "location": "bus"})
+    _write_payload(conv, pl)
+    out = eng.prompt_chat_turn(db, conv, "Bus")
+    assert "Eicher" in out and "City: bus" not in out and "Location: bus" not in out
+
+
 def test_submission_gate_needs_only_category_and_name():
     from app.ai.data_push import validate_submission
 

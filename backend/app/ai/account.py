@@ -52,10 +52,9 @@ _NEW_CHAT = re.compile(
 # Only wipe chat memory when user clearly means conversation — NOT website listing delete.
 _CLEAR_CHAT = re.compile(
     r"\b("
-    r"delete(\s+all)?(\s+previous)?\s+(conversation|chat|history|baat)"
-    r"|clear(\s+all)?(\s+previous)?\s+(conversation|chat|history|baat)"
+    r"(delete|clear)(\s+the)?(\s+all)?(\s+pr[ei]v\w*)?\s*(conversation|convo|chat|history|baat)"
     r"|reset(\s+chat|\s+conversation)"
-    r"|previous\s+(conversation|chat|baat|history)\s*(delete|clear|hata|mita)?"
+    r"|pr[ei]v\w*\s*(conversation|convo|chat|baat|history)\s*(delete|clear|hata|mita)?"
     r"|(purani|pichhli|pehle\s+wali)\s+(baat|chat|conversation|history)\s*(delete|clear|hata|mita)?"
     r"|(conversation|chat|history)\s*(delete|clear|hata|mita)"
     r"|delete\s+conversation|clear\s+chat|chat\s+saaf|"
