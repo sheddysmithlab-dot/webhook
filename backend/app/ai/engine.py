@@ -528,8 +528,10 @@ def prepare_prompt_state(db, conv: AiConversation, text: str, media_note: str = 
         payload["category"] = "Other"
         _write_payload(conv, payload)
 
-    # The office line only posts listings — vehicle details there always mean SELL.
-    if not payload.get("intent") and any(payload.get(k) for k in ("brand", "model", "category", "expected_price")):
+    # The office line only posts listings — vehicle details or photos there always mean SELL.
+    if not payload.get("intent") and (
+        media_note or any(payload.get(k) for k in ("brand", "model", "category", "expected_price"))
+    ):
         from .office_mode import is_office_session
 
         if is_office_session(db, conv):
@@ -721,8 +723,18 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         return _next_question(payload, lang) or t(lang, "more_detail")
 
     # Only category / vehicle name can block a sell card — ask that directly; the model tends to ask optional fields.
-    need = _next_ask_key(payload) if str(payload.get("intent") or "").upper() == "SELL" else None
-    if need and "?" not in msg and not payload.get("awaiting_confirm") and not payload.get("customer_confirmed"):
+    selling = str(payload.get("intent") or "").upper() == "SELL"
+    need = _next_ask_key(payload) if selling else None
+    open_card = not payload.get("awaiting_confirm") and not payload.get("customer_confirmed")
+    # A bare photo/video must answer instantly: a slow model turn holds the chat lock while more messages queue.
+    media_only = bool(media_note) and re.fullmatch(r"(\[(photo|video|document)\])?", msg.lower()) is not None
+    if media_only and selling and open_card:
+        if "DOWNLOAD_FAILED" in media_note:
+            return t(lang, "photo_fail")
+        if need:
+            conv.error_message = f"ask:{need}"
+        return t(lang, "media_got") + (_next_question(payload, lang) or t(lang, "more_detail"))
+    if need and "?" not in msg and open_card:
         conv.error_message = f"ask:{need}"
         return _next_question(payload, lang)
 

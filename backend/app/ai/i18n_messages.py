@@ -235,6 +235,11 @@ MESSAGES = {
         "hi": "अभी {count} फोटो मिली। कम से कम 2 साफ फोटो भेजिए।",
         "en": "Got {count} photo(s). Please send at least 2 clear photos.",
     },
+    "media_got": {
+        "hinglish": "Photo/video mil gaya ✅ ",
+        "hi": "फोटो/वीडियो मिल गया ✅ ",
+        "en": "Photo/video received ✅ ",
+    },
     "photo_at_max": {
         "hinglish": "Is card pe max photos lag chuki hain.",
         "hi": "इस कार्ड पर अधिकतम फोटो लग चुकी हैं।",

@@ -1056,6 +1056,37 @@ def test_eicher_bus_chat_reaches_summary(db, client, monkeypatch):
     assert "Eicher" in out and "Bus" in out and _payload(conv)["awaiting_confirm"]
 
 
+def test_forwarded_video_then_details_get_instant_replies(db, client, monkeypatch):
+    eng, conv = _office_prompt_conv(db, monkeypatch)
+    out = eng.prompt_chat_turn(db, conv, "[video]", "video id=5 caption='' saved=True")
+    assert "mil gaya" in out and "category" in out.lower()
+    assert _payload(conv)["intent"] == "SELL"
+    eng.prompt_chat_turn(db, conv, "Model 2016")
+    out = eng.prompt_chat_turn(db, conv, "Excavator")
+    pl = _payload(conv)
+    assert (pl["category"], str(pl["year"])) == ("Excavator", "2016") and not pl.get("model")
+    assert "brand" in out.lower() or "company" in out.lower()
+
+
+def test_text_waits_for_a_busy_chat_lock(db, client, monkeypatch):
+    from contextlib import contextmanager
+
+    from app.ai import runner
+
+    calls = []
+
+    @contextmanager
+    def fake_lock(mobile):
+        calls.append(mobile)
+        yield len(calls) >= 2
+
+    monkeypatch.setattr(runner, "mobile_lock", fake_lock)
+    monkeypatch.setattr(runner, "_ai_respond", lambda *a, **k: "ok")
+    monkeypatch.setattr("app.ai.polish.polish_reply", lambda db, u, d, l: (d, "off"))
+    out = runner.process_inbound(db, mobile="919000111222", text="Excavator", wamid="", send=False)
+    assert out and len(calls) == 2
+
+
 def test_skipped_category_does_not_loop(db, client, monkeypatch):
     eng, conv = _office_prompt_conv(db, monkeypatch)
     assert "category" in eng.prompt_chat_turn(db, conv, "Eicher 2020").lower()
@@ -1191,7 +1222,7 @@ def test_media_lock_retries_instead_of_dropping(monkeypatch):
         yield len(calls) >= 3
 
     monkeypatch.setattr(runner, "mobile_lock", fake_lock)
-    with runner._inbound_lock("8224000829", runner.MEDIA_LOCK_ATTEMPTS) as held:
+    with runner._inbound_lock("8224000829", runner.INBOUND_LOCK_ATTEMPTS) as held:
         assert held
     assert len(calls) == 3
     calls.clear()

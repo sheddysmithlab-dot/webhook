@@ -37,12 +37,13 @@ def _ai_respond(db: Session, conv: AiConversation, text: str, media_note: str = 
     return handle_message(db, conv, text, media_note)
 
 
-MEDIA_LOCK_ATTEMPTS = 4
+# Each attempt waits up to 20s; together they outlast the 45s lock TTL so no message is dropped.
+INBOUND_LOCK_ATTEMPTS = 4
 
 
 @contextmanager
 def _inbound_lock(mobile: str, attempts: int = 1):
-    """mobile_lock, retried for media so a burst of photos is never dropped."""
+    """mobile_lock, retried so a message sent while a slow turn runs is never dropped."""
     for attempt in range(max(1, attempts)):
         with mobile_lock(mobile) as held:
             if held or attempt == attempts - 1:
@@ -254,7 +255,7 @@ def process_inbound(
         set_latest_wamid(mobile, wamid)
 
     is_media = bool(media and media.get("id"))
-    with _inbound_lock(mobile, MEDIA_LOCK_ATTEMPTS if is_media else 1) as held:
+    with _inbound_lock(mobile, INBOUND_LOCK_ATTEMPTS) as held:
         t_lock = (time.perf_counter() - t0) * 1000
         if not held:
             log.info("ai.lock_busy mobile=***%s", mobile[-4:] if mobile else "")
@@ -280,10 +281,10 @@ def process_inbound(
         # Media always attaches to draft/card pipeline (legacy ai_simple_chat removed).
         media_note = attach_media(db, conv, wamid, media)
 
-        # Photo burst: save every photo, but only the newest message gets an AI turn.
+        # Photo/video burst: save every file, but only the newest message gets an AI turn.
         if (
             is_media
-            and (media.get("kind") or "").lower() in {"image", "photo"}
+            and (media.get("kind") or "").lower() in {"image", "photo", "video"}
             and not (media.get("caption") or "").strip()
             and _newer_inbound_exists(db, mobile, wamid)
         ):
