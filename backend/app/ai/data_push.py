@@ -546,6 +546,10 @@ def get_submission_status(db: Session, conv: AiConversation, submission_id: str 
             elif outbox.status == "DONE":
                 status = status if STATUS_RANK.get(str(status).upper(), 0) >= 50 else "UNDER_REVIEW"
 
+    live_url = str(live_url or "").replace("/listing/", "/listings/")
+    if not live_url and listing_id and str(status).upper() in {"LIVE", "POSTED", "APPROVED"}:
+        live_url = public_listing_url(str(listing_id))
+
     return {
         "submission_id": sid,
         "listing_id": listing_id,

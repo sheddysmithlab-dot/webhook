@@ -869,6 +869,36 @@ def test_bare_yes_never_reaches_llm(db, client, monkeypatch):
     assert out and ("saal" in out.lower() or "year" in out.lower())
 
 
+def test_summary_then_yes_pushes_and_sends_link(db, client, monkeypatch):
+    from app import services
+    from app.ai import data_push
+    from app.ai.tools import _write_payload as write
+
+    eng, conv = _ready_excavator(db, monkeypatch, operating_hours="6500")
+    monkeypatch.setattr(eng, "llm_configured", lambda db: True)
+    monkeypatch.setattr(eng, "llm_reply", lambda *a, **k: pytest.fail("LLM must not run"))
+    summary = eng.prompt_chat_turn(db, conv, "haan")
+    assert "Kobelco" in summary and _payload(conv)["awaiting_confirm"]
+
+    pushed, sent = [], []
+
+    def fake_push(db_, conv_):
+        pushed.append(conv_.id)
+        pl = _payload(conv_)
+        pl.update(infradealer_listing_id="200", listing_status="POSTED")
+        write(conv_, pl)
+        return data_push.PushResult(ok=True, status="POSTED", listing_id="200")
+
+    monkeypatch.setattr(data_push, "push_listing", fake_push)
+    monkeypatch.setattr(services, "send_whatsapp_button", lambda *a, **k: sent.append(a) or {})
+    done = eng.prompt_chat_turn(db, conv, "Haan")
+    assert pushed == [conv.id]
+    assert sent and sent[0][3][0]["url"] == "https://infradealer.com/listings/200"
+    assert done and not _payload(conv).get("awaiting_confirm")
+    link = data_push.handle_post_listing_query(db, conv, "link do", "hinglish")
+    assert "https://infradealer.com/listings/200" in link
+
+
 def test_claims_submission_patterns():
     from app.ai.engine import _claims_submission
 
