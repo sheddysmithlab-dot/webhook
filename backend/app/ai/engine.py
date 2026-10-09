@@ -512,6 +512,21 @@ def prepare_prompt_state(db, conv: AiConversation, text: str, media_note: str = 
         if brand:
             payload["brand"] = brand
             _write_payload(conv, payload)
+    answer = (text or "").strip()
+    if (
+        prev_ask == "category"
+        and not media_note
+        and not fields
+        and not normalize_vehicle_category(payload.get("category") or payload.get("type") or "")
+        and answer
+        and len(answer.split()) <= 4
+        and not re.search(r"\d", answer)
+        and not is_yes(answer)
+        and not is_no(answer)
+    ):
+        # An unknown or skipped category answer must not re-ask forever; the website has "Others".
+        payload["category"] = "Other"
+        _write_payload(conv, payload)
 
     # The office line only posts listings — vehicle details there always mean SELL.
     if not payload.get("intent") and any(payload.get(k) for k in ("brand", "model", "category", "expected_price")):
@@ -704,6 +719,12 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
 
             return handle_post_listing_query(db, conv, "listing link", lang) or t(lang, "more_detail")
         return _next_question(payload, lang) or t(lang, "more_detail")
+
+    # Only category / vehicle name can block a sell card — ask that directly; the model tends to ask optional fields.
+    need = _next_ask_key(payload) if str(payload.get("intent") or "").upper() == "SELL" else None
+    if need and "?" not in msg and not payload.get("awaiting_confirm") and not payload.get("customer_confirmed"):
+        conv.error_message = f"ask:{need}"
+        return _next_question(payload, lang)
 
     if not llm_configured(db):
         return None

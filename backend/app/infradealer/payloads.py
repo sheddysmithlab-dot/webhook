@@ -29,6 +29,9 @@ POST_AD_CATEGORY = {
     "Loader": "loaders",
     "Crusher": "crushers",
     "Grader": "road-roller",
+    "Road Roller": "road-roller",
+    "Bus": "buses",
+    "Tractor": "tractors",
     "Other": "others",
 }
 # Display labels kept for title/description context only
@@ -47,7 +50,7 @@ POST_AD_CATEGORY_LABEL = {
 }
 HOUR_CATEGORIES = {
     "JCB", "Excavator", "Poclain", "Loader", "Crane", "Crusher",
-    "Grader", "Backhoe Loader",
+    "Grader", "Backhoe Loader", "Tractor", "Road Roller",
 }
 _PHONE_RE = re.compile(r"(?:\+91[\s-]*)?\b\d{10}\b")
 

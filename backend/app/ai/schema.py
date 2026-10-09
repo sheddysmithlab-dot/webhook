@@ -19,7 +19,7 @@ ALLOWED_STATES = {
 INTENTS = {"BUY", "SELL", "GENERAL_ENQUIRY", "SUPPORT", "EXISTING_LISTING_QUERY", "PROFILE_QUERY", "UNKNOWN"}
 VEHICLE_CATEGORIES = (
     "Truck", "Dumper", "Tipper", "Crane", "Poclain", "Loader",
-    "Backhoe Loader", "JCB", "Excavator", "Grader", "Crusher", "Other",
+    "Backhoe Loader", "JCB", "Excavator", "Grader", "Crusher", "Bus", "Tractor", "Road Roller", "Other",
 )
 
 # Category-driven schemas for Data Filter (required fields vary by category).
@@ -117,6 +117,27 @@ CATEGORY_SCHEMAS: dict[str, dict] = {
         "optional": ["model", "year", "location", "price", "hours", "condition", "photos"],
         "priorities": dict(_BASE_PRIORITIES),
     },
+    "Bus": {
+        "category": "Bus",
+        "schema_version": "bus-v12",
+        "required": ["brand"],
+        "optional": ["model", "year", "location", "price", "km", "fuel", "owners", "condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+    "Tractor": {
+        "category": "Tractor",
+        "schema_version": "tractor-v12",
+        "required": ["brand"],
+        "optional": ["model", "year", "hours", "location", "price", "condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
+    "Road Roller": {
+        "category": "Road Roller",
+        "schema_version": "road-roller-v12",
+        "required": ["brand"],
+        "optional": ["model", "year", "hours", "location", "price", "condition", "photos"],
+        "priorities": dict(_BASE_PRIORITIES),
+    },
     "Other": {
         "category": "Other",
         "schema_version": "other-v12",
@@ -144,6 +165,9 @@ _CAT_ALIASES = {
     "एक्स्केवेटर": "Excavator", "एक्सावेटर": "Excavator",
     "grader": "Grader", "grder": "Grader", "ग्रेडर": "Grader",
     "crusher": "Crusher", "crucher": "Crusher", "crushar": "Crusher", "क्रशर": "Crusher",
+    "bus": "Bus", "buses": "Bus", "school bus": "Bus", "minibus": "Bus", "mini bus": "Bus", "बस": "Bus",
+    "tractor": "Tractor", "tracter": "Tractor", "trector": "Tractor", "ट्रैक्टर": "Tractor",
+    "road roller": "Road Roller", "roller": "Road Roller", "रोड रोलर": "Road Roller", "रोलर": "Road Roller",
     "other": "Other", "anya": "Other", "अन्य": "Other",
 }
 
@@ -248,6 +272,7 @@ def empty_payload() -> dict:
         "chat_cleared": False,
         "skipped_asks": [],
         "missing_fields": [],
+        "next_ask": None,
         "awaiting_confirm": False,
         "awaiting_vehicle_choice": False,
         "ai_introduced": False,

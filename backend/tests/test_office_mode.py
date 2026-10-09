@@ -1021,6 +1021,49 @@ def test_tata_dumper_chat_reaches_summary(db, client, monkeypatch):
     assert "Tata 2528" in out and _payload(conv)["awaiting_confirm"]
 
 
+def _office_prompt_conv(db, monkeypatch):
+    from app.ai import engine as eng
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "ai_prompt_chat", True)
+    monkeypatch.setattr(eng, "handle_account_info", lambda *a, **k: None)
+    monkeypatch.setattr(eng, "needs_account_gate", lambda payload: False)
+    monkeypatch.setattr(eng, "prompt_chat_enabled", lambda db: True)
+    monkeypatch.setattr(eng, "llm_configured", lambda db: True)
+    monkeypatch.setattr(eng, "llm_reply", lambda *a, **k: pytest.fail("LLM must not run"))
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    return eng, conv
+
+
+def test_bus_is_a_category():
+    from app.ai.engine import extract_turn
+    from app.infradealer.payloads import map_post_ad_category
+
+    for word in ("Bus", "bus", "Buses", "school bus", "बस"):
+        assert extract_turn(word).get("category") == "Bus", word
+    assert extract_turn("Tractor").get("category") == "Tractor"
+    assert map_post_ad_category("Bus") == "buses" and map_post_ad_category("Tractor") == "tractors"
+    f = extract_turn("Category= Bus\nModel name = Skyline school bus eicher")
+    assert (f["category"], f["brand"], f["model"]) == ("Bus", "Eicher", "Skyline")
+
+
+def test_eicher_bus_chat_reaches_summary(db, client, monkeypatch):
+    eng, conv = _office_prompt_conv(db, monkeypatch)
+    first = eng.prompt_chat_turn(db, conv, "Eicher 2020")
+    assert "category" in first.lower()
+    out = eng.prompt_chat_turn(db, conv, "bus")
+    assert "Eicher" in out and "Bus" in out and _payload(conv)["awaiting_confirm"]
+
+
+def test_skipped_category_does_not_loop(db, client, monkeypatch):
+    eng, conv = _office_prompt_conv(db, monkeypatch)
+    assert "category" in eng.prompt_chat_turn(db, conv, "Eicher 2020").lower()
+    out = eng.prompt_chat_turn(db, conv, "Skip")
+    assert "Eicher" in out and _payload(conv)["awaiting_confirm"]
+    assert _payload(conv)["category"] == "Other"
+
+
 def test_submission_gate_needs_only_category_and_name():
     from app.ai.data_push import validate_submission
 

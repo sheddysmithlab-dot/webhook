@@ -58,9 +58,9 @@ MESSAGES = {
         "en": "Hello! I'm the InfraDealer AI Relationship Manager.",
     },
     "category": {
-        "hinglish": "Kaunsi category hai? (Truck / Tipper / JCB / Excavator / Crane…)",
-        "hi": "कौन सी कैटेगरी है? (ट्रक / टिपर / जेसीबी / एक्स्केवेटर…)",
-        "en": "Which category? (Truck / Tipper / JCB / Excavator / Crane…)",
+        "hinglish": "Kaunsi category hai? (Truck / Tipper / JCB / Excavator / Crane / Bus / Tractor / Other)",
+        "hi": "कौन सी कैटेगरी है? (ट्रक / टिपर / जेसीबी / एक्स्केवेटर / बस / ट्रैक्टर / अन्य)",
+        "en": "Which category? (Truck / Tipper / JCB / Excavator / Crane / Bus / Tractor / Other)",
     },
     "brand": {
         "hinglish": "Brand bata dijiye.",

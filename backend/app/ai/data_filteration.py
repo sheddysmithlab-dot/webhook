@@ -151,7 +151,7 @@ _BRAND_ALIASES = {
 _LABEL_PATTERNS = (
     ("brand", r"brand|make|company|ब्रांड|ब्रान्ड|कंपनी"),
     ("year", r"model\s*year|year|yom|वर्ष|ईयर|साल"),
-    ("model", r"model|मॉडल|माडल|मोडल"),
+    ("model", r"model\s*name|model|मॉडल|माडल|मोडल"),
     ("category", r"category|vehicle\s*type|कैटेगरी|श्रेणी"),
     ("location", r"location|city|place|लोकेशन|शहर|जगह"),
     ("_stop", r"price|कीमत|demand|rate|condition|photos?|km|running|hours?|owner|contact|state|राज्य"),
@@ -241,7 +241,7 @@ _CITY_STATE = {
 
 HOUR_CATEGORIES = {
     "JCB", "Excavator", "Poclain", "Loader", "Crane", "Crusher",
-    "Grader", "Backhoe Loader",
+    "Grader", "Backhoe Loader", "Tractor", "Road Roller",
 }
 
 _PRICE_OUTLIER_MAX = 50_00_00_000  # 50 crore

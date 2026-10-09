@@ -113,7 +113,7 @@ def listing_category(payload: dict, fallback: str = "Other", title: str = "") ->
         return "Truck"
     if typ in {"TIPPER", "DUMPER"}:
         return "Tipper" if typ == "TIPPER" else "Dumper"
-    if typ in {"TANKER", "TRAILER", "PICKUP", "BUS"}:
+    if typ in {"TANKER", "TRAILER", "PICKUP"}:
         return "Truck"
     return (cat[:80] or "Other")
 
