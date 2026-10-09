@@ -34,6 +34,39 @@ def is_zai_api_base(url: str) -> bool:
     return "z.ai" in (url or "").lower()
 
 
+# Free Z.AI text models, fastest first: glm-4.5-flash answers in 10-25s, glm-4.7-flash in ~2-3s
+# but is often rate-limited (429), so each one backs the other up.
+ZAI_FREE_MODELS = ("glm-4.7-flash", "glm-4.5-flash")
+
+
+def zai_models(cfg: dict) -> list[str]:
+    model = (cfg.get("model") or ZAI_MODEL).strip()
+    return list(ZAI_FREE_MODELS) if model in ZAI_FREE_MODELS else [model]
+
+
+def zai_chat(cfg: dict, body: dict, timeout: float, client: httpx.Client | None = None) -> httpx.Response:
+    """POST /chat/completions, moving to the next free model on 429/5xx (not on timeouts)."""
+    url = cfg["api_base"].rstrip("/") + "/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {cfg['api_key']}",
+        "Content-Type": "application/json",
+        "Accept-Language": "en-US,en",
+    }
+    own = client is None
+    http = client or httpx.Client(timeout=timeout)
+    try:
+        models = zai_models(cfg)
+        for i, model in enumerate(models):
+            resp = http.post(url, headers=headers, json={**body, "model": model}, timeout=timeout)
+            if resp.status_code < 429 or i == len(models) - 1:
+                return resp
+            log.warning("zai %s http %s — trying %s", model, resp.status_code, models[i + 1])
+        return resp
+    finally:
+        if own:
+            http.close()
+
+
 def is_openai_api_base(url: str) -> bool:
     low = (url or "").lower()
     return "openai.com" in low or "openrouter.ai" in low or "api.groq.com" in low

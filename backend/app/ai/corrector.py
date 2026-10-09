@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..models import AiConversation, AiEvent
-from ..services import resolve_ai_config
+from ..services import resolve_ai_config, zai_chat
 
 log = logging.getLogger("infradealer.ai.corrector")
 
@@ -151,11 +151,6 @@ def _llm_correct(text: str, lang: str, cfg: dict) -> str:
         f"- Reply language: {lang}\n"
     )
     user_block = f"ORIGINAL:\n{text}\n\nCORRECTED:"
-    url = cfg["api_base"].rstrip("/") + "/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {cfg['api_key']}",
-        "Content-Type": "application/json",
-    }
     body = {
         "model": cfg["model"],
         "messages": [
@@ -168,9 +163,8 @@ def _llm_correct(text: str, lang: str, cfg: dict) -> str:
         "enable_thinking": False,
     }
     try:
-        with httpx.Client(timeout=3.5) as client:
-            resp = client.post(url, headers=headers, json=body)
-            data = resp.json() if resp.content else {}
+        resp = zai_chat(cfg, body, 5.0)
+        data = resp.json() if resp.content else {}
         if not isinstance(data, dict):
             data = {}
         choice = (data.get("choices") or [{}])[0]

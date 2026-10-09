@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..models import AiConversation
-from ..services import resolve_ai_config
+from ..services import resolve_ai_config, zai_chat
 from .i18n import language_instruction, t
 from .schema import missing_fields
 from .tools import _payload
@@ -173,12 +173,6 @@ def free_chat_reply(db: Session, conv: AiConversation, text: str, lang: str, med
         messages.append({"role": "assistant", "content": (body or "")[:300]})
     messages.append({"role": "user", "content": user_block})
 
-    url = cfg["api_base"].rstrip("/") + "/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {cfg['api_key']}",
-        "Content-Type": "application/json",
-        "Accept-Language": "en-US,en",
-    }
     body = {
         "model": cfg["model"],
         "messages": messages,
@@ -188,9 +182,8 @@ def free_chat_reply(db: Session, conv: AiConversation, text: str, lang: str, med
         "enable_thinking": False,
     }
     try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.post(url, headers=headers, json=body)
-            data = resp.json() if resp.content else {}
+        resp = zai_chat(cfg, body, 10.0)
+        data = resp.json() if resp.content else {}
         if not isinstance(data, dict):
             data = {}
         choice = (data.get("choices") or [{}])[0]
@@ -198,6 +191,9 @@ def free_chat_reply(db: Session, conv: AiConversation, text: str, lang: str, med
         if not content:
             return _static_fallback(conv, lang)
         content = _sanitize_free(content, lang)
+        from .polish import LLM_WROTE_REPLY
+
+        LLM_WROTE_REPLY.set(True)
         redirect = _listing_redirect(payload, lang)
         if redirect and listing_active:
             content = content + "\n" + redirect

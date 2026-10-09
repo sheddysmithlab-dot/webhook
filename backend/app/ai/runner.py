@@ -369,6 +369,10 @@ def process_inbound(
         t_ai0 = time.perf_counter()
         path = "orchestrator"
         verdict: dict = {}
+        zai = "-"
+        from .polish import LLM_WROTE_REPLY, polish_reply
+
+        LLM_WROTE_REPLY.set(False)
         try:
             # AI Understanding: correct typos + classify routing
             from .corrector import correct_user_message, classify_message, reset_free_chat_count
@@ -443,7 +447,11 @@ def process_inbound(
                 reply = t(lang, "infradealer_options")
                 path = "options"
 
-            if path != "office_mode":
+            if path != "office_mode" and reply:
+                if LLM_WROTE_REPLY.get():
+                    zai = "llm"
+                else:
+                    reply, zai = polish_reply(db, text, reply, lang)
                 reply = decorate_office_reply(db, conv, reply)
 
             pl = _payload(conv)
@@ -468,6 +476,7 @@ def process_inbound(
             "reply_path": path,
             "ai_ms": int(t_ai),
             "route": verdict.get("route") if isinstance(verdict, dict) else None,
+            "zai": zai,
             "preview": (reply or "")[:160],
         }
         db.add(AiEvent(
@@ -477,8 +486,8 @@ def process_inbound(
             detail=json.dumps(obs, ensure_ascii=False)[:400],
         ))
         log.info(
-            "ai.reply_path path=%s ai_ms=%d route=%s mobile=***%s",
-            path, int(t_ai), obs.get("route") or "-", mobile[-4:] if mobile else "",
+            "ai.reply_path path=%s ai_ms=%d route=%s zai=%s mobile=***%s",
+            path, int(t_ai), obs.get("route") or "-", zai, mobile[-4:] if mobile else "",
         )
         if send and reply and not _is_latest_inbound(db, conv_id, wamid, mobile=mobile):
             stale = True

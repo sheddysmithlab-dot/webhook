@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     ai_free_chat: bool = True
     # AI Corrector: fix user message typos/spelling before agent processes it.
     ai_corrector: bool = True
+    # Z.AI response step: rule replies are rephrased by Z.AI (numbers/links/questions must survive).
+    ai_polish: bool = True
+    ai_polish_timeout: float = 6.0
     # Phase-1/3/4 prompt chat: LLM-first (tools + SYSTEM_PROMPT) with chat_memory fallback.
     # Phase-3: free_chat + static options merge into orchestrator when True.
     # Phase-4: reply_path + ai_ms logged on every turn. Rollback: AI_PROMPT_CHAT=false.

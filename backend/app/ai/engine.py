@@ -5,7 +5,7 @@ import re
 import httpx
 
 from ..models import AiConversation, AiListingDraft, AiMedia, Chat
-from ..services import resolve_ai_config
+from ..services import resolve_ai_config, zai_chat
 from .account import (
     account_busy,
     adapt_account_gate_reply,
@@ -427,12 +427,6 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
     messages = [{"role": "system", "content": sys}]
     messages.extend(_history(db, conv)[-6:])
     messages.append({"role": "user", "content": user_block})
-    url = cfg["api_base"].rstrip("/") + "/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {cfg['api_key']}",
-        "Content-Type": "application/json",
-        "Accept-Language": "en-US,en",
-    }
     body = {
         "model": cfg["model"],
         "messages": messages,
@@ -452,7 +446,7 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
                 if not use_tools:
                     payload_body.pop("tools", None)
                     payload_body.pop("tool_choice", None)
-                resp = client.post(url, headers=headers, json=payload_body)
+                resp = zai_chat(cfg, payload_body, 20.0, client)
                 try:
                     data = resp.json() if resp.content else {}
                 except Exception:
@@ -492,6 +486,9 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
                 if not content:
                     log.warning("ai api empty content keys=%s", list(msg.keys()))
                     return None
+                from .polish import LLM_WROTE_REPLY
+
+                LLM_WROTE_REPLY.set(True)
                 return _sanitize_reply(content, posted=posted, lang=lang)
     except Exception as exc:
         log.warning("ai api error: %s", exc)
