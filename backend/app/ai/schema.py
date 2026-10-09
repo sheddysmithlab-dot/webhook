@@ -159,7 +159,8 @@ def normalize_vehicle_category(raw: str | None) -> str:
     if text in _CAT_ALIASES:
         return _CAT_ALIASES[text]
     for cue, label in sorted(_CAT_ALIASES.items(), key=lambda x: len(x[0]), reverse=True):
-        if re.search(rf"(?<![a-z0-9]){re.escape(cue)}(?![a-z0-9])", text):
+        # Plurals too: users reply with the website's labels ("Dumpers", "Excavators", "Trucks").
+        if re.search(rf"(?<![a-z0-9]){re.escape(cue)}s?(?![a-z0-9])", text):
             return label
     return ""
 

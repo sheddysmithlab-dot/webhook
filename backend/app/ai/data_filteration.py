@@ -439,6 +439,16 @@ _STATE_ALIASES = {
     "chhattisgarh": "Chhattisgarh",
     "haryana": "Haryana",
     "punjab": "Punjab",
+    "jharkhand": "Jharkhand",
+    "odisha": "Odisha",
+    "orissa": "Odisha",
+    "assam": "Assam",
+    "uttarakhand": "Uttarakhand",
+    "himachal pradesh": "Himachal Pradesh",
+    "jammu and kashmir": "Jammu and Kashmir",
+    "andhra pradesh": "Andhra Pradesh",
+    "kerala": "Kerala",
+    "goa": "Goa",
     "मध्य प्रदेश": "Madhya Pradesh",
     "मप्र": "Madhya Pradesh",
     "महाराष्ट्र": "Maharashtra",
@@ -446,6 +456,11 @@ _STATE_ALIASES = {
     "गुजरात": "Gujarat",
     "दिल्ली": "Delhi",
     "उत्तर प्रदेश": "Uttar Pradesh",
+    "झारखंड": "Jharkhand",
+    "बिहार": "Bihar",
+    "छत्तीसगढ़": "Chhattisgarh",
+    "हरियाणा": "Haryana",
+    "पंजाब": "Punjab",
 }
 
 

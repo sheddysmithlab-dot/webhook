@@ -729,7 +729,7 @@ _FAKE_SUBMIT = re.compile(
     r"(listing\s*id|लिस्टिंग\s*id|CARD-\d+|सबमिट\s*(कर|हो)|भेज\s*दिया\s*गया|submit\s*(ho\s*gay|kar\s*(di|diya|rahe)|kiya)|"
     r"submitted|submitting|bhej\s*diya\s*gaya|under\s*review|review\s*(me|mein|में)|sent\s*for\s*review|"
     r"is\s*now\s*live|post\s*ho\s*gayi|live\s*ho\s*gayi|"
-    r"confirm.{0,40}\b(submit|haan|yes)\b|\b(haan|yes)\b.{0,20}\bto\s*submit)",
+    r"confirm.{0,40}\b(submit|haan|yes)\b|\b(haan|yes)\b.{0,20}\bto\s*submit|\b(haan|yes)\b.{0,15}\bconfirm)",
     re.I,
 )
 

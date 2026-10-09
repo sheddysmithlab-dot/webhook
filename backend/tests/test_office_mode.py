@@ -995,6 +995,32 @@ def test_category_and_name_alone_reach_summary_and_submit(db, client, monkeypatc
     assert pushed == [conv.id]
 
 
+def test_website_plural_category_labels_are_understood():
+    from app.ai.data_filteration import normalize_location
+    from app.ai.engine import extract_turn
+
+    for word, cat in (("Dumpers", "Dumper"), ("Tippers", "Tipper"), ("Excavators", "Excavator"), ("Trucks", "Truck")):
+        assert extract_turn(word).get("category") == cat, word
+    assert normalize_location(location="Ramgarh jharkhand").get("state") == "Jharkhand"
+
+
+def test_tata_dumper_chat_reaches_summary(db, client, monkeypatch):
+    from app.ai import engine as eng
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "ai_prompt_chat", True)
+    monkeypatch.setattr(eng, "handle_account_info", lambda *a, **k: None)
+    monkeypatch.setattr(eng, "needs_account_gate", lambda payload: False)
+    monkeypatch.setattr(eng, "prompt_chat_enabled", lambda db: True)
+    monkeypatch.setattr(eng, "llm_configured", lambda db: False)
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    eng.prompt_chat_turn(db, conv, "2021 model location Ramgarh  jharkhand  22 lakh")
+    eng.prompt_chat_turn(db, conv, "Tata signa 2528")
+    out = eng.prompt_chat_turn(db, conv, "Dumpers")
+    assert "Tata 2528" in out and _payload(conv)["awaiting_confirm"]
+
+
 def test_submission_gate_needs_only_category_and_name():
     from app.ai.data_push import validate_submission
 
@@ -1011,6 +1037,7 @@ def test_claims_submission_patterns():
     assert _claims_submission("Aapki listing submit ho gayi hai")
     assert _claims_submission("*Submitting Listing*\n• Your Kobelco SK220XD listing is now under review")
     assert _claims_submission("*Next Step*\n• Please confirm: Haan/Yes to submit your listing for review")
+    assert _claims_submission("Vehicle Details\nBrand: Tata\nKya yeh sahi hai? Haan/Yes confirm karein.")
     assert not _claims_submission("Kitne operating hours hain?")
 
 
