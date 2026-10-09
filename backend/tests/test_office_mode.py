@@ -861,12 +861,51 @@ def test_llm_cannot_fake_a_submission(db, client, monkeypatch):
     assert "CARD-018" not in out and "भेज दिया" not in out
 
 
+def test_bare_yes_never_reaches_llm(db, client, monkeypatch):
+    eng, conv = _ready_excavator(db, monkeypatch, year=None)
+    monkeypatch.setattr(eng, "llm_configured", lambda db: True)
+    monkeypatch.setattr(eng, "llm_reply", lambda *a, **k: pytest.fail("LLM must not run"))
+    out = eng.prompt_chat_turn(db, conv, "Haan")
+    assert out == eng._next_question(_payload(conv), "hinglish")
+    assert conv.error_message == "ask:year" or "year" in out.lower() or "saal" in out.lower()
+
+
 def test_claims_submission_patterns():
     from app.ai.engine import _claims_submission
 
     assert _claims_submission("• लिस्टिंग ID: CARD-018")
     assert _claims_submission("Aapki listing submit ho gayi hai")
+    assert _claims_submission("*Submitting Listing*\n• Your Kobelco SK220XD listing is now under review")
+    assert _claims_submission("*Next Step*\n• Please confirm: Haan/Yes to submit your listing for review")
     assert not _claims_submission("Kitne operating hours hain?")
+
+
+def test_listing_posting_request_is_sell_not_account_info():
+    from app.ai.account_info import wants_account_snapshot
+    from app.ai.engine import extract_turn
+
+    for msg in ("Listing posting Krna hain", "listing daalni hai", "nayi listing banani hai"):
+        assert not wants_account_snapshot(msg), msg
+        assert extract_turn(msg).get("intent") == "SELL", msg
+    assert wants_account_snapshot("meri listing kitni hai")
+    assert wants_account_snapshot("listing status batao")
+
+
+def test_labeled_listing_text_is_sell():
+    from app.ai.engine import extract_turn
+
+    text = "Category: Excavator\nBrand: Kobelco\nModel: SK220XD\nYear: 2022\nPrice: ₹32,00,000\nLocation: Saharanpur"
+    assert extract_turn(text).get("intent") == "SELL"
+    assert extract_turn("JCB 3DX 2019 chahiye budget 20 lakh").get("intent") != "SELL"
+
+
+def test_office_vehicle_details_default_to_sell(db, client, monkeypatch):
+    from app.ai import engine as eng
+
+    conv = _conv(db)
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    eng.prepare_prompt_state(db, conv, "Kobelco SK220XD 2022 Saharanpur")
+    assert _payload(conv)["intent"] == "SELL"
 
 
 def test_photo_burst_saves_all_but_replies_once(db):

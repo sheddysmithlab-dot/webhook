@@ -47,8 +47,25 @@ _LISTING_INFO = re.compile(
 )
 
 
+_NEW_LISTING = re.compile(
+    r"("
+    r"\b(listing|ad|post)\w*\s+(daal|dal|bana|laga)\w*"
+    r"|\b(post|posting|listing)\s+(karna|krna|karni|krni|karo|kro|kar\s*do|kr\s*do|kardo|krdo|karwani|karwana)\b"
+    r"|\b(nayi|naya|new)\s+(listing|post|ad)\b"
+    r")",
+    re.I,
+)
+
+
+def wants_new_listing(text: str) -> bool:
+    """'listing posting karna hai' / 'listing daalni hai' — create a listing, not a status question."""
+    return bool(_NEW_LISTING.search(text or ""))
+
+
 def wants_account_snapshot(text: str) -> bool:
     msg = text or ""
+    if wants_new_listing(msg) and not _TOKEN_INFO.search(msg):
+        return False
     return bool(_ACCOUNT_DETAIL.search(msg) or _TOKEN_INFO.search(msg) or _LISTING_INFO.search(msg))
 
 

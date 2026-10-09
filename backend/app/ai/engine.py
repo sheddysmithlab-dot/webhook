@@ -25,7 +25,7 @@ from .account import (
     wants_new_chat,
     wants_password_reset,
 )
-from .account_info import handle_account_info
+from .account_info import handle_account_info, wants_new_listing
 from .confirm import handle_confirmation, handle_vehicle_slot, is_no, is_yes, collection_ready, sync_posted_product
 from .extract import extract_from_text
 from .i18n import _GREET, _WEAK, language_instruction, pick_language, t
@@ -162,13 +162,13 @@ def extract_turn(text: str, extra_reps=None, media_note: str = "") -> dict:
     fields = extract_from_text(text, extra_reps=extra_reps)
     low = (text or "").lower()
     dump = bool(fields.get("brand") or fields.get("model") or fields.get("year"))
-    buyish = bool(re.search(r"kharid|buy|chahiye|lena |lene ", low))
+    buyish = bool(re.search(r"kharid|buy|chahiye|lena |lene |budget", low))
     sellish = bool(
         media_note
-        or re.search(r"bech|sell|bikau|dena|fitness|bima|insurance|tax|kimat|keemat|photo", low)
+        or re.search(r"bech|sell|bikau|dena|fitness|bima|insurance|tax|kimat|keemat|photo|price|rate|location", low)
         or re.search(r"[6-9]\d{9}", low)
     )
-    if not fields.get("intent") and dump and sellish and not buyish:
+    if not fields.get("intent") and not buyish and ((dump and sellish) or wants_new_listing(text)):
         fields["intent"] = "SELL"
     return fields
 
@@ -516,6 +516,14 @@ def prepare_prompt_state(db, conv: AiConversation, text: str, media_note: str = 
             payload["brand"] = brand
             _write_payload(conv, payload)
 
+    # The office line only posts listings — vehicle details there always mean SELL.
+    if not payload.get("intent") and any(payload.get(k) for k in ("brand", "model", "category", "expected_price")):
+        from .office_mode import is_office_session
+
+        if is_office_session(db, conv):
+            payload["intent"] = "SELL"
+            _write_payload(conv, payload)
+
     intent = str(payload.get("intent") or "").upper()
     if intent in {"BUY", "SELL"}:
         if intent == "SELL":
@@ -690,6 +698,10 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         if summary:
             return summary
 
+    # A bare "Haan" with no confirm card open must not reach the model (it improvises confirm loops).
+    if is_yes(msg) and str(payload.get("intent") or "").upper() == "SELL" and not payload.get("awaiting_confirm"):
+        return _next_question(payload, lang) or t(lang, "more_detail")
+
     if not llm_configured(db):
         return None
     reply = llm_reply(db, conv, text, media_note)
@@ -700,6 +712,10 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
             # The model may not announce a submission or invent a listing ID — only the confirm flow submits.
             log.warning("ai.llm_fake_submit_blocked mobile=***%s", conv.mobile[-4:] if conv.mobile else "")
             payload = _payload(conv)
+            gap = None if payload.get("awaiting_confirm") else _usage_gap(payload)
+            if gap:
+                conv.error_message = f"ask:{gap}"
+                return _with_ack(lang, gap, payload)
             if collection_ready(payload) and not payload.get("awaiting_confirm"):
                 return _summary_or_photo_gate(db, conv, payload, lang) or t(lang, "more_detail")
             return _next_question(payload, lang) or t(lang, "more_detail")
@@ -708,7 +724,9 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
 
 _FAKE_SUBMIT = re.compile(
     r"(listing\s*id|लिस्टिंग\s*id|CARD-\d+|सबमिट\s*(कर|हो)|भेज\s*दिया\s*गया|submit\s*(ho\s*gay|kar\s*(di|diya|rahe)|kiya)|"
-    r"submitted|bhej\s*diya\s*gaya)",
+    r"submitted|submitting|bhej\s*diya\s*gaya|under\s*review|review\s*(me|mein|में)|sent\s*for\s*review|"
+    r"is\s*now\s*live|post\s*ho\s*gayi|live\s*ho\s*gayi|"
+    r"confirm.{0,40}\b(submit|haan|yes)\b|\b(haan|yes)\b.{0,20}\bto\s*submit)",
     re.I,
 )
 
