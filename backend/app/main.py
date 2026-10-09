@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import threading
 import time
 
@@ -19,6 +20,22 @@ from .services import get_or_create_settings
 log = logging.getLogger("infradealer")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+class _RedactSecrets(logging.Filter):
+    """httpx logs full URLs; SMS gateways take credentials as query params."""
+
+    _SECRET = re.compile(r"((?:password|pass|pwd|apikey|api_key|token|secret)=)[^&\s\"']+", re.I)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        clean = self._SECRET.sub(r"\1***", msg)
+        if clean != msg:
+            record.msg, record.args = clean, ()
+        return True
+
+
+logging.getLogger("httpx").addFilter(_RedactSecrets())
 
 app = FastAPI(title="infradealer", version="2.0.0")
 app.add_middleware(

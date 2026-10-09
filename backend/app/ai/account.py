@@ -511,6 +511,34 @@ def suggest_username(name: str, mobile: str = "") -> str:
     return (base + tail)[:40] or f"user{tail}"
 
 
+_NAME_LEAD = re.compile(
+    r"^\W*(?:mera|meri|my|apna|hamara|hamari)?\s*(?:poora\s+|pura\s+|full\s+|firm\s+(?:ka\s+)?|company\s+(?:ka\s+)?)?"
+    r"(?:naam|nam|name)\s*(?:is|hai|h|he|:|-)?\s*",
+    re.I,
+)
+_NAME_FILLER = {
+    "firm", "company", "business", "shop", "dukan", "ka", "ki", "ke", "name", "naam", "nam",
+    "mera", "meri", "my", "is", "hai", "h", "he", "apna", "poora", "pura", "full", "kya", "batao", "likhu",
+}
+_NOT_NAME = re.compile(
+    r"\?|\b(kya|kaise|kese|kaisa|kyu|kyun|kyon|kitna|matlab|mtlb|payment|paisa|paise|charge|fees?)\b",
+    re.I,
+)
+
+
+def clean_reg_name(msg: str) -> str:
+    """Name from 'mera naam X hai' / 'X'; '' for fillers like 'firm ka name' or questions."""
+    clean = re.sub(r"\s+", " ", (msg or "").strip())
+    if _NOT_NAME.search(clean) or is_yes(clean) or is_no(clean):
+        return ""
+    clean = _NAME_LEAD.sub("", clean).strip(" .,:-")
+    clean = re.sub(r"\s+(hai|h|he)$", "", clean, flags=re.I).strip()
+    words = [w for w in re.split(r"\s+", clean) if w]
+    if not words or all(w.lower().strip(".,") in _NAME_FILLER for w in words):
+        return ""
+    return clean if _valid_name(clean) else ""
+
+
 def _valid_name(msg: str) -> bool:
     clean = re.sub(r"\s+", " ", (msg or "").strip())
     if len(clean) < 2 or len(clean) > 120:
@@ -518,6 +546,35 @@ def _valid_name(msg: str) -> bool:
     if re.fullmatch(r"\d+", clean):
         return False
     return bool(re.search(r"[a-zA-Z\u0900-\u097F]", clean))
+
+
+_USERNAME_OK = re.compile(
+    r"^\W*(ys|yse|yas|yess*|ya+|yup|y|haa*n*|hn|hm+|ok+|okay|thik|theek|sahi|done|chalega|chalo|"
+    r"same|yahi|wahi|rakh\s*do|rakho|हाँ|हां|ठीक)\W*(hai|h|he|hi)?\W*$",
+    re.I,
+)
+_USERNAME_QUESTION = re.compile(
+    r"\?|\b(kya|kaise|kese|kaisa|kyu|kyun|kyon|matlab|mtlb|samjh|payment|paisa|paise|charge|fees?|free|lagega|lagta)\b",
+    re.I,
+)
+
+
+def username_from_answer(msg: str, suggested: str, mobile: str = "") -> tuple[str, bool]:
+    """(username, is_help) for the username step; ('', False) when it cannot be used."""
+    text = (msg or "").strip()
+    if is_yes(text) or _USERNAME_OK.match(text):
+        return suggested, False
+    if _USERNAME_QUESTION.search(text):
+        return "", True
+    plain = text.lstrip("@")
+    if _valid_username(plain):
+        return plain, False
+    # "Sumit sharma" → sumitsharma (a name sent instead of a username)
+    if re.fullmatch(r"[A-Za-z][A-Za-z .]{1,40}", plain) and len(plain.split()) <= 3:
+        joined = suggest_username(plain, mobile)
+        if _valid_username(joined):
+            return joined, False
+    return "", False
 
 
 def _valid_email(msg: str) -> bool:
@@ -791,7 +848,11 @@ def _submit_registration_and_otp(db: Session, conv: AiConversation, payload: dic
             if "USERNAME" in biz:
                 payload["account_step"] = "reg_username"
                 _write_payload(conv, payload)
-                return t(lang, "account_reg_username_taken" if biz == "USERNAME_EXISTS" else "account_reg_invalid_username")
+                return t(
+                    lang,
+                    "account_reg_username_taken" if biz == "USERNAME_EXISTS" else "account_reg_invalid_username",
+                    username=suggest_username(name, conv.mobile),
+                )
             if "PASSWORD" in biz:
                 payload["account_step"] = "reg_password"
                 _write_payload(conv, payload)
@@ -819,7 +880,9 @@ def _local_otp_then(db, conv, payload, lang, prefix, infra_create=False) -> str:
             log.exception("InfraDealer OTP request failed; falling back to local DLT SMS")
     otp = execute_tool(db, conv, "send_otp", {})
     if not otp.get("ok"):
-        return t(lang, "otp_send_fail")
+        payload["otp_send_failed"] = True
+        _write_payload(conv, payload)
+        return t(lang, "account_otp_send_retry")
     _note_signup_otp_sent(payload)
     _write_payload(conv, payload)
     head = prefix or t(lang, "confirm_ok")
@@ -829,6 +892,7 @@ def _local_otp_then(db, conv, payload, lang, prefix, infra_create=False) -> str:
 def _note_signup_otp_sent(payload: dict) -> None:
     payload["otp_sent_at"] = datetime.now(timezone.utc).isoformat()
     payload["otp_wrong"] = 0
+    payload.pop("otp_send_failed", None)
 
 
 def _otp_resend_wait(payload: dict) -> int:
@@ -850,6 +914,9 @@ def _resend_signup_otp(db: Session, conv: AiConversation, payload: dict, lang: s
         return head + t(lang, "account_otp_wait", secs=wait)
     svc = _infra(db)
     st = _state(db, conv.mobile)
+    if svc and not (st and st.registration_id) and payload.get("reg_password"):
+        # The first account.create never reached InfraDealer (e.g. 502) — create it now; that sends the OTP.
+        return head + _submit_registration_and_otp(db, conv, payload, lang)
     if svc and st and st.registration_id:
         item = None
         try:
@@ -923,9 +990,9 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
         return t(lang, "account_reg_offer")
 
     if step == "reg_name":
-        if not _valid_name(msg):
+        name = clean_reg_name(msg)[:120]
+        if not name:
             return t(lang, "account_reg_invalid_name")
-        name = re.sub(r"\s+", " ", msg).strip()[:120]
         payload["reg_name"] = name
         conv.customer_name = name
         suggested = suggest_username(name, conv.mobile)
@@ -936,19 +1003,19 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
         return t(lang, "account_reg_ask_username", username=suggested)
 
     if step == "reg_username":
-        if is_yes(msg):
-            username = str(payload.get("reg_username_suggest") or suggest_username(
-                str(payload.get("reg_name") or ""), conv.mobile
-            ))
-        else:
-            username = msg.strip().lstrip("@")
-        if not _valid_username(username):
-            return t(lang, "account_reg_invalid_username")
+        suggested = str(payload.get("reg_username_suggest") or suggest_username(
+            str(payload.get("reg_name") or ""), conv.mobile
+        ))
+        username, is_help = username_from_answer(msg, suggested, conv.mobile)
+        if is_help:
+            return t(lang, "account_reg_username_help", username=suggested)
+        if not username:
+            return t(lang, "account_reg_invalid_username", username=suggested)
         payload["reg_username"] = username
         payload["account_step"] = "reg_password"
         conv.error_message = "ask:account_reg_password"
         _write_payload(conv, payload)
-        return t(lang, "account_reg_ask_password")
+        return t(lang, "account_reg_username_set", username=username) + "\n" + t(lang, "account_reg_ask_password")
 
     if step == "reg_email":
         # Chats parked on the old email step move straight on; the email is not used.
@@ -1074,7 +1141,7 @@ def handle_account(db: Session, conv: AiConversation, text: str, lang: str) -> s
             return t(lang, "account_otp")
         digits = re.sub(r"\D", "", msg)
         if len(digits) != 6:
-            if wants_otp_resend(msg):
+            if wants_otp_resend(msg) or payload.get("otp_send_failed"):
                 return _resend_signup_otp(db, conv, payload, lang)
             if disputes_otp(msg):
                 return _resend_signup_otp(db, conv, payload, lang, "account_otp_disputed")

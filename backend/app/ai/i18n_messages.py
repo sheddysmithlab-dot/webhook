@@ -596,14 +596,29 @@ MESSAGES = {
         "en": "Set a password for website login (username or mobile number) (at least 6 characters).",
     },
     "account_reg_invalid_name": {
-        "hinglish": "Kripya sahi naam bhejiye (kam se kam 2 letter).",
-        "hi": "कृपया सही नाम भेजिए (कम से कम 2 अक्षर)।",
-        "en": "Please send a valid name (at least 2 letters).",
+        "hinglish": "Apna naam ya firm ka naam likhiye, jaise: *Ramesh Kumar* ya *Khan Earthmovers*.",
+        "hi": "अपना नाम या फर्म का नाम लिखिए, जैसे: *रमेश कुमार* या *खान अर्थमूवर्स*।",
+        "en": "Please send your name or firm name, e.g. *Ramesh Kumar* or *Khan Earthmovers*.",
     },
     "account_reg_invalid_username": {
-        "hinglish": "Username 3-40 letters/numbers/. _ hona chahiye. Dobara try kijiye.",
-        "hi": "यूज़रनेम 3-40 अक्षर/अंक/. _ होना चाहिए। दोबारा कोशिश कीजिए।",
-        "en": "Username must be 3-40 letters/numbers/. _ . Please try again.",
+        "hinglish": "Username me sirf letters/numbers (bina space) hone chahiye, jaise *{username}*.\nYahi rakhna hai to *Haan* likhiye, ya apna username bhejiye.",
+        "hi": "यूज़रनेम में सिर्फ अक्षर/अंक (बिना स्पेस) होने चाहिए, जैसे *{username}*।\nयही रखना है तो *हाँ* लिखिए, या अपना यूज़रनेम भेजिए।",
+        "en": "A username can only have letters/numbers (no spaces), e.g. *{username}*.\nReply *Yes* to keep it, or send your own username.",
+    },
+    "account_reg_username_help": {
+        "hinglish": "Username sirf website login ka naam hai — account banana *free* hai, koi payment nahi.\nAapka username: *{username}*\nYahi rakhna hai to *Haan* likhiye, ya apna username bhejiye.",
+        "hi": "यूज़रनेम सिर्फ वेबसाइट लॉगिन का नाम है — अकाउंट बनाना *फ्री* है, कोई पेमेंट नहीं।\nआपका यूज़रनेम: *{username}*\nयही रखना है तो *हाँ* लिखिए, या अपना यूज़रनेम भेजिए।",
+        "en": "The username is only your website login name — creating the account is *free*, no payment.\nYour username: *{username}*\nReply *Yes* to keep it, or send your own username.",
+    },
+    "account_reg_username_set": {
+        "hinglish": "✅ Username: *{username}*",
+        "hi": "✅ यूज़रनेम: *{username}*",
+        "en": "✅ Username: *{username}*",
+    },
+    "account_otp_send_retry": {
+        "hinglish": "OTP abhi nahi ja paya (server busy tha). 1 minute baad *OTP bhejo* likhiye — main dobara bhej dunga.",
+        "hi": "OTP अभी नहीं जा पाया (सर्वर व्यस्त था)। 1 मिनट बाद *OTP भेजो* लिखिए — मैं दोबारा भेज दूँगा।",
+        "en": "The OTP could not be sent (server busy). Reply *resend OTP* in a minute and I will try again.",
     },
     "account_reg_username_taken": {
         "hinglish": "Ye username kisi aur ka hai. Koi dusra username bhejiye (3-40 letters/numbers/. _).",

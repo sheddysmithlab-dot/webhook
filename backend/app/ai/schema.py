@@ -223,6 +223,7 @@ def empty_payload() -> dict:
         "pw_reset_otp": None,
         "otp_sent_at": None,
         "otp_wrong": 0,
+        "otp_send_failed": False,
         "expected_price": None,
         "budget": None,
         "budget_max": None,
