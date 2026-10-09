@@ -923,6 +923,17 @@ def test_blocked_submit_asks_missing_field_instead_of_confirm_again(db, client, 
     assert "hours" in out.lower() and conv.error_message == "ask:hours"
 
 
+def test_extra_yes_after_submit_returns_link(db, client, monkeypatch):
+    eng, conv = _ready_excavator(
+        db, monkeypatch, operating_hours="6500", customer_confirmed=True, listing_status="POSTED",
+        infradealer_listing_id="114", listing_url="https://infradealer.com/listings/114",
+    )
+    monkeypatch.setattr(eng, "llm_configured", lambda db: True)
+    monkeypatch.setattr(eng, "llm_reply", lambda *a, **k: pytest.fail("LLM must not run"))
+    out = eng.prompt_chat_turn(db, conv, "Yes")
+    assert "https://infradealer.com/listings/114" in out
+
+
 def test_skip_and_filler_words_are_not_places():
     from app.ai.data_filteration import _looks_like_place, normalize_location
 

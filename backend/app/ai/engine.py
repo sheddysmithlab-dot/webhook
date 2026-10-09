@@ -697,6 +697,12 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
 
     # A bare "Haan" with no confirm card open must not reach the model (it improvises confirm loops).
     if is_yes(msg) and str(payload.get("intent") or "").upper() == "SELL" and not payload.get("awaiting_confirm"):
+        from .confirm import card_submitted
+
+        if payload.get("customer_confirmed") or card_submitted(db, conv):
+            from .data_push import handle_post_listing_query
+
+            return handle_post_listing_query(db, conv, "listing link", lang) or t(lang, "more_detail")
         return _next_question(payload, lang) or t(lang, "more_detail")
 
     if not llm_configured(db):
