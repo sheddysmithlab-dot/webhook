@@ -237,6 +237,17 @@ def handle_confirmation(
             if result.get("error") == "token_insufficient":
                 buy = result.get("buy_link") or "https://infradealer.com/wallet"
                 return t(lang, "tokens_buy", link=buy)
+            missing = [m.get("field") if isinstance(m, dict) else m for m in (result.get("missing_fields") or [])]
+            if missing and missing[0]:
+                # "Confirm again" would just loop — ask for the field that blocked the submit.
+                from .engine import FIELD_KEYS, _with_ack
+
+                aliases = {"operating_hours": "hours", "running_km": "km", "price": "expected_price", "location": "state", "city": "state"}
+                key = aliases.get(missing[0], missing[0])
+                if key not in {*FIELD_KEYS, "hours", "km"}:
+                    key = "more_detail"
+                conv.error_message = f"ask:{key}"
+                return _with_ack(lang, key, _payload(conv))
             return t(lang, "submit_blocked")
         _send_listing_button(db, conv, lang)
         return t(lang, "submitted")

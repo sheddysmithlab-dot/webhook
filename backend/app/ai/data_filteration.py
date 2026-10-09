@@ -452,12 +452,14 @@ _STATE_ALIASES = {
 def _looks_like_place(text: str) -> bool:
     """Reject prices, years, vehicle dumps, yes/no, and long sentences as locations."""
     raw = (text or "").strip()
-    if not raw or len(raw) > 48:
+    if not raw or len(raw) > 48 or len(raw) < 3:
         return False
     low = raw.lower()
     if re.fullmatch(
         r"(haan+|han+|ha+|hji|ji|yes+|yup|yeah|yep|ok+|okay|no+|nahi+|na+|hello|hi|hey|"
         r"theek|thik|sahi|correct|done|post|submit|please|pls|thanks|thank\s*you|"
+        r"skip+|skip\s*(it|kar\w*|kr\w*)|ab|abhi|aur|kuch\s*(nahi|nhi)|nothing|none|later|baad\s*(me|mein)|"
+        r"pata\s*(nahi|nhi)|nahi\s*pata|no\s*idea|hmm+|"
         r"हाँ+|हां+|जी+|नहीं+|ना+|ठीक|सही)",
         low,
     ):
@@ -555,6 +557,10 @@ def normalize_location(city: Any = None, state: Any = None, location: Any = None
         result["location"] = known_state
     if not result.get("city") and not result.get("state") and not result.get("location"):
         return {}
+    if result.get("city") and result.get("state"):
+        trimmed = re.sub(rf"[\s,]*{re.escape(result['state'])}\s*$", "", result["city"], flags=re.I).strip(" ,")
+        if trimmed and trimmed != result["city"] and _looks_like_place(trimmed):
+            result["city"] = result["location"] = trimmed
     return result
 
 
@@ -1285,7 +1291,10 @@ def filter_payload(
             mobile=(conv.mobile if conv else None) or str(base.get("whatsapp_number") or ""),
         )
 
-        missing = build_missing_fields(normalized, category, intent or "SELL")
+        # Asks the customer skipped (e.g. hours) must not block submission when they unblocked the summary.
+        missing = build_missing_fields(
+            {**normalized, "skipped_asks": base.get("skipped_asks") or []}, category, intent or "SELL",
+        )
         # Photos are optional for readiness unless schema required them and none provided
         confidence = calculate_confidence(field_status, conflicts, validation_errors)
         quality = calculate_quality_score(

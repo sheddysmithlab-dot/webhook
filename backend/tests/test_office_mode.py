@@ -899,6 +899,40 @@ def test_summary_then_yes_pushes_and_sends_link(db, client, monkeypatch):
     assert "https://infradealer.com/listings/200" in link
 
 
+def test_skipped_hours_do_not_block_final_submit():
+    from app.ai.data_filteration import filter_payload
+
+    pl = {
+        "intent": "SELL", "category": "Excavator", "brand": "Kobelco", "model": "SK220XD", "year": 2022,
+        "expected_price": 3200000, "state": "Uttar Pradesh", "city": "Saharanpur",
+    }
+    assert "hours" in [m["field"] for m in filter_payload(pl).missing_fields]
+    done = filter_payload({**pl, "skipped_asks": ["hours"]})
+    assert done.missing_fields == [] and done.readiness != "MISSING_REQUIRED_DATA"
+
+
+def test_blocked_submit_asks_missing_field_instead_of_confirm_again(db, client, monkeypatch):
+    from app.ai import chat_memory
+    from app.ai.confirm import handle_confirmation
+
+    conv = _conv(db, intent="SELL", category="Excavator", brand="Kobelco", awaiting_confirm=True)
+    monkeypatch.setattr(chat_memory, "submit_confirmed_listing", lambda db, conv: {
+        "ok": False, "error": "listing_not_ready", "missing_fields": [{"field": "hours", "priority": 70}],
+    })
+    out = handle_confirmation(db, conv, "Yes", "hinglish")
+    assert "hours" in out.lower() and conv.error_message == "ask:hours"
+
+
+def test_skip_and_filler_words_are_not_places():
+    from app.ai.data_filteration import _looks_like_place, normalize_location
+
+    for word in ("Skip", "skip", "Ab", "abhi", "kuch nahi", "pata nahi"):
+        assert not _looks_like_place(word), word
+    assert _looks_like_place("Saharanpur")
+    loc = normalize_location(city="Saharanpur Uttar Pradesh", state="Uttar Pradesh")
+    assert loc["city"] == "Saharanpur" and loc["state"] == "Uttar Pradesh"
+
+
 def test_claims_submission_patterns():
     from app.ai.engine import _claims_submission
 
