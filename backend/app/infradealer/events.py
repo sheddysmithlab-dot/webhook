@@ -37,6 +37,7 @@ API_PATHS = {
     "connection.test": "/test",
     "account.check": "/account/check",
     "account.create": "/account/create",
+    "account.auto": "/account/auto",
     "otp.request": "/otp/request",
     "otp.verify": "/otp/verify",
     "password.reset.request": "/password/reset/request",

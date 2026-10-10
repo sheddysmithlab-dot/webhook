@@ -50,6 +50,12 @@ FIELD_KEYS = (
     "budget", "category", "customer_name", "optional_bundle",
 )
 
+_BUYER_ASK = re.compile(
+    r"\?|\b(chahiye|chaiye|chahie|chahte|kharid\w*|lena|leni|lene|buy|purchase|wanted|need|"
+    r"milega|milegi|milenge|available|kitne\s*ka|kitne\s*ki|rate\s*kya|price\s*kya)\b|चाहिए|खरीद",
+    re.I,
+)
+
 _CASUAL = re.compile(
     r"^\s*("
     r"hi+|hii+|hello|hey+|namaste|namaskar|"
@@ -528,13 +534,13 @@ def prepare_prompt_state(db, conv: AiConversation, text: str, media_note: str = 
         payload["category"] = "Other"
         _write_payload(conv, payload)
 
-    # The office line only posts listings — vehicle details or photos there always mean SELL.
+    # Photos or vehicle details with no stated intent mean a listing (office line: always).
     if not payload.get("intent") and (
         media_note or any(payload.get(k) for k in ("brand", "model", "category", "expected_price"))
     ):
         from .office_mode import is_office_session
 
-        if is_office_session(db, conv):
+        if media_note or not _BUYER_ASK.search(text or "") or is_office_session(db, conv):
             payload["intent"] = "SELL"
             _write_payload(conv, payload)
 

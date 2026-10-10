@@ -415,7 +415,7 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
         return {"ok": True, "state": conv.state}
 
     if name == "send_otp":
-        if conv.profile_id and conv.profile_status in {"found", "verified"}:
+        if (conv.profile_id and conv.profile_status in {"found", "verified"}) or payload.get("account_onboarded"):
             return {"ok": True, "skipped": True, "reason": "profile already verified"}
         meta = get_or_create_settings(db)
         try:

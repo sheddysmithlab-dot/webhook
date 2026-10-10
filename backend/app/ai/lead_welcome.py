@@ -148,7 +148,8 @@ def lead_welcome_reply(
     if pl.get("lead_welcome_sent") or _has_listing_context(conv, pl):
         return ""
     from_ad = is_ad_prefill(text) or is_ad_prefill(raw)
-    new_lead = _wa_unmatched_payload(pl) and not pl.get("account_onboarded") and is_lead_inquiry(text)
+    fresh = pl.get("account_auto_created") or (_wa_unmatched_payload(pl) and not pl.get("account_onboarded"))
+    new_lead = bool(fresh) and is_lead_inquiry(text)
     if not (from_ad or new_lead):
         return ""
 

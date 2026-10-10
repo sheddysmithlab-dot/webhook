@@ -573,7 +573,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     if welcome:
         log.info("orchestrator.reply_path path=lead_welcome mobile=***%s", (conv.mobile or "")[-4:])
         sync_master_from_rm(db, conv)
-        return welcome
+        return _with_account_notice(conv, welcome, lang)
 
     # Agent 2 — Phase-3: unified prompt_chat; free_chat then soft chat_memory on fail.
     reply = ""
@@ -657,7 +657,20 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
             "next_ask": _payload(conv).get("next_ask"),
         },
     )
-    return reply
+    return _with_account_notice(conv, reply, lang)
+
+
+def _with_account_notice(conv: AiConversation, reply: str, lang: str) -> str:
+    """Tell a new sender once that their account was created automatically."""
+    payload = _payload(conv)
+    if not payload.get("account_created_notice") or not (reply or "").strip():
+        return reply
+    payload["account_created_notice"] = False
+    _write_payload(conv, payload)
+    from .account_filter import normalize_phone
+    from .i18n import t
+
+    return t(lang, "account_auto_created", phone=normalize_phone(conv.mobile)) + "\n\n" + reply
 
 
 # Alias matching markdown naming

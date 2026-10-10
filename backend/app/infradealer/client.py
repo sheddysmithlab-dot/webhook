@@ -143,6 +143,20 @@ class InfraDealerApiClient:
             request_id=rid,
         )
 
+    def auto_account(self, phone: str, name: str = "", request_id: str | None = None) -> dict[str, Any]:
+        """Find or create (no OTP) the account of the WhatsApp sender's own number."""
+        rid = request_id or str(uuid.uuid4())
+        return self.request(
+            "account.auto",
+            {
+                "request_id": rid,
+                "event": "account.auto",
+                "customer": {"phone": phone, "name": name},
+                "source": "whatsapp_ai",
+            },
+            request_id=rid,
+        )
+
     def create_account(
         self,
         name: str,

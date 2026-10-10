@@ -240,6 +240,8 @@ def empty_payload() -> dict:
         "account_role": None,
         "account_password_set": False,
         "account_onboarded": False,
+        "account_auto_created": False,
+        "account_created_notice": False,
         # WhatsApp registration / password-reset (must survive loads() between turns)
         "reg_name": None,
         "reg_username": None,

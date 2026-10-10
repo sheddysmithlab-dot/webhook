@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -419,8 +420,97 @@ def refresh_account_if_stale(
     return state
 
 
+_AUTO_LINKED = {"ACCOUNT_FOUND", "ACCOUNT_EXISTS", "ACCOUNT_CREATED", "VERIFIED"}
+_AUTO_RETRY_SECONDS = 120
+_auto_failed_at: dict[str, float] = {}
+
+
+def ensure_auto_account(db: Session, conv: AiConversation) -> bool:
+    """Give every WhatsApp sender an InfraDealer account on their first message — no OTP, no password.
+
+    Only the Meta-verified sender number (conv.mobile) is ever sent, never a number typed in chat.
+    Returns True when this call linked or created the account.
+    """
+    phone = normalize_phone(conv.mobile)
+    if len(phone) != 10:
+        return False
+    state = db.query(InfraDealerAccountState).filter(InfraDealerAccountState.mobile == phone).first()
+    if state and state.infradealer_user_id and state.account_status in _AUTO_LINKED:
+        return False
+    user = db.query(User).filter(User.mobile == phone).first()
+    if user and user.account_ready:
+        return False
+    if db.query(BlockedNumber).filter(BlockedNumber.mobile == phone).first():
+        return False
+    if time.time() - _auto_failed_at.get(phone, 0.0) < _AUTO_RETRY_SECONDS:
+        return False
+
+    from ..infradealer.service import get_integration_service
+
+    svc = get_integration_service(db)
+    client = svc._client()
+    if not client:
+        return False
+    wa = collect_whatsapp_user(db, conv)
+    res = client.auto_account(phone, wa.wa_name or "")
+    body = (res or {}).get("body") or {}
+    account = body.get("account") if isinstance(body.get("account"), dict) else {}
+    if not (res and res.get("ok") and account.get("user_id")):
+        _auto_failed_at[phone] = time.time()
+        log.warning(
+            "auto_account failed mobile=***%s http=%s code=%s",
+            phone[-4:],
+            (res or {}).get("http_status"),
+            body.get("code"),
+        )
+        return False
+    _auto_failed_at.pop(phone, None)
+
+    state = svc.get_or_create_account_state(phone, conversation_id=conv.id)
+    if state is None:
+        return False
+    apply_remote_account(state, body)
+    state.profile_status = "FOUND"
+    if not user:
+        user = User(
+            name=(wa.wa_name or str(account.get("name") or "") or "Seller")[:120],
+            mobile=phone,
+            source="whatsapp_auto",
+            role="user",
+        )
+        db.add(user)
+    user.account_ready = True
+    user.role = user.role or "user"
+    db.flush()
+
+    payload = _payload(conv)
+    if not str(payload.get("account_step") or "").startswith("pw_"):
+        payload["account_step"] = "done"
+    payload["account_onboarded"] = True
+    payload["wa_account_matched"] = True
+    for key in ("reg_name", "reg_username", "reg_email", "reg_password", "account_has_infra", "otp_send_failed"):
+        payload.pop(key, None)
+    if payload.get("verification_status") == "otp_pending":
+        payload.pop("verification_status", None)
+    if conv.state == "OTP_PENDING":
+        conv.state = "COLLECTING"
+    if str(conv.error_message or "").startswith(("ask:account_", "ask:otp")):
+        conv.error_message = ""
+    if body.get("created"):
+        payload["account_auto_created"] = True
+        payload["account_created_notice"] = True
+    _write_payload(conv, payload)
+    log.info("auto_account linked mobile=***%s created=%s", phone[-4:], bool(body.get("created")))
+    return True
+
+
 def sync_conversation_account(db: Session, conv: AiConversation) -> AccountVerdict:
     """Resolve identity + eligibility onto conversation payload (shared state)."""
+    try:
+        with db.begin_nested():
+            ensure_auto_account(db, conv)
+    except Exception:
+        log.exception("auto_account error mobile=***%s", normalize_phone(conv.mobile)[-4:])
     wa = collect_whatsapp_user(db, conv, persist=True)
     verdict = verify_account(db, conv.mobile)
     verdict.wa_user = wa

@@ -240,6 +240,11 @@ MESSAGES = {
         "hi": "फोटो/वीडियो मिल गया ✅ ",
         "en": "Photo/video received ✅ ",
     },
+    "account_auto_created": {
+        "hinglish": "✅ Aapka InfraDealer account is WhatsApp number ({phone}) par ban gaya hai — koi OTP/password nahi chahiye.",
+        "hi": "✅ आपका InfraDealer अकाउंट इस WhatsApp नंबर ({phone}) पर बन गया है — कोई OTP/पासवर्ड नहीं चाहिए।",
+        "en": "✅ Your InfraDealer account is ready on this WhatsApp number ({phone}) — no OTP or password needed.",
+    },
     "photo_at_max": {
         "hinglish": "Is card pe max photos lag chuki hain.",
         "hi": "इस कार्ड पर अधिकतम फोटो लग चुकी हैं।",

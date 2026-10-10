@@ -348,15 +348,11 @@ def process_inbound(
                         else:
                             media_note = (media_note or "") + " ocr_failed"
                     elif vis_row and vis_row.local_path and media.get("kind") == "image":
-                        from .office_mode import is_office_session
                         from .tools import _payload as _pl
                         from .vision import fill_listing_from_photo
 
-                        cur = _pl(conv)
-                        listing_ctx = (cur.get("intent") or "").upper() == "SELL" or any(
-                            cur.get(k) for k in ("brand", "model", "expected_price", "category")
-                        )
-                        if listing_ctx or is_office_session(db, conv):
+                        # A vehicle photo starts (or adds to) a listing unless the user is buying.
+                        if (_pl(conv).get("intent") or "").upper() != "BUY":
                             filled = fill_listing_from_photo(db, conv, vis_row)
                             if filled:
                                 media_note = (media_note or "") + " photo_fields=" + ",".join(filled)
