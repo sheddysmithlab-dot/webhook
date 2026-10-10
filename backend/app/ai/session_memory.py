@@ -237,7 +237,8 @@ def prepare_turn(db: Session, conv: AiConversation, text: str) -> dict[str, Any]
             return {"mode": "engine_update", "draft": draft, "reset": False, "card_id": draft.card_id}
         return {"mode": "continue", "draft": None, "reset": False, "missing_last_listing": True}
 
-    if idle and not payload.get("chat_cleared"):
+    # chat_cleared stays True after a reset even once a new card is built, so it must not block this.
+    if idle:
         had_topic = bool(
             payload.get("intent")
             or payload.get("brand")

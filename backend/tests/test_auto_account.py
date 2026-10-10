@@ -189,6 +189,55 @@ def test_new_user_details_first_gets_card_with_photo_ask(db, fake, monkeypatch):
     assert "photo" in out.lower() and not any(w in out.lower() for w in _ACCOUNT_TALK)
 
 
+def test_idle_chat_resets_even_after_an_earlier_reset(db):
+    from datetime import datetime, timedelta, timezone
+
+    from app.ai.session_memory import prepare_turn
+
+    old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    conv = _conv(
+        db,
+        intent="SELL",
+        brand="JCB",
+        model="3DX",
+        awaiting_confirm=True,
+        chat_cleared=True,
+        account_onboarded=True,
+        last_user_message_at=old,
+    )
+    assert prepare_turn(db, conv, "Hi")["mode"] == "new_chat"
+    pl = _payload(conv)
+    assert not pl["awaiting_confirm"] and not pl.get("brand") and pl["account_onboarded"]
+
+
+def test_greeting_from_existing_account_gets_account_welcome(db):
+    from app.ai.lead_welcome import lead_welcome_reply
+
+    conv = _conv(db, account_onboarded=True, customer_name="Malwa Trolley", wa_account_matched=True)
+    out = lead_welcome_reply(db, conv, _payload(conv), "Hi")
+    assert out.startswith("🙏 Namaste Malwa Trolley ji!")
+    assert f"account ({SENDER}) active hai" in out and "Sell equipment" in out
+    assert _payload(conv)["lead_menu_pending"]
+
+
+def test_greeting_from_new_number_gets_created_notice_and_welcome(db, fake):
+    from app.ai.lead_welcome import lead_welcome_reply
+    from app.ai.orchestrator import _with_account_notice
+
+    conv = _conv(db)
+    af.sync_conversation_account(db, conv)
+    out = _with_account_notice(conv, lead_welcome_reply(db, conv, _payload(conv), "hello"), "hinglish")
+    assert out.startswith("✅ Aapka InfraDealer account is WhatsApp number")
+    assert "Namaste" in out and "active hai" not in out
+
+
+def test_vehicle_message_is_not_swallowed_by_welcome(db):
+    from app.ai.lead_welcome import lead_welcome_reply
+
+    conv = _conv(db, account_onboarded=True)
+    assert lead_welcome_reply(db, conv, _payload(conv), "JCB 3DX 2020 bechni hai") == ""
+
+
 def test_photo_first_starts_a_listing_for_any_user(db):
     from app.ai import engine as eng
 

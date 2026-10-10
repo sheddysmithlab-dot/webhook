@@ -27,6 +27,17 @@ WELCOME_TEXT = (
     "find the right option."
 )
 
+ACCOUNT_WELCOME = (
+    "🙏 Namaste{name}! InfraDealer mein aapka swagat hai 🚜\n"
+    "{account_line}\n"
+    "• Gaadi/machine *bechni* hai? Photo ya details bhejiye — sirf category aur brand kaafi hai\n"
+    "• Kuch *kharidna* hai? Bataiye kya chahiye aur kis location mein\n\n"
+    "Ya number bhejiye:\n"
+    "1️⃣ Buy equipment\n"
+    "2️⃣ Sell equipment\n"
+    "3️⃣ Become a Dealer/Business Partner"
+)
+
 # The ad's prefilled message is the welcome text itself — the customer already sees the menu.
 WELCOME_ECHO_REPLY = (
     "🙏 Thanks for reaching out to InfraDealer!\n"
@@ -148,10 +159,19 @@ def lead_welcome_reply(
     if pl.get("lead_welcome_sent") or _has_listing_context(conv, pl):
         return ""
     from_ad = is_ad_prefill(text) or is_ad_prefill(raw)
-    fresh = pl.get("account_auto_created") or (_wa_unmatched_payload(pl) and not pl.get("account_onboarded"))
-    new_lead = bool(fresh) and is_lead_inquiry(text)
-    if not (from_ad or new_lead):
+    greeting = is_lead_inquiry(text)
+    has_account = bool(pl.get("account_onboarded") or pl.get("account_auto_created"))
+    unmatched = _wa_unmatched_payload(pl) and not has_account
+    if not (from_ad or (greeting and (has_account or unmatched))):
         return ""
+    if has_account and not from_ad:
+        from .office_mode import is_office_session
+
+        if is_office_session(db, conv):
+            return ""
+        reply = account_welcome(conv, pl)
+    else:
+        reply = WELCOME_TEXT
 
     pl["lead_welcome_sent"] = True
     pl["lead_menu_pending"] = True
@@ -159,7 +179,21 @@ def lead_welcome_reply(
     if from_ad:
         pl["lead_source"] = "ad"
     _write_payload(conv, pl)
-    return WELCOME_TEXT
+    return reply
+
+
+def account_welcome(conv: AiConversation, payload: dict) -> str:
+    """Greeting for a sender whose InfraDealer account exists (or was just created)."""
+    from ..identity import usable_person_name
+    from .account_filter import normalize_phone
+
+    name = usable_person_name(payload.get("customer_name")) or usable_person_name(payload.get("wa_name")) or ""
+    # A just-created account gets the "account ban gaya" notice on top of this reply instead.
+    account_line = (
+        "" if payload.get("account_created_notice")
+        else f"Aapka InfraDealer account ({normalize_phone(conv.mobile)}) active hai ✅\n"
+    )
+    return ACCOUNT_WELCOME.format(name=f" {name} ji" if name else "", account_line=account_line)
 
 
 def resolve_menu_choice(conv: AiConversation, payload: dict, text: str) -> tuple[str, str]:

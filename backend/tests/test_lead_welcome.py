@@ -74,9 +74,11 @@ def test_ad_prefill_welcomes_registered_user_too():
     assert _payload(conv).get("lead_source") == "ad"
 
 
-def test_registered_plain_greeting_goes_to_normal_flow():
+def test_registered_plain_greeting_gets_account_welcome():
     db = _session()
     conv = _conv(db, REGISTERED)
+    out = lead_welcome_reply(db, conv, _payload(conv), "hi")
+    assert out.startswith("🙏 Namaste") and "active hai" in out
     assert lead_welcome_reply(db, conv, _payload(conv), "hi") == ""
 
 
