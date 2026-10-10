@@ -14,6 +14,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..identity import usable_person_name
@@ -501,13 +503,18 @@ def auto_link_mobile(
     state.meta_json = json.dumps(meta, ensure_ascii=False)
     user = db.query(User).filter(User.mobile == phone).first()
     if not user:
-        user = User(
-            name=(name or str(account.get("name") or "") or "Seller")[:120],
-            mobile=phone,
-            source="whatsapp_auto",
-            role="user",
-        )
-        db.add(user)
+        try:
+            with db.begin_nested():
+                db.add(User(
+                    name=(name or str(account.get("name") or "") or "Seller")[:120],
+                    mobile=phone,
+                    source="whatsapp_auto",
+                    role="user",
+                ))
+                db.flush()
+        except IntegrityError:
+            pass  # another worker inserted the same number first
+        user = db.query(User).filter(User.mobile == phone).one()
     user.account_ready = True
     user.role = user.role or "user"
     db.flush()
@@ -534,6 +541,7 @@ def ensure_auto_account(db: Session, conv: AiConversation) -> bool:
 
 _RECONCILE_BATCH = 5
 _RECONCILE_PAUSE_SECONDS = 300
+_RECONCILE_LOCK_KEY = 8224_000_829
 _reconcile_paused_until = 0.0
 
 
@@ -546,6 +554,10 @@ def reconcile_missing_accounts(db: Session, limit: int = _RECONCILE_BATCH) -> in
     global _reconcile_paused_until
     if time.time() < _reconcile_paused_until:
         return 0
+    if db.bind.dialect.name == "postgresql":
+        # Several gunicorn workers run this loop; only one may reconcile at a time.
+        if not db.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": _RECONCILE_LOCK_KEY}).scalar():
+            return 0
     from sqlalchemy import func
 
     from ..models import Message
