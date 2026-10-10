@@ -189,6 +189,7 @@ def normalize_callback_event(payload: dict | None) -> str:
         "LISTING_LIVE": "listing.posted",
         "LISTING_REJECTED": "listing.rejected",
         "ACCOUNT_CREATED": "account.created",
+        "ACCOUNT_DELETED": "account.deleted",
     }
     if code in code_map:
         return code_map[code]
@@ -203,6 +204,8 @@ def normalize_callback_event(payload: dict | None) -> str:
         "listingrejected": "listing.rejected",
         "account.created": "account.created",
         "accountcreated": "account.created",
+        "account.deleted": "account.deleted",
+        "accountdeleted": "account.deleted",
     }
     if key in aliases:
         return aliases[key]

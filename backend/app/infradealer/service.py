@@ -840,14 +840,29 @@ class InfraDealerIntegrationService:
             )
             if dup2:
                 return {"ok": True, "duplicate": True}
+        deleted = event == "account.deleted"
         row = InfraDealerCallback(
             callback_id=callback_id,
             event_type=event,
             request_id=request_id,
-            payload_json=json.dumps(payload, ensure_ascii=False),
+            # A deleted account's phone must not survive in the callback log either.
+            payload_json=json.dumps({"event": event} if deleted else payload, ensure_ascii=False),
             status="RECEIVED",
         )
         self.db.add(row)
+        if deleted:
+            from ..ai.account_purge import purge_mobile
+
+            account = payload.get("account") if isinstance(payload.get("account"), dict) else {}
+            removed = purge_mobile(
+                self.db,
+                str(account.get("phone") or payload.get("phone") or ""),
+                account.get("listing_ids") or payload.get("listing_ids") or [],
+            )
+            row.processed = True
+            row.status = "PROCESSED"
+            self.db.commit()
+            return {"ok": True, "removed": removed}
         if event == "listing.posted":
             self._on_listing_posted(request_id, listing_id, payload)
         elif event == "listing.rejected":
