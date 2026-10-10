@@ -290,6 +290,13 @@ def collect_whatsapp_user(
     return wa
 
 
+_REMOTE_ACCOUNT_KEYS = (
+    "account_type", "type", "credits", "tokens", "listings_total", "listings_live", "listings_pending",
+    "buy_link", "broker_subscription_active", "subscription_active", "active", "remote_status",
+    "remote_phone", "listing_status", "listing_id", "auto_checked_at",
+)
+
+
 def apply_remote_account(state: InfraDealerAccountState, response: dict | None) -> InfraDealerAccountState:
     """Merge Admin/webhook account resolution into account state (no invented fields)."""
     response = response if isinstance(response, dict) else {}
@@ -300,7 +307,11 @@ def apply_remote_account(state: InfraDealerAccountState, response: dict | None) 
     meta = _meta(state)
     if account:
         if account.get("user_id"):
-            state.infradealer_user_id = str(account["user_id"])[:64]
+            new_id = str(account["user_id"])[:64]
+            if state.infradealer_user_id and state.infradealer_user_id != new_id:
+                for key in _REMOTE_ACCOUNT_KEYS:
+                    meta.pop(key, None)
+            state.infradealer_user_id = new_id
         if account.get("name"):
             meta["name"] = account["name"]
         if account.get("account_type") or account.get("type"):
@@ -327,6 +338,10 @@ def apply_remote_account(state: InfraDealerAccountState, response: dict | None) 
         state.account_status = "ACCOUNT_FOUND"
     elif code in {"ACCOUNT_NOT_FOUND", "NOT_FOUND"} or response.get("account_found") is False:
         state.account_status = "NOT_FOUND"
+        # The account is gone (e.g. deleted by admin): never show its old id / wallet / listings.
+        state.infradealer_user_id = ""
+        for key in _REMOTE_ACCOUNT_KEYS:
+            meta.pop(key, None)
     elif code:
         state.account_status = code[:24]
 
@@ -421,26 +436,36 @@ def refresh_account_if_stale(
 
 
 _AUTO_LINKED = {"ACCOUNT_FOUND", "ACCOUNT_EXISTS", "ACCOUNT_CREATED", "VERIFIED"}
-_AUTO_RETRY_SECONDS = 120
+# A linked account is re-confirmed with InfraDealer at most this often (catches admin deletes).
+_AUTO_FRESH_SECONDS = 300
+_AUTO_RETRY_SECONDS = 30
 _auto_failed_at: dict[str, float] = {}
 
 
-def ensure_auto_account(db: Session, conv: AiConversation) -> bool:
-    """Give every WhatsApp sender an InfraDealer account on their first message — no OTP, no password.
+def _auto_linked(state: InfraDealerAccountState | None) -> bool:
+    return bool(state and state.infradealer_user_id and state.account_status in _AUTO_LINKED)
 
-    Only the Meta-verified sender number (conv.mobile) is ever sent, never a number typed in chat.
-    Returns True when this call linked or created the account.
+
+def auto_link_mobile(
+    db: Session,
+    mobile: str,
+    name: str = "",
+    conv: AiConversation | None = None,
+) -> bool:
+    """Find-or-create (no OTP, no password) the InfraDealer account of a WhatsApp sender's own number.
+
+    Always confirmed with InfraDealer — local flags alone are never trusted. Returns True when
+    the account was newly linked, re-linked or created.
     """
-    phone = normalize_phone(conv.mobile)
-    if len(phone) != 10:
-        return False
-    state = db.query(InfraDealerAccountState).filter(InfraDealerAccountState.mobile == phone).first()
-    if state and state.infradealer_user_id and state.account_status in _AUTO_LINKED:
-        return False
-    user = db.query(User).filter(User.mobile == phone).first()
-    if user and user.account_ready:
+    phone = normalize_phone(mobile)
+    if len(phone) != 10 or phone[0] not in "6789":
         return False
     if db.query(BlockedNumber).filter(BlockedNumber.mobile == phone).first():
+        return False
+    state = db.query(InfraDealerAccountState).filter(InfraDealerAccountState.mobile == phone).first()
+    was_linked = _auto_linked(state)
+    checked_at = float(_meta(state).get("auto_checked_at") or 0) if state else 0.0
+    if was_linked and time.time() - checked_at < _AUTO_FRESH_SECONDS:
         return False
     if time.time() - _auto_failed_at.get(phone, 0.0) < _AUTO_RETRY_SECONDS:
         return False
@@ -451,8 +476,8 @@ def ensure_auto_account(db: Session, conv: AiConversation) -> bool:
     client = svc._client()
     if not client:
         return False
-    wa = collect_whatsapp_user(db, conv)
-    res = client.auto_account(phone, wa.wa_name or "")
+    old_id = state.infradealer_user_id if state else ""
+    res = client.auto_account(phone, name or "")
     body = (res or {}).get("body") or {}
     account = body.get("account") if isinstance(body.get("account"), dict) else {}
     if not (res and res.get("ok") and account.get("user_id")):
@@ -466,14 +491,18 @@ def ensure_auto_account(db: Session, conv: AiConversation) -> bool:
         return False
     _auto_failed_at.pop(phone, None)
 
-    state = svc.get_or_create_account_state(phone, conversation_id=conv.id)
+    state = svc.get_or_create_account_state(phone, conversation_id=conv.id if conv else None)
     if state is None:
         return False
     apply_remote_account(state, body)
     state.profile_status = "FOUND"
+    meta = _meta(state)
+    meta["auto_checked_at"] = time.time()
+    state.meta_json = json.dumps(meta, ensure_ascii=False)
+    user = db.query(User).filter(User.mobile == phone).first()
     if not user:
         user = User(
-            name=(wa.wa_name or str(account.get("name") or "") or "Seller")[:120],
+            name=(name or str(account.get("name") or "") or "Seller")[:120],
             mobile=phone,
             source="whatsapp_auto",
             role="user",
@@ -483,6 +512,107 @@ def ensure_auto_account(db: Session, conv: AiConversation) -> bool:
     user.role = user.role or "user"
     db.flush()
 
+    created = bool(body.get("created"))
+    if was_linked and old_id == state.infradealer_user_id and not created:
+        return False
+    if conv is None:
+        conv = db.query(AiConversation).filter(AiConversation.mobile == phone).first()
+    if conv is not None:
+        _mark_onboarded(conv, created)
+    log.info("auto_account linked mobile=***%s created=%s", phone[-4:], created)
+    return True
+
+
+def ensure_auto_account(db: Session, conv: AiConversation) -> bool:
+    """Every WhatsApp message: make sure the sender's own number has a live InfraDealer account.
+
+    Only the Meta-verified sender number (conv.mobile) is ever sent, never a number typed in chat.
+    """
+    wa = collect_whatsapp_user(db, conv)
+    return auto_link_mobile(db, conv.mobile, wa.wa_name or "", conv)
+
+
+_RECONCILE_BATCH = 5
+_RECONCILE_PAUSE_SECONDS = 300
+_reconcile_paused_until = 0.0
+
+
+def reconcile_missing_accounts(db: Session, limit: int = _RECONCILE_BATCH) -> int:
+    """Background safety net: create accounts for every WhatsApp sender still missing one.
+
+    Covers messages whose live account call failed (InfraDealer down, DB limits) and senders
+    from before auto accounts existed. Never sends WhatsApp messages. Returns accounts linked.
+    """
+    global _reconcile_paused_until
+    if time.time() < _reconcile_paused_until:
+        return 0
+    from sqlalchemy import func
+
+    from ..models import Message
+
+    seen: dict[str, None] = {}
+    sources = (
+        db.query(AiConversation.mobile).order_by(AiConversation.updated_at.desc()),
+        db.query(Chat.from_mobile).filter(Chat.direction == "inbound")
+        .group_by(Chat.from_mobile).order_by(func.max(Chat.id).desc()),
+        db.query(Message.from_mobile).filter(Message.direction == "inbound")
+        .group_by(Message.from_mobile).order_by(func.max(Message.id).desc()),
+    )
+    for query in sources:
+        for (raw,) in query.all():
+            phone = normalize_phone(raw)
+            if len(phone) == 10 and phone[0] in "6789":
+                seen.setdefault(phone, None)
+    if not seen:
+        return 0
+    linked_rows = (
+        db.query(InfraDealerAccountState.mobile, InfraDealerAccountState.infradealer_user_id,
+                 InfraDealerAccountState.account_status)
+        .filter(InfraDealerAccountState.mobile.in_(list(seen)))
+        .all()
+    )
+    linked = {m for m, uid, status in linked_rows if uid and status in _AUTO_LINKED}
+    blocked = {m for (m,) in db.query(BlockedNumber.mobile).filter(BlockedNumber.mobile.in_(list(seen))).all()}
+    now = time.time()
+    todo = [
+        p for p in seen
+        if p not in linked and p not in blocked and now - _auto_failed_at.get(p, 0.0) >= _AUTO_RETRY_SECONDS
+    ][:limit]
+
+    done = 0
+    for phone in todo:
+        conv = db.query(AiConversation).filter(AiConversation.mobile == phone).first()
+        name = _sender_name(db, phone, conv)
+        try:
+            with db.begin_nested():
+                if auto_link_mobile(db, phone, name, conv):
+                    done += 1
+        except Exception:
+            log.exception("reconcile auto_account error mobile=***%s", phone[-4:])
+            _auto_failed_at[phone] = time.time()
+        if phone in _auto_failed_at:
+            # InfraDealer is failing: back off instead of hammering it.
+            _reconcile_paused_until = time.time() + _RECONCILE_PAUSE_SECONDS
+            break
+    return done
+
+
+def _sender_name(db: Session, phone: str, conv: AiConversation | None) -> str:
+    contact = db.query(Contact).filter(Contact.mobile == phone).first()
+    if contact and usable_person_name(contact.name):
+        return usable_person_name(contact.name) or ""
+    if conv is not None and usable_person_name(conv.customer_name):
+        return usable_person_name(conv.customer_name) or ""
+    chat = (
+        db.query(Chat)
+        .filter(Chat.direction == "inbound", Chat.from_mobile.like(f"%{phone}"), Chat.from_name != "")
+        .order_by(Chat.id.desc())
+        .first()
+    )
+    return (usable_person_name(chat.from_name) or "") if chat else ""
+
+
+def _mark_onboarded(conv: AiConversation, created: bool) -> None:
     payload = _payload(conv)
     if not str(payload.get("account_step") or "").startswith("pw_"):
         payload["account_step"] = "done"
@@ -496,12 +626,10 @@ def ensure_auto_account(db: Session, conv: AiConversation) -> bool:
         conv.state = "COLLECTING"
     if str(conv.error_message or "").startswith(("ask:account_", "ask:otp")):
         conv.error_message = ""
-    if body.get("created"):
+    if created:
         payload["account_auto_created"] = True
         payload["account_created_notice"] = True
     _write_payload(conv, payload)
-    log.info("auto_account linked mobile=***%s created=%s", phone[-4:], bool(body.get("created")))
-    return True
 
 
 def sync_conversation_account(db: Session, conv: AiConversation) -> AccountVerdict:

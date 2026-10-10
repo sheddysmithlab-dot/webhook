@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import SQLAlchemyError
 
+from .ai.account_filter import reconcile_missing_accounts
 from .config import settings
 from .database import Base, SessionLocal, engine, migrate_schema
 from .auth import SessionGate
@@ -62,6 +63,7 @@ app.include_router(webhook.router)
 
 
 def _integration_loop() -> None:
+    last_reconcile = 0.0
     while True:
         # 5s poll so approve/reject status → WhatsApp stays under ~5 seconds even without callback
         time.sleep(5)
@@ -72,6 +74,17 @@ def _integration_loop() -> None:
             log.exception("integration background loop failed")
         finally:
             db.close()
+        if time.time() - last_reconcile >= 60:
+            last_reconcile = time.time()
+            db = SessionLocal()
+            try:
+                reconcile_missing_accounts(db)
+                db.commit()
+            except Exception:
+                db.rollback()
+                log.exception("auto account reconcile failed")
+            finally:
+                db.close()
 
 
 @app.on_event("startup")

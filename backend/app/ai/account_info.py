@@ -12,7 +12,7 @@ import re
 from sqlalchemy.orm import Session
 
 from ..models import AiConversation
-from .account_filter import connect_webhook_account, read_account_details
+from .account_filter import connect_webhook_account, ensure_auto_account, read_account_details
 from .format_reply import bold, fmt_section
 from .tools import _payload, _write_payload
 
@@ -82,6 +82,11 @@ def _human_plan(account_type: str) -> str:
 
 def _refresh_snapshot(db: Session, conv: AiConversation) -> dict:
     try:
+        with db.begin_nested():
+            ensure_auto_account(db, conv)
+    except Exception:
+        log.exception("account snapshot auto account failed for %s", conv.mobile)
+    try:
         connect_webhook_account(db, conv, refresh=True)
         db.flush()
     except Exception:
@@ -142,7 +147,8 @@ def _refresh_snapshot(db: Session, conv: AiConversation) -> dict:
         "listings_pending": pending_i if pending_i is not None else 0,
         "listings_total": total_i if total_i is not None else 0,
         "onboarded": bool(payload.get("account_onboarded") or details.webhook_connected),
-        "found": bool(details.infradealer_user_id or payload.get("account_onboarded")),
+        "found": bool(details.infradealer_user_id)
+        or (details.account_status != "NOT_FOUND" and bool(payload.get("account_onboarded"))),
     }
 
 
@@ -188,13 +194,13 @@ def handle_account_info(db: Session, conv: AiConversation, text: str, lang: str)
         want_tokens = True
         want_account = True
 
-    if not snap.get("found") and not snap.get("onboarded"):
+    if not snap.get("found"):
         return fmt_section(
-            "Account nahi mila",
+            "Account ban raha hai",
             [
-                "Is WhatsApp number pe clear InfraDealer account nahi dikha",
-                f"{bold('account banao')} likh kar yahi se bana sakte hain",
-                "Ya registered number se message kijiye",
+                "Is WhatsApp number ka InfraDealer account automatically ban raha hai",
+                "1-2 minute me dobara message kijiye",
+                "Tab tak vehicle detail ya photos bhej sakte hain — sab save rahega",
             ],
         )
 

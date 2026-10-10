@@ -25,6 +25,7 @@ class FakeClient:
     def __init__(self, status=200, created=True):
         self.status = status
         self.created = created
+        self.user_id = "901"
         self.calls = []
 
     def auto_account(self, phone, name=""):
@@ -38,7 +39,7 @@ class FakeClient:
                 "success": True,
                 "code": "ACCOUNT_FOUND",
                 "created": self.created,
-                "account": {"user_id": "901", "name": "seller.6780", "phone": phone, "account_type": "free"},
+                "account": {"user_id": self.user_id, "name": "seller.6780", "phone": phone, "account_type": "free"},
             },
         }
 
@@ -90,6 +91,110 @@ def test_linked_account_is_not_requested_again(db, fake):
     af.sync_conversation_account(db, conv)
     af.sync_conversation_account(db, conv)
     assert len(fake.calls) == 1
+
+
+def _age_check(db, seconds):
+    import json
+
+    state = db.query(InfraDealerAccountState).one()
+    meta = json.loads(state.meta_json)
+    meta["auto_checked_at"] -= seconds
+    state.meta_json = json.dumps(meta)
+
+
+def test_linked_account_is_reconfirmed_after_five_minutes(db, fake):
+    conv = _conv(db)
+    af.sync_conversation_account(db, conv)
+    _age_check(db, af._AUTO_FRESH_SECONDS + 1)
+    fake.created = False
+    af.sync_conversation_account(db, conv)
+    assert len(fake.calls) == 2
+
+
+def test_stale_local_account_of_deleted_user_gets_new_account(db, fake):
+    """Ridwan case: local mirror says ready, InfraDealer account #2 was deleted by admin."""
+    import json
+
+    db.add(User(name="Ridwan Hussain", mobile=SENDER, source="whatsapp_ai_otp", role="token", account_ready=True))
+    db.add(InfraDealerAccountState(
+        mobile=SENDER, account_status="NOT_FOUND", profile_status="NOT_FOUND", infradealer_user_id="2",
+        meta_json=json.dumps({"name": "Ridwan Hussain", "account_type": "token", "credits": 68, "tokens": 68}),
+    ))
+    db.flush()
+    conv = _conv(db)
+    af.sync_conversation_account(db, conv)
+    assert fake.calls == [(SENDER, "")]
+    state = db.query(InfraDealerAccountState).one()
+    assert state.infradealer_user_id == "901" and state.account_status == "ACCOUNT_FOUND"
+    assert json.loads(state.meta_json).get("credits") != 68
+    assert _payload(conv)["account_created_notice"]
+
+
+def test_not_found_response_clears_old_account_data():
+    import json
+
+    state = InfraDealerAccountState(
+        mobile=SENDER, account_status="ACCOUNT_FOUND", infradealer_user_id="2",
+        meta_json=json.dumps({"name": "Ridwan", "account_type": "token", "credits": 68, "listings_pending": 1}),
+    )
+    af.apply_remote_account(state, {"success": False, "code": "ACCOUNT_NOT_FOUND", "account_found": False})
+    meta = json.loads(state.meta_json)
+    assert state.account_status == "NOT_FOUND" and state.infradealer_user_id == ""
+    assert "credits" not in meta and "account_type" not in meta and "listings_pending" not in meta
+
+
+def test_account_summary_never_shows_a_missing_account(db, fake):
+    import json
+
+    from app.ai import account_info
+
+    fake.status = 500
+    db.add(InfraDealerAccountState(
+        mobile=SENDER, account_status="NOT_FOUND", infradealer_user_id="",
+        meta_json=json.dumps({"name": "Ridwan"}),
+    ))
+    db.flush()
+    conv = _conv(db, account_onboarded=True)
+    out = account_info.handle_account_info(db, conv, "Account details do", "hinglish")
+    assert "Account Summary" not in out and "ban raha" in out
+
+
+def _chat(db, mobile, name=""):
+    from app.models import Chat
+
+    db.add(Chat(conversation_id=f"wa_{mobile}", from_mobile=f"91{mobile}", from_name=name,
+                to_mobile="918224000829", direction="inbound", body="hi"))
+    db.flush()
+
+
+def test_reconcile_creates_accounts_for_every_sender(db, fake):
+    af._reconcile_paused_until = 0.0
+    _chat(db, "9111111111", "Ramesh")
+    _chat(db, "9222222222")
+    _conv(db, mobile="9333333333")
+    db.add(BlockedNumber(mobile="9444444444"))
+    _chat(db, "9444444444")
+    assert af.reconcile_missing_accounts(db, limit=10) == 3
+    assert sorted(c[0] for c in fake.calls) == ["9111111111", "9222222222", "9333333333"]
+    assert ("9111111111", "Ramesh") in fake.calls
+    assert db.query(User).filter(User.mobile == "9111111111").one().account_ready
+    assert _payload(db.query(AiConversation).filter(AiConversation.mobile == "9333333333").one())["account_created_notice"]
+    fake.calls.clear()
+    assert af.reconcile_missing_accounts(db, limit=10) == 0
+    assert fake.calls == []
+
+
+def test_reconcile_backs_off_when_infradealer_fails(db, fake):
+    af._reconcile_paused_until = 0.0
+    fake.status = 500
+    _chat(db, "9111111111")
+    _chat(db, "9222222222")
+    assert af.reconcile_missing_accounts(db, limit=10) == 0
+    assert len(fake.calls) == 1
+    fake.status = 200
+    assert af.reconcile_missing_accounts(db, limit=10) == 0
+    assert len(fake.calls) == 1
+    af._reconcile_paused_until = 0.0
 
 
 def test_existing_website_account_is_linked_without_notice(db, fake):
