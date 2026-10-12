@@ -106,6 +106,23 @@ def test_same_messages_are_not_reviewed_twice(db, monkeypatch):
     assert db.query(AiEvent).filter(AiEvent.event_type == "CHAT_REVIEWED").count() == 1
 
 
+def test_office_chat_gets_office_context(db, monkeypatch):
+    from app.models import AiOfficeSession
+
+    _seed(db, "CONV_7447000198")
+    _seed(db, "CONV_9123456789")
+    db.add(AiOfficeSession(operator_mobile="7447000198", target_phone="8521148889"))
+    db.commit()
+    seen = []
+    _fake_zai(monkeypatch, [], seen)
+    monkeypatch.setattr(cr.time, "sleep", lambda s: None)
+    cr.run_chat_review(db, force=True)
+    office = [s for s in seen if "OFFICE CONTEXT" in s]
+    normal = [s for s in seen if "OFFICE CONTEXT" not in s]
+    assert len(office) == 1 and len(normal) == 1
+    assert "OPERATOR: Signa" in office[0] and "USER: Signa" in normal[0]
+
+
 def test_scheduled_run_skips_when_recent(db, monkeypatch):
     _seed(db)
     _fake_zai(monkeypatch, [])
