@@ -1,11 +1,8 @@
 import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { api, fmtTime, isAdminAuthError } from "../api.js";
-import AiSuggestions from "./AiSuggestions.jsx";
-
 const TABS = [
   { id: "ai", label: "AI Review", countKey: "ai_drafts" },
-  { id: "suggestions", label: "AI Suggestions", countKey: "ai_suggestions" },
   { id: "contacts", label: "Contacts", countKey: "contacts" },
   { id: "broadcasts", label: "Broadcast Msg", countKey: "contacts" },
   { id: "submissions", label: "Submissions", countKey: "submissions" },
@@ -119,7 +116,7 @@ export default function Admin() {
         {TABS.map((item) => (
           <button
             type="button"
-            className={`stat${item.id === "ai" || item.id === "suggestions" || item.id === "products" ? " red" : ""}${tab === item.id ? " on" : ""}`}
+            className={`stat${item.id === "ai" || item.id === "products" ? " red" : ""}${tab === item.id ? " on" : ""}`}
             key={item.id}
             onClick={() => setTab(item.id)}
           >
@@ -254,10 +251,6 @@ export default function Admin() {
               </div>
             )}
           </div>
-        )}
-
-        {tab === "suggestions" && (
-          <AiSuggestions onChange={() => api.stats().then(setStats).catch(() => {})} />
         )}
 
         {tab === "contacts" && (

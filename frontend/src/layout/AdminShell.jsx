@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { api } from "../api.js";
 
@@ -7,6 +7,7 @@ const NAV = [
   { to: "/", label: "Listings", icon: "list", end: true },
   { to: "/meta", label: "WhatsApp", icon: "chat", end: false },
   { to: "/admin/infradealer", label: "Webhook", icon: "plug", end: false },
+  { to: "/admin/ai-suggestions", label: "AI Suggestions", icon: "bulb", end: false, countKey: "ai_suggestions" },
 ];
 
 function Icon({ name }) {
@@ -39,6 +40,14 @@ function Icon({ name }) {
       </svg>
     );
   }
+  if (name === "bulb") {
+    return (
+      <svg {...common}>
+        <path d="M9 18h6M10 22h4" />
+        <path d="M12 2a7 7 0 00-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0012 2z" />
+      </svg>
+    );
+  }
   if (name === "chat") {
     return (
       <svg {...common}>
@@ -65,7 +74,19 @@ async function logout() {
 
 export default function AdminShell({ children, flush = false }) {
   const [open, setOpen] = useState(false);
+  const [counts, setCounts] = useState({});
   const loc = useLocation();
+
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.stats().then((s) => alive && setCounts(s || {})).catch(() => {});
+    load();
+    window.addEventListener("ai-suggestions-changed", load);
+    return () => {
+      alive = false;
+      window.removeEventListener("ai-suggestions-changed", load);
+    };
+  }, [loc.pathname]);
   return (
     <div className={`dash-shell${flush ? " flush" : ""}`}>
       <a className="skip-link" href="#app">Main content par jayein</a>
@@ -114,6 +135,9 @@ export default function AdminShell({ children, flush = false }) {
               >
                 <Icon name={item.icon} />
                 {item.label}
+                {item.countKey && counts[item.countKey] > 0 && (
+                  <span className="dash-nav-count">{counts[item.countKey]}</span>
+                )}
               </NavLink>
             ))}
           </nav>

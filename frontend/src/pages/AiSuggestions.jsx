@@ -70,7 +70,22 @@ function SuggestionCard({ item, onAction }) {
   );
 }
 
-export default function AiSuggestions({ onChange }) {
+export default function AiSuggestionsPage() {
+  return (
+    <>
+      <div className="wh-crumb">AI Suggestions</div>
+      <div className="wh-head" style={{ marginBottom: 18 }}>
+        <div>
+          <h1>AI Suggestions</h1>
+          <p>Z.AI WhatsApp chats padh kar bugs aur prompt fixes suggest karta hai. Aap approve karein tabhi agent ke prompt me judte hain.</p>
+        </div>
+      </div>
+      <AiSuggestions onChange={() => window.dispatchEvent(new Event("ai-suggestions-changed"))} />
+    </>
+  );
+}
+
+function AiSuggestions({ onChange }) {
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState("PENDING");
   const [err, setErr] = useState("");

@@ -4,6 +4,7 @@ import ListForm from "./pages/ListForm.jsx";
 import Webhook from "./pages/Webhook.jsx";
 import Admin from "./pages/Admin.jsx";
 import InfraDealerIntegration from "./pages/InfraDealerIntegration.jsx";
+import AiSuggestionsPage from "./pages/AiSuggestions.jsx";
 import Login, { RequireAuth } from "./pages/Login.jsx";
 import AdminShell from "./layout/AdminShell.jsx";
 
@@ -16,6 +17,7 @@ export default function App() {
       <Route path="/list" element={<RequireAuth><AdminShell><ListForm /></AdminShell></RequireAuth>} />
       <Route path="/admin" element={<RequireAuth><AdminShell><Admin /></AdminShell></RequireAuth>} />
       <Route path="/admin/infradealer" element={<RequireAuth><AdminShell><InfraDealerIntegration /></AdminShell></RequireAuth>} />
+      <Route path="/admin/ai-suggestions" element={<RequireAuth><AdminShell><AiSuggestionsPage /></AdminShell></RequireAuth>} />
     </Routes>
   );
 }

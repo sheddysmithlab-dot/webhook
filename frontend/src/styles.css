@@ -584,6 +584,8 @@ html,body,#root{height:100%}
 }
 .dash-nav:hover{background:#F3F4F6}
 .dash-nav.on{background:var(--dash-blue);color:#fff}
+.dash-nav-count{margin-left:auto;min-width:22px;padding:1px 7px;border-radius:999px;background:#DC2626;color:#fff;font-size:11px;font-weight:700;text-align:center}
+.dash-nav.on .dash-nav-count{background:#fff;color:var(--dash-blue)}
 .dash-scrim{display:none}
 .dash-main{flex:1;overflow:auto;padding:22px 24px 40px;min-width:0}
 .dash-main.flush{padding:0;overflow:hidden}
