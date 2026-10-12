@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -92,6 +94,28 @@ def migrate_schema() -> None:
             db.close()
     except Exception:
         pass
+
+
+@contextmanager
+def advisory_lock(key: int):
+    """Non-blocking cross-worker lock (Postgres advisory lock on its own connection).
+
+    Yields True when this process holds the lock, False when another worker does.
+    SQLite (tests / dev) always yields True.
+    """
+    if not settings.database_url.startswith("postgres"):
+        yield True
+        return
+    conn = engine.connect()
+    try:
+        got = bool(conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": key}).scalar())
+        try:
+            yield got
+        finally:
+            if got:
+                conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": key})
+    finally:
+        conn.close()
 
 
 def get_db():

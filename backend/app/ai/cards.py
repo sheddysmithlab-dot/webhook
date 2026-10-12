@@ -477,6 +477,9 @@ def clear_card_chat_data(db: Session, conv: AiConversation, draft: AiListingDraf
             "summary_json": payload.get("summary_json"),
             "confirmed_json": payload.get("confirmed_json"),
             "rejection_reason": payload.get("rejection_reason"),
+            # Else the status poll re-sends "listing live" after every clear.
+            "listing_review_notified": payload.get("listing_review_notified"),
+            "listing_review_notify_at": payload.get("listing_review_notify_at"),
             "chat_cleared": True,
         }
         fresh = empty_payload()

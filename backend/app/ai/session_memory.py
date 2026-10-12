@@ -55,6 +55,7 @@ _IDENTITY_KEEP = (
     "ai_introduced", "language", "verification_status", "infradealer_user_id",
     "listing_url", "infradealer_listing_id", "listing_status", "push_stage",
     "rejection_reason", "summary_json", "confirmed_json", "submission",
+    "listing_review_notified", "listing_review_notify_at",
     "next_listing_not_before", "last_listing_submitted_at", "office_draft_floor",
 )
 

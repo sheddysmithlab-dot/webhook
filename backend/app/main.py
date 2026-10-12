@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from .ai.account_filter import reconcile_missing_accounts
 from .ai.chat_review import review_loop
 from .config import settings
-from .database import Base, SessionLocal, engine, migrate_schema
+from .database import Base, SessionLocal, advisory_lock, engine, migrate_schema
 from .auth import SessionGate
 from .contacts import sync_contacts_from_chats
 from .infradealer.worker import run_integration_tasks
@@ -63,18 +63,33 @@ app.include_router(infradealer.callback_router)
 app.include_router(webhook.router)
 
 
+INTEGRATION_LOCK = 7_447_002  # one gunicorn worker at a time, else WhatsApp notices go out twice
+
+
+def _run_integration_once(**kwargs) -> None:
+    with advisory_lock(INTEGRATION_LOCK) as mine:
+        if not mine:
+            return
+        db = SessionLocal()
+        try:
+            run_integration_tasks(db, **kwargs)
+            db.commit()
+        except Exception:
+            db.rollback()
+            log.exception("integration background loop failed")
+        finally:
+            db.close()
+
+
 def _integration_loop() -> None:
     last_reconcile = 0.0
     while True:
         # 5s poll so approve/reject status → WhatsApp stays under ~5 seconds even without callback
         time.sleep(5)
-        db = SessionLocal()
         try:
-            run_integration_tasks(db)
+            _run_integration_once()
         except Exception:
-            log.exception("integration background loop failed")
-        finally:
-            db.close()
+            log.exception("integration lock failed")
         if time.time() - last_reconcile >= 60:
             last_reconcile = time.time()
             db = SessionLocal()
@@ -105,13 +120,13 @@ def startup():
         # seed_memory was a legacy no-op stub (removed with memory.py).
         repair_posted_listings(db)
         sync_contacts_from_chats(db)
-        try:
-            run_integration_tasks(db, outbox_limit=50, poll_limit=20)
-        except Exception:
-            log.exception("outbox worker on startup")
         db.commit()
     finally:
         db.close()
+    try:
+        _run_integration_once(outbox_limit=50, poll_limit=20)
+    except Exception:
+        log.exception("outbox worker on startup")
     thread = threading.Thread(target=_integration_loop, name="infradealer-integration", daemon=True)
     thread.start()
     threading.Thread(target=review_loop, args=(SessionLocal,), name="chat-review-loop", daemon=True).start()

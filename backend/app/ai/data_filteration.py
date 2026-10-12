@@ -200,6 +200,16 @@ def car_model(text: str) -> tuple[str, str] | None:
 def cv_model(text: str) -> tuple[str, str] | None:
     return _model_hit(_CV_MODELS, text)
 
+
+# Light/medium Tata goods carriers only — heavy codes (2518, 2528, Signa) are often tippers.
+_TATA_TRUCK_CODES = {"407", "610", "709", "710", "712", "909", "912", "1109", "1110", "1112", "1212", "1412"}
+
+
+def _is_truck_model(blob: str, brand, model) -> bool:
+    if re.search(r"(?<![a-z])(?:sfc|lpt)(?![a-z])", str(blob or "").lower()):
+        return True
+    return brand == "Tata" and str(model or "") in _TATA_TRUCK_CODES
+
 _LABEL_PATTERNS = (
     ("brand", r"brand|make|company|ब्रांड|ब्रान्ड|कंपनी"),
     ("year", r"model\s*year|year|yom|वर्ष|ईयर|साल"),
@@ -518,6 +528,9 @@ _STATE_ALIASES = {
 }
 
 
+_NON_PLACE_HI = frozenset("बीमा इंश्योरेंस परमिट फिटनेस टैक्स चाहिए है हैं क्या गाड़ी".split())
+
+
 def _looks_like_place(text: str) -> bool:
     """Reject prices, years, vehicle dumps, yes/no, and long sentences as locations."""
     raw = (text or "").strip()
@@ -541,6 +554,16 @@ def _looks_like_place(text: str) -> bool:
         r"ब्रांड|मॉडल|कंपनी|कैटेगरी",
         low,
     ):
+        return False
+    if re.search(
+        r"\b(?:bima|beema|insurance|fitness|permit|tax|puc|paper|papers|document|docs?|rc|noc|"
+        r"tyre|tyres|tayar|engine|owner|finance|loan|emi|hypothecation|chahiye|chaiye|"
+        r"running|chal|chalti|chalu|service|call|karo|kro|karna|krna|voice|audio|video|"
+        r"hai|hain|h|hu|hoon|kya|kaise|kab|kitna|kitne|condition|accident)\b",
+        low,
+    ):
+        return False
+    if _NON_PLACE_HI & set(raw.split()):
         return False
     if canonical_brand(raw) or normalize_vehicle_category(raw) or cv_model(raw):
         return False
@@ -795,6 +818,8 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
                 out["model"] = m.group(1).upper()
     if _blank(out.get("model")) and cv and out.get("brand") == cv[0]:
         out["model"] = cv[1]
+    if _blank(out.get("category")) and _is_truck_model(blob, out.get("brand"), out.get("model")):
+        out["category"] = "Truck"
 
     if _blank(out.get("year")):
         y = normalize_year(blob)

@@ -387,10 +387,13 @@ def process_inbound(
             from .office_mode import decorate_office_reply, handle_office_turn
 
             office_reply = handle_office_turn(db, conv, text, lang)
+            voice_unheard = bool(
+                media and media.get("kind") == "audio" and (text or "").strip() == "[voice note]"
+            )
 
             # Step 1: Correct typos
             try:
-                corrected = text if office_reply else correct_user_message(db, conv, text, media_note)
+                corrected = text if (office_reply or voice_unheard) else correct_user_message(db, conv, text, media_note)
                 if corrected != text:
                     log.info("corrector: '%s' → '%s' mobile=***%s", text[:80], corrected[:80], conv.mobile[-4:] if conv.mobile else "")
                     text = corrected
@@ -408,6 +411,9 @@ def process_inbound(
                 reply = office_reply
                 path = "office_mode"
                 verdict = {"route": "office"}
+            elif voice_unheard:
+                reply = t(lang, "voice_not_heard")
+                path = "voice_unheard"
             elif use_prompt:
                 # Soft options: after 2 free turns, hint LLM to offer menu (not static dump)
                 if verdict["route"] == "options":

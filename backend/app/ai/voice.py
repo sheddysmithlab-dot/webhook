@@ -51,8 +51,30 @@ _LANG_HINT = {
 }
 
 
+_VOCAB_PROMPT = (
+    "Truck, tipper, JCB, excavator, crane, tractor, bus, Tata, Ashok Leyland, Eicher, "
+    "Mahindra, BharatBenz, model, saal, lakh, kilometre, gaadi bechni hai, kharidni hai."
+)
+
+
 def _language_hint(conv_lang: str) -> str:
-    return _LANG_HINT.get((conv_lang or "").strip(), "")
+    return _LANG_HINT.get((conv_lang or "").strip(), "hi")
+
+
+_GROQ_AUDIO_EXT = {"flac", "mp3", "mp4", "mpeg", "mpga", "m4a", "ogg", "opus", "wav", "webm"}
+_MIME_EXT = {"audio/ogg": "ogg", "audio/opus": "opus", "audio/mpeg": "mp3", "audio/mp3": "mp3",
+             "audio/mp4": "m4a", "audio/aac": "m4a", "audio/x-m4a": "m4a", "audio/wav": "wav",
+             "audio/x-wav": "wav", "audio/webm": "webm", "audio/flac": "flac"}
+
+
+def _upload_name(path: str, mime: str | None) -> str:
+    """Groq picks the decoder from the file extension; downloads are saved as .bin."""
+    base = os.path.basename(path) or "voice"
+    stem, ext = os.path.splitext(base)
+    if ext.lstrip(".").lower() in _GROQ_AUDIO_EXT:
+        return base
+    kind = (mime or "").split(";")[0].strip().lower()
+    return f"{stem or 'voice'}.{_MIME_EXT.get(kind, 'ogg')}"
 
 
 def transcribe_audio(db: Session, conv: AiConversation, media_row: AiMedia) -> str:
@@ -95,11 +117,12 @@ def transcribe_audio(db: Session, conv: AiConversation, media_row: AiMedia) -> s
 
     try:
         with open(path, "rb") as fh:
-            files = {"file": (os.path.basename(path) or "voice.ogg", fh, "application/octet-stream")}
+            files = {"file": (_upload_name(path, media_row.mime), fh, "application/octet-stream")}
             data = {
                 "model": model,
                 "response_format": "json",
                 "temperature": "0.0",
+                "prompt": _VOCAB_PROMPT,
             }
             if lang_hint:
                 data["language"] = lang_hint

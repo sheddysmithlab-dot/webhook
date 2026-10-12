@@ -944,4 +944,9 @@ MESSAGES = {
         "hi": "माफ़ कीजिए, मैं वही फिर से न पूछना चाहता हूँ।",
         "en": "Sorry, I don't want to repeat the same question.",
     },
+    "voice_not_heard": {
+        "hinglish": "Sir, voice note abhi sun nahi paaya. Wahi baat type karke bhej dijiye — jaise *Tata tipper 2019 Raipur*.",
+        "hi": "सर, वॉइस नोट अभी सुन नहीं पाया। वही बात लिखकर भेज दीजिए — जैसे *Tata tipper 2019 Raipur*।",
+        "en": "Sorry, I couldn't listen to the voice note. Please type the same — e.g. *Tata tipper 2019 Raipur*.",
+    },
 }

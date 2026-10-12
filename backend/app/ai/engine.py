@@ -115,16 +115,38 @@ def _ask_key(raw: str) -> str:
     return ""
 
 
+_LIVE_CLAIM = re.compile(
+    r"listing\b[^.!?\n]{0,40}?\b(?:live|post(?:ed)?|publish(?:ed)?)\b[^.!?\n]{0,20}?"
+    r"\b(?:ho\s*gay[ie]|ho\s*gai|ho\s*chuki|kar\s*d[iy]|done)\b"
+    r"|listing\s+(?:is|has\s+been)\s+(?:now\s+)?(?:live|posted|published)\b",
+    re.I,
+)
+_NOT_CLAIM = re.compile(r"\b(?:nahi|nhi|not|pending|hogi|hone|karte\s+hi|ke\s+baad|jab|after|once)\b", re.I)
+
+
+def _drop_false_live_claims(raw: str, replacement: str) -> str:
+    """Swap whole sentences that claim the listing is live/posted; leave the rest untouched."""
+    parts = re.split(r"(?<=[.!?\n])", raw)
+    out, swapped = [], False
+    for part in parts:
+        if _LIVE_CLAIM.search(part) and not _NOT_CLAIM.search(part):
+            if not swapped:
+                lead = part[: len(part) - len(part.lstrip())]
+                out.append(lead + replacement + ("\n" if part.endswith("\n") else " "))
+                swapped = True
+            continue
+        out.append(part)
+    if not swapped:
+        return raw
+    return re.sub(r"[ \t]+\n", "\n", re.sub(r"[ \t]{2,}", " ", "".join(out))).strip()
+
+
 def _sanitize_reply(text: str, posted: bool = False, lang: str = "hinglish") -> str:
     raw = (text or "").strip()
     raw = re.sub(r"(?is)otp\s*[:\-]*\s*\d{4,8}", "OTP", raw)
     raw = re.sub(r"(?i)(sk-|bearer\s+|api[_-]?key|system prompt|AUTH_|META_SYSTEM)", "[blocked]", raw)
     if not posted:
-        raw = re.sub(
-            r"(?is)(listing\s+(live|post|publish).{0,40}|aapki listing.{0,30}(live|post).{0,20})",
-            t(lang, "listing_not_live"),
-            raw,
-        )
+        raw = _drop_false_live_claims(raw, t(lang, "listing_not_live"))
     raw = raw.replace(SYSTEM_PROMPT[:40], "")
     if len(raw) > 900:
         raw = raw[:890].rsplit(" ", 1)[0] + "…"

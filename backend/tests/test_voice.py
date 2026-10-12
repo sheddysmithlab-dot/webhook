@@ -226,8 +226,8 @@ def test_language_hint_mapping():
     assert _language_hint("en") == "en"
     assert _language_hint("pa") == "pa"
     assert _language_hint("ta") == "ta"
-    assert _language_hint("unknown") == ""
-    assert _language_hint("") == ""
+    assert _language_hint("unknown") == "hi"
+    assert _language_hint("") == "hi"
 
 
 def test_voice_enabled_helper(monkeypatch):

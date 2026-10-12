@@ -15,10 +15,10 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 
 from ..config import settings
+from ..database import advisory_lock
 from ..models import AiEvent, AiOfficeSession, AiSuggestion, Chat
 from ..services import resolve_ai_config, zai_chat
 from .prompt import SYSTEM_PROMPT
@@ -271,27 +271,6 @@ def review_conversation(db: Session, cfg: dict, conv_id: str, rows: list[Chat]) 
     return added
 
 
-def _try_global_lock():
-    """Advisory lock on a dedicated connection (session pooling would lose it). None = busy."""
-    if not settings.database_url.startswith("postgres"):
-        return False
-    from ..database import engine
-
-    conn = engine.connect()
-    if conn.execute(sql_text("SELECT pg_try_advisory_lock(:k)"), {"k": _LOCK_KEY}).scalar():
-        return conn
-    conn.close()
-    return None
-
-
-def _release_global_lock(conn) -> None:
-    if conn:
-        try:
-            conn.execute(sql_text("SELECT pg_advisory_unlock(:k)"), {"k": _LOCK_KEY})
-        finally:
-            conn.close()
-
-
 def _last_run_at(db: Session) -> datetime | None:
     row = (
         db.query(AiEvent.created_at)
@@ -312,37 +291,35 @@ def run_chat_review(db: Session, force: bool = False) -> dict:
         last = _last_run_at(db)
         if last and datetime.utcnow() - last < timedelta(hours=hours):
             return {"ok": False, "reason": "recent"}
-    lock = _try_global_lock()
-    if lock is None:
-        return {"ok": False, "reason": "busy"}
-    try:
-        since = datetime.utcnow() - timedelta(hours=max(hours * 2, 24))
-        convs = pick_conversations(db, since, int(settings.ai_review_max_chats or 6))
-        reviewed = added = failed = 0
-        for i, (cid, rows) in enumerate(convs):
-            if i:
-                time.sleep(5)
-            try:
-                n = review_conversation(db, cfg, cid, rows)
-            except Exception:
-                db.rollback()
-                log.exception("chat_review failed conv=%s", cid[-4:])
-                n = -1
-            if n < 0:
-                failed += 1
-            else:
-                reviewed += 1
-                added += n
-        result = {"ok": True, "reviewed": reviewed, "added": added, "failed": failed}
-        db.add(AiEvent(mobile="", event_type="CHAT_REVIEW_RUN", detail=json.dumps(result)))
-        db.commit()
-        log.info("chat_review run %s", result)
-        return result
-    finally:
+    with advisory_lock(_LOCK_KEY) as mine:
+        if not mine:
+            return {"ok": False, "reason": "busy"}
+        return _review_pass(db, cfg, hours)
+
+
+def _review_pass(db: Session, cfg: dict, hours: float) -> dict:
+    since = datetime.utcnow() - timedelta(hours=max(hours * 2, 24))
+    convs = pick_conversations(db, since, int(settings.ai_review_max_chats or 6))
+    reviewed = added = failed = 0
+    for i, (cid, rows) in enumerate(convs):
+        if i:
+            time.sleep(5)
         try:
-            _release_global_lock(lock)
+            n = review_conversation(db, cfg, cid, rows)
         except Exception:
-            log.exception("chat_review unlock failed")
+            db.rollback()
+            log.exception("chat_review failed conv=%s", cid[-4:])
+            n = -1
+        if n < 0:
+            failed += 1
+        else:
+            reviewed += 1
+            added += n
+    result = {"ok": True, "reviewed": reviewed, "added": added, "failed": failed}
+    db.add(AiEvent(mobile="", event_type="CHAT_REVIEW_RUN", detail=json.dumps(result)))
+    db.commit()
+    log.info("chat_review run %s", result)
+    return result
 
 
 def review_status() -> dict:
