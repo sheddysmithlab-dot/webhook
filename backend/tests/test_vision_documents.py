@@ -232,6 +232,12 @@ def test_burst_reads_every_photo_and_report_lists_details(db, tmp_path, monkeypa
     assert "B***U" not in report
 
 
+def test_groq_retry_wait_follows_server_hint():
+    assert vision._retry_after("Please try again in 2.5s. Need more tokens?") == 3.0
+    assert vision._retry_after("Please try again in 1m2s.") == vision.GROQ_MAX_RETRY_SECONDS
+    assert vision._retry_after("rate limited") == vision.GROQ_RETRY_SECONDS
+
+
 def test_detail_request_is_detected():
     for text in ("Image read kr ke detail nikalo", "Full image read karo har ek detail",
                  "Images ki har ek detail batao", "photo ki jankari do", "फोटो पढ़ो"):

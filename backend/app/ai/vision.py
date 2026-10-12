@@ -27,6 +27,8 @@ log = logging.getLogger("infradealer.ai.vision")
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 GROQ_MAX_IMAGE_BYTES = 3 * 1024 * 1024
 GROQ_RETRY_SECONDS = 4.0
+# Keeps a 3-photo burst well inside the 45 s per-chat lock.
+GROQ_MAX_RETRY_SECONDS = 8.0
 _GROQ_GATE = threading.Lock()
 
 _DOC_CUES = re.compile(
@@ -73,11 +75,15 @@ def _is_image(media_row: AiMedia) -> bool:
     return (media_row.local_path or "").lower().endswith(_IMAGE_EXTS)
 
 
-MAX_SEND_PIXELS = 1_000_000
+PHOTO_SEND_PIXELS = 500_000
+SCREENSHOT_SEND_PIXELS = 1_000_000
 
 
 def _shrunk_jpeg(path: str) -> bytes:
-    """Re-encode large images to ~1 MP JPEG: vision APIs bill (and rate-limit) by pixels."""
+    """Re-encode large images as smaller JPEGs: vision APIs bill (and rate-limit) by pixels.
+
+    Screenshots / papers (PNG or tall phone shots) keep more pixels so small text stays legible.
+    """
     try:
         from PIL import Image, ImageOps
     except ImportError:
@@ -86,10 +92,13 @@ def _shrunk_jpeg(path: str) -> bytes:
 
     try:
         with Image.open(path) as img:
+            is_png = (img.format or "").upper() == "PNG"
             img = ImageOps.exif_transpose(img).convert("RGB")
             w, h = img.size
-            if w * h > MAX_SEND_PIXELS:
-                scale = (MAX_SEND_PIXELS / float(w * h)) ** 0.5
+            tall = max(w, h) >= 1.8 * min(w, h)
+            limit = SCREENSHOT_SEND_PIXELS if (is_png or tall) else PHOTO_SEND_PIXELS
+            if w * h > limit:
+                scale = (limit / float(w * h)) ** 0.5
                 img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
             buf = io.BytesIO()
             img.save(buf, "JPEG", quality=85)
@@ -177,6 +186,15 @@ def extract_text_from_image(
     return content
 
 
+def _retry_after(body: str) -> float:
+    """Seconds Groq asks us to wait ("Please try again in 5.12s"), capped."""
+    m = re.search(r"try again in (?:(\d+)m)?([\d.]+)s", body)
+    if not m:
+        return GROQ_RETRY_SECONDS
+    wait = int(m.group(1) or 0) * 60 + float(m.group(2))
+    return min(max(wait + 0.5, 1.0), GROQ_MAX_RETRY_SECONDS)
+
+
 def _vision_chat(api_base: str, api_key: str, model: str, prompt: str, data_url: str, extra: dict) -> str:
     """One OpenAI-compatible image chat call. Returns the reply text or "" (never raises)."""
     body = {
@@ -202,7 +220,7 @@ def _vision_chat(api_base: str, api_key: str, model: str, prompt: str, data_url:
                 resp = client.post(api_base + "/chat/completions", headers=headers, json=body)
                 if resp.status_code != 429 or attempt == tries - 1:
                     break
-                time.sleep(GROQ_RETRY_SECONDS)
+                time.sleep(_retry_after(resp.text or ""))
     except Exception as exc:
         log.warning("vision.http error model=%s: %s", model, exc)
         return ""
