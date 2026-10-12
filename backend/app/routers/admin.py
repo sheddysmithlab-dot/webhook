@@ -3,8 +3,18 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from pathlib import Path
+from datetime import datetime
 import json
 
+from ..ai.chat_review import (
+    MAX_ACTIVE_RULES,
+    approved_rules,
+    approved_rules_block,
+    clean_rule,
+    is_locked_rule,
+    review_status,
+    start_review_thread,
+)
 from ..ai.runner import conversation_public
 from ..ai.schema import loads
 from ..auth import current_user
@@ -16,6 +26,7 @@ from ..models import (
     AiEvent,
     AiListingDraft,
     AiMedia,
+    AiSuggestion,
     BlockedNumber,
     Broadcast,
     BroadcastRecipient,
@@ -74,6 +85,7 @@ def stats(db: Session = Depends(get_db), _: None = Depends(require_admin)):
         "broadcasts": db.query(Broadcast).count(),
         "ai_drafts": db.query(AiListingDraft).filter(AiListingDraft.status.in_(["CONFIRMED", "READY_FOR_REVIEW", "POSTED", "NEEDS_INFO", "REJECTED"])).count(),
         "ai_pending": db.query(AiListingDraft).filter(AiListingDraft.status.in_(["CONFIRMED", "READY_FOR_REVIEW"])).count(),
+        "ai_suggestions": db.query(AiSuggestion).filter(AiSuggestion.status == "PENDING").count(),
     }
 
 
@@ -828,4 +840,93 @@ def ai_media(media_id: int, db: Session = Depends(get_db), _: None = Depends(req
     if not path.is_file():
         raise HTTPException(404, "Media file missing")
     return FileResponse(path, media_type=row.mime or "application/octet-stream")
+
+
+class SuggestionApproveIn(BaseModel):
+    prompt_line: str = ""
+
+
+def _suggestion_out(s: AiSuggestion) -> dict:
+    return {
+        "id": s.id,
+        "status": s.status,
+        "kind": s.kind,
+        "severity": s.severity,
+        "title": s.title,
+        "problem": s.problem,
+        "evidence": s.evidence,
+        "prompt_line": s.prompt_line,
+        "conversation": (s.conversation_id or "")[-4:],
+        "reviewed_by": s.reviewed_by,
+        "reviewed_at": s.reviewed_at.isoformat() if s.reviewed_at else None,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+    }
+
+
+def _suggestion(db: Session, sid: int) -> AiSuggestion:
+    row = db.query(AiSuggestion).filter(AiSuggestion.id == sid).first()
+    if not row:
+        raise HTTPException(404, "Suggestion nahi mili")
+    return row
+
+
+def _decide(db: Session, row: AiSuggestion, status: str, request: Request) -> dict:
+    row.status = status
+    row.reviewed_by = (current_user(request) or "")[:120]
+    row.reviewed_at = datetime.utcnow()
+    db.commit()
+    return _suggestion_out(row)
+
+
+@router.get("/ai/suggestions")
+def ai_suggestions(db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    rows = db.query(AiSuggestion).order_by(AiSuggestion.id.desc()).limit(300).all()
+    return {
+        "items": [_suggestion_out(r) for r in rows],
+        "active_prompt": approved_rules_block(db),
+        "max_rules": MAX_ACTIVE_RULES,
+        "review": review_status(),
+        "auto_enabled": bool(settings.ai_review_enabled),
+        "interval_hours": settings.ai_review_interval_hours,
+    }
+
+
+@router.post("/ai/suggestions/run")
+def ai_suggestions_run(_: None = Depends(require_admin)):
+    from ..database import SessionLocal
+
+    return {"started": start_review_thread(SessionLocal), "review": review_status()}
+
+
+@router.post("/ai/suggestions/{sid}/approve")
+def ai_suggestion_approve(
+    sid: int, body: SuggestionApproveIn, request: Request,
+    db: Session = Depends(get_db), _: None = Depends(require_admin),
+):
+    row = _suggestion(db, sid)
+    line = clean_rule(body.prompt_line or row.prompt_line)
+    if not line:
+        raise HTTPException(400, "Prompt line khaali hai — code bug ko 'Noted' karein")
+    if is_locked_rule(line):
+        raise HTTPException(400, "Ye line locked rules (OTP / account / price / office / admin) ko chhooti hai — approve nahi ho sakti")
+    if row.status != "APPROVED" and len(approved_rules(db)) >= MAX_ACTIVE_RULES:
+        raise HTTPException(400, f"Max {MAX_ACTIVE_RULES} approved rules — pehle koi purani rule band karein")
+    row.prompt_line = line
+    row.kind = "prompt"
+    return _decide(db, row, "APPROVED", request)
+
+
+@router.post("/ai/suggestions/{sid}/reject")
+def ai_suggestion_reject(sid: int, request: Request, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    return _decide(db, _suggestion(db, sid), "REJECTED", request)
+
+
+@router.post("/ai/suggestions/{sid}/noted")
+def ai_suggestion_noted(sid: int, request: Request, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    return _decide(db, _suggestion(db, sid), "NOTED", request)
+
+
+@router.post("/ai/suggestions/{sid}/disable")
+def ai_suggestion_disable(sid: int, request: Request, db: Session = Depends(get_db), _: None = Depends(require_admin)):
+    return _decide(db, _suggestion(db, sid), "DISABLED", request)
 

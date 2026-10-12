@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     groq_api_base: str = "https://api.groq.com/openai/v1"
     groq_whisper_model: str = "whisper-large-v3-turbo"
     groq_vision_model: str = "qwen/qwen3.8-27b"
+    ai_review_enabled: bool = True
+    ai_review_interval_hours: float = 6.0
+    ai_review_max_chats: int = 6
     infradealer_base_url: str = ""
     infradealer_api_key: str = ""
     infradealer_api_secret: str = ""

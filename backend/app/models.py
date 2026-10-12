@@ -272,6 +272,26 @@ class AiEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class AiSuggestion(Base):
+    """Z.AI chat-review finding; a prompt rule only goes live after an admin approves it."""
+
+    __tablename__ = "ai_suggestions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
+    kind: Mapped[str] = mapped_column(String(12), default="prompt")
+    severity: Mapped[str] = mapped_column(String(12), default="medium")
+    title: Mapped[str] = mapped_column(String(200), default="")
+    problem: Mapped[str] = mapped_column(Text, default="")
+    evidence: Mapped[str] = mapped_column(Text, default="")
+    prompt_line: Mapped[str] = mapped_column(Text, default="")
+    conversation_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), default="", index=True)
+    reviewed_by: Mapped[str] = mapped_column(String(120), default="")
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class AiAgentMemory(Base):
     __tablename__ = "ai_agent_memory"
 

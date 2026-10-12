@@ -487,6 +487,12 @@ pre.payload{background:var(--navy);color:#D1FAE5;border-radius:8px;padding:12px;
 tr.ai-row{cursor:pointer}
 tr.ai-row:hover{background:#F8FAFC}
 @media (max-width:800px){.ai-grid{grid-template-columns:1fr}}
+.sg-filters{display:flex;gap:8px;flex-wrap:wrap;padding:12px 16px 0}
+.sg-list{padding:4px 16px 16px}
+.sg-card{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-top:12px;background:#fff}
+.sg-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sg-problem{font-size:13px;margin:8px 0 0;white-space:pre-wrap}
+.sg-line{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-top:6px;resize:vertical;font-size:13px}
 /* ============ infradealer integration ============ */
 .infra-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:16px}
 .infra-status-line{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--gray)}

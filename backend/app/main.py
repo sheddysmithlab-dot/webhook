@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import SQLAlchemyError
 
 from .ai.account_filter import reconcile_missing_accounts
+from .ai.chat_review import review_loop
 from .config import settings
 from .database import Base, SessionLocal, engine, migrate_schema
 from .auth import SessionGate
@@ -113,6 +114,7 @@ def startup():
         db.close()
     thread = threading.Thread(target=_integration_loop, name="infradealer-integration", daemon=True)
     thread.start()
+    threading.Thread(target=review_loop, args=(SessionLocal,), name="chat-review-loop", daemon=True).start()
 
 
 @app.get("/api/health")

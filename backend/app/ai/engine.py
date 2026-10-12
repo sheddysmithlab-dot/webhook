@@ -440,6 +440,11 @@ def llm_reply(db, conv: AiConversation, text: str, media_note: str) -> str | Non
     )
     # prompt_block was a legacy memory.py stub that returned "" — inlined as no-op.
     sys = SYSTEM_PROMPT + "\n\n" + language_instruction(lang)
+    from .chat_review import approved_rules_block
+
+    approved = approved_rules_block(db)
+    if approved:
+        sys += "\n\n" + approved
     # Learn from past admin reject reasons so agent guides corrections better
     lessons = []
     try:

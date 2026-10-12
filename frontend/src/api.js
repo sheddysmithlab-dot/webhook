@@ -101,6 +101,13 @@ export const api = {
     }),
   aiDraftPost: (id) => request(`/api/admin/ai/drafts/${id}/post`, { method: "POST" }),
   aiMediaUrl: (id) => `/api/admin/ai/media/${id}`,
+  aiSuggestions: () => request("/api/admin/ai/suggestions"),
+  aiSuggestionsRun: () => request("/api/admin/ai/suggestions/run", { method: "POST" }),
+  aiSuggestionAction: (id, action, promptLine) =>
+    request(`/api/admin/ai/suggestions/${id}/${action}`, {
+      method: "POST",
+      ...(action === "approve" ? { body: JSON.stringify({ prompt_line: promptLine || "" }) } : {}),
+    }),
   exportUrl: (kind) => `/api/admin/export/${kind}`,
   infraConfig: () => request("/api/admin/infradealer"),
   infraSave: (body) => request("/api/admin/infradealer", { method: "PUT", body: JSON.stringify(body) }),
