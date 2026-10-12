@@ -94,6 +94,16 @@ def test_zai_error_keeps_draft_and_pauses(zai, monkeypatch):
     assert calls == []
 
 
+def test_slow_long_draft_does_not_pause_short_replies(zai, monkeypatch):
+    def boom(*a, **k):
+        raise TimeoutError("slow")
+    monkeypatch.setattr(polish, "_call_zai", boom)
+    long_draft = "• Detail: value\n" * 40
+    assert polish.polish_reply(None, "", long_draft, "hinglish")[1] == "error"
+    zai("Sir, model year kya hai?")
+    assert polish.polish_reply(None, "", "Model year kya hai?", "hinglish")[1] == "polished"
+
+
 class _Resp:
     def __init__(self, status):
         self.status_code = status

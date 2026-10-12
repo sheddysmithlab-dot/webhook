@@ -29,6 +29,7 @@ LLM_WROTE_REPLY: ContextVar[bool] = ContextVar("llm_wrote_reply", default=False)
 _PAUSE_AFTER_ERROR = 60.0
 _pause_until = 0.0
 _MAX_DRAFT = 1600
+_LONG_DRAFT = 300
 _URL = re.compile(r"https?://\S+", re.I)
 # Secrets and one-time codes never leave the backend.
 _SECRET = re.compile(r"otp|password|पासवर्ड|ओटीपी|username|user\s*id\s*:", re.I)
@@ -94,8 +95,8 @@ def _call_zai(cfg: dict, user_text: str, draft: str, lang: str) -> str:
         "enable_thinking": False,
     }
     timeout = float(getattr(settings, "ai_polish_timeout", 6.0))
-    if len(draft) > 300:
-        timeout = max(timeout, 12.0)
+    if len(draft) > _LONG_DRAFT:
+        timeout = max(timeout, 15.0)
     resp = zai_chat(cfg, body, timeout)
     if resp.status_code >= 400:
         raise RuntimeError(f"http {resp.status_code}")
@@ -120,7 +121,9 @@ def polish_reply(db: Session, user_text: str, draft: str, lang: str) -> tuple[st
         out = _call_zai(cfg, user_text, draft, lang)
     except Exception as exc:
         # Z.AI is slow/overloaded: stop adding its timeout to every reply for a while.
-        _pause_until = time.monotonic() + _PAUSE_AFTER_ERROR
+        # A slow long draft says little about short replies, so it does not pause them.
+        if len(draft) <= _LONG_DRAFT:
+            _pause_until = time.monotonic() + _PAUSE_AFTER_ERROR
         log.warning("ai.polish error: %s", exc)
         return draft, "error"
     if not rewrite_is_safe(draft, out):
