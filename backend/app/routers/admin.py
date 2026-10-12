@@ -556,6 +556,15 @@ def _draft_bundle(db: Session, draft: AiListingDraft) -> dict:
     return {"draft_id": draft.id, "status": draft.status}
 
 
+def vehicle_label(value) -> str:
+    """Drafts store the vehicle as text or as {brand, model, year, ...}; the panel needs text."""
+    if isinstance(value, dict):
+        brand, model = value.get("brand"), value.get("model")
+        parts = [brand, model if model != brand else None, value.get("year")]
+        return " ".join(str(p) for p in parts if p not in (None, ""))
+    return str(value or "")
+
+
 @router.get("/ai/drafts")
 def ai_drafts(db: Session = Depends(get_db), _: None = Depends(require_admin)):
     rows = (
@@ -577,7 +586,7 @@ def ai_drafts(db: Session = Depends(get_db), _: None = Depends(require_admin)):
             "id": d.id,
             "mobile": (confirmed.get("phone") or d.mobile),
             "intent": d.intent,
-            "title": (confirmed.get("vehicle") or d.title),
+            "title": vehicle_label(confirmed.get("vehicle")) or vehicle_label(d.title),
             "status": d.status,
             "user_id": d.user_id,
             "posted_product_id": d.posted_product_id,

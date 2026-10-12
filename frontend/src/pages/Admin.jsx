@@ -13,6 +13,18 @@ const TABS = [
   { id: "blocked", label: "Blocked", countKey: "blocked" },
 ];
 
+const TABLE_ROW_LIMIT = 300;
+
+// Confirmed JSON fields can be objects (e.g. vehicle {brand, model, year}); React can't render those directly.
+function asText(value) {
+  if (value == null || value === "") return "";
+  if (Array.isArray(value)) return value.map(asText).filter(Boolean).join(", ");
+  if (typeof value !== "object") return String(value);
+  const { brand, model, year, city, district, state } = value;
+  const parts = [brand, model !== brand ? model : null, year, city || district, state].filter((p) => p != null && p !== "");
+  return parts.length ? parts.join(" ") : JSON.stringify(value);
+}
+
 function Table({ title, placeholder, columns, rows, actions, exportKind }) {
   const [q, setQ] = useState("");
   const filtered = rows.filter((row) => {
@@ -20,6 +32,7 @@ function Table({ title, placeholder, columns, rows, actions, exportKind }) {
     return (row.search || "").toLowerCase().includes(q.toLowerCase());
   });
   const colCount = columns.length;
+  const shown = filtered.slice(0, TABLE_ROW_LIMIT);
   return (
     <div className="tblwrap tab-panel">
       <div className="tbl-head">
@@ -35,12 +48,15 @@ function Table({ title, placeholder, columns, rows, actions, exportKind }) {
         </thead>
         <tbody>
           {!filtered.length && <tr><td className="tbl-empty" colSpan={colCount}>Koi record nahi</td></tr>}
-          {filtered.map((row, idx) => (
+          {shown.map((row, idx) => (
             <tr key={row.id || idx}>
               {row.cells.map((cell, i) => <td key={i}>{cell}</td>)}
               {actions && <td>{actions(row.raw)}</td>}
             </tr>
           ))}
+          {filtered.length > shown.length && (
+            <tr><td className="tbl-empty" colSpan={colCount}>Pehle {shown.length} dikh rahe hain ({filtered.length} me se) — baaki ke liye search karein.</td></tr>
+          )}
         </tbody>
       </table>
     </div>
@@ -153,11 +169,11 @@ export default function Admin() {
                   return (
                   <tr key={d.id} className="ai-row" onClick={async () => setAiOpen(await api.aiDraft(d.id))}>
                     <td className="mono">{fmtTime(d.created_at)}</td>
-                    <td>{d.name || "—"}<div className="mono">+91 {d.mobile}</div></td>
-                    <td>{c.vehicle || d.title || "—"}</td>
-                    <td>{c.rate || "—"}</td>
-                    <td>{c.location || "—"}</td>
-                    <td><span className={`status ${d.status === "POSTED" ? "published" : d.status === "REJECTED" ? "blocked" : "draft"}`}>{d.status}</span></td>
+                    <td>{asText(d.name) || "—"}<div className="mono">+91 {asText(d.mobile)}</div></td>
+                    <td>{asText(c.vehicle) || asText(d.title) || "—"}</td>
+                    <td>{asText(c.rate) || "—"}</td>
+                    <td>{asText(c.location) || "—"}</td>
+                    <td><span className={`status ${d.status === "POSTED" ? "published" : d.status === "REJECTED" ? "blocked" : "draft"}`}>{asText(d.status)}</span></td>
                     <td>
                       <button className="btn primary small" type="button" disabled={d.status === "POSTED"} onClick={async (e) => {
                         e.stopPropagation();
@@ -175,7 +191,7 @@ export default function Admin() {
             {aiOpen && (
               <div className="ai-detail">
                 <div className="tbl-head">
-                  <h3>Final JSON · {aiOpen.confirmed?.vehicle || aiOpen.draft?.title || aiOpen.mobile}</h3>
+                  <h3>Final JSON · {asText(aiOpen.confirmed?.vehicle) || asText(aiOpen.draft?.title) || asText(aiOpen.mobile)}</h3>
                   <button className="btn small" type="button" onClick={() => setAiOpen(null)}>Close</button>
                 </div>
                 <div className="ai-grid">
