@@ -323,13 +323,12 @@ def process_inbound(
                                    conv.mobile[-4:] if conv.mobile else "")
                     media_note = (media_note or "") + " voice_transcribe_failed"
 
-        # Phase 3: OCR document images (RC/insurance/fitness) via Z.AI glm-4.6v-flash.
-        # Only runs on document-like images (heuristic) to spare the free-tier rate
-        # limit on casual vehicle photos. Gated on ai_vision_enabled.
+        # Phase 3: read vehicle photos, RC books and Vahan/mParivahan screenshots via
+        # Z.AI glm-4.6v-flash and fill blank card fields. Gated on ai_vision_enabled.
         if media and (media.get("kind") in {"image", "document"}):
             from .media_config import vision_enabled
             if vision_enabled(db):
-                from .vision import extract_text_from_image, is_document_media
+                from .vision import fill_listing_from_photo, is_document_media
                 try:
                     vis_row = (
                         db.query(AiMedia)
@@ -337,27 +336,20 @@ def process_inbound(
                         .order_by(AiMedia.id.desc())
                         .first()
                     ) if wamid else None
-                    if vis_row and vis_row.local_path and is_document_media(vis_row, text or ""):
-                        ocr = extract_text_from_image(db, conv, vis_row)
-                        if ocr:
-                            vis_row.extracted_text = ocr
-                            vis_row.extract_kind = "ocr"
-                            media_note = (media_note or "") + f" ocr={ocr[:80]}"
-                            log.info("vision.ocr mobile=***%s len=%d",
-                                     conv.mobile[-4:] if conv.mobile else "", len(ocr))
-                        else:
-                            media_note = (media_note or "") + " ocr_failed"
-                    elif vis_row and vis_row.local_path and media.get("kind") == "image":
-                        from .tools import _payload as _pl
-                        from .vision import fill_listing_from_photo
+                    from .tools import _payload as _pl
 
-                        # A vehicle photo starts (or adds to) a listing unless the user is buying.
-                        if (_pl(conv).get("intent") or "").upper() != "BUY":
-                            filled = fill_listing_from_photo(db, conv, vis_row)
-                            if filled:
-                                media_note = (media_note or "") + " photo_fields=" + ",".join(filled)
-                                log.info("vision.photo_fields mobile=***%s fields=%s",
-                                         conv.mobile[-4:] if conv.mobile else "", sorted(filled))
+                    # A vehicle photo or paper starts (or adds to) a listing unless the user is buying.
+                    if vis_row and vis_row.local_path and (_pl(conv).get("intent") or "").upper() != "BUY":
+                        filled = fill_listing_from_photo(
+                            db, conv, vis_row, is_document=is_document_media(vis_row, text or ""),
+                        )
+                        if filled:
+                            media_note = (media_note or "") + " photo_fields=" + ",".join(filled)
+                        if vis_row.extract_kind == "document_fields":
+                            media_note = (media_note or "") + " vehicle_document_read"
+                        log.info("vision.read mobile=***%s kind=%s fields=%s",
+                                 conv.mobile[-4:] if conv.mobile else "", vis_row.extract_kind or "-",
+                                 sorted(filled))
                 except Exception:
                     log.exception("vision.ocr failed mobile=***%s",
                                    conv.mobile[-4:] if conv.mobile else "")

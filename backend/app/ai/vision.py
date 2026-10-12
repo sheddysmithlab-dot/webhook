@@ -139,7 +139,7 @@ def extract_text_from_image(
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 500,
+        "max_tokens": 700,
         "thinking": {"type": "disabled"},
         "enable_thinking": False,
     }
@@ -171,26 +171,50 @@ def extract_text_from_image(
 
 
 _VEHICLE_PROMPT = (
-    "This photo shows a commercial vehicle or construction machine for sale in India. "
-    "Look at the whole image: the vehicle body, brand badge/logo, model name written on it, "
-    "and any visible text or stickers. Reply with ONLY a JSON object using these keys, "
-    "omitting any you cannot see clearly: "
+    "A seller of a used commercial vehicle or construction machine in India sent this image. "
+    "It may be a photo of the vehicle/machine, an RC book or RC smart card, a Vahan / mParivahan / "
+    "RTO 'vehicle search' app screenshot, or an insurance / fitness / permit paper. "
+    "Read everything visible: badges, stickers and every printed label/value. "
+    "Reply with ONLY one JSON object, omitting keys you cannot read: "
+    '"image_type" (vehicle_photo, rc_document, app_screenshot, insurance, other), '
     '"category" (one of Truck, Dumper, Tipper, Crane, Poclain, Loader, Backhoe Loader, JCB, '
-    'Excavator, Grader, Crusher), "brand", "model", "year" (only if a year is printed). '
-    "Never guess."
+    'Excavator, Grader, Crusher, Bus, Tractor, Road Roller), "brand" (maker), "model", '
+    '"manufacturing_year", "registration_number", "vehicle_class", "registration_date", '
+    '"registering_authority", "fuel", "emission_norm", "hypothecated", "insurance_valid_upto", '
+    '"fitness_valid_upto", "tax_valid_upto", "puc_valid_upto", "permit_valid_upto", '
+    '"national_permit_valid_upto". Copy values exactly as printed. Never guess.'
 )
 
-VISION_FILL_KEYS = ("category", "brand", "model", "year")
-MAX_VISION_READS_PER_CARD = 2
+VISION_FILL_KEYS = ("category", "brand", "model", "year", "state", "city", "fuel")
+MAX_VISION_READS_PER_CARD = 3
+
+_GOODS_CLASS = re.compile(r"goods\s*carrier|\b[hml]gv\b|\bhtv\b|\btruck\b", re.I)
+_RTO_WORDS = re.compile(r"\b(?:rto|dto|arto|srto|r\.t\.o\.?|regional transport office)\b", re.I)
+_FUELS = {"diesel": "Diesel", "petrol": "Petrol", "cng": "CNG", "lpg": "LPG", "electric": "Electric", "ev": "Electric"}
+
+# Document facts kept on the card (never the owner name or the plate number in the public ad).
+DOC_FACT_KEYS = (
+    "registration_number", "vehicle_class", "registration_date", "registering_authority",
+    "emission_norm", "hypothecated", "insurance_valid_upto", "fitness_valid_upto",
+    "tax_valid_upto", "puc_valid_upto", "permit_valid_upto", "national_permit_valid_upto",
+)
 
 
-def extract_vehicle_fields(db: Session, conv: AiConversation, media_row: AiMedia) -> dict:
-    """Listing fields read from a vehicle photo ({} when nothing reliable)."""
+def _clean(value) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return "" if text.lower() in {"unknown", "n/a", "na", "none", "null", "-"} else text
+
+
+def _year_in(value) -> int:
     from datetime import date
 
-    from .data_filteration import extract_fields
-    from .schema import normalize_vehicle_category
+    m = re.search(r"(?:19|20)\d{2}", str(value or ""))
+    year = int(m.group(0)) if m else 0
+    return year if 1980 <= year <= date.today().year else 0
 
+
+def read_image(db: Session, conv: AiConversation, media_row: AiMedia) -> dict:
+    """Raw JSON the vision model read from a vehicle photo or vehicle document ({} on failure)."""
     raw = extract_text_from_image(db, conv, media_row, prompt=_VEHICLE_PROMPT)
     m = re.search(r"\{.*\}", raw or "", re.S)
     if not m:
@@ -199,52 +223,95 @@ def extract_vehicle_fields(db: Session, conv: AiConversation, media_row: AiMedia
         data = json.loads(m.group(0))
     except ValueError:
         return {}
-    if not isinstance(data, dict):
-        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def listing_fields(data: dict) -> dict:
+    """Card fields (category/brand/model/year/state/city/location/fuel) from read_image output."""
+    from .data_filteration import extract_fields, normalize_location
+    from .schema import normalize_vehicle_category
+
     out: dict = {}
-    cat = normalize_vehicle_category(str(data.get("category") or ""))
+    cat = normalize_vehicle_category(_clean(data.get("category")))
+    if not cat or cat == "Other":
+        vclass = _clean(data.get("vehicle_class"))
+        cat = normalize_vehicle_category(vclass) or ("Truck" if _GOODS_CLASS.search(vclass) else "")
     if cat and cat != "Other":
         out["category"] = cat
-    brand = str(data.get("brand") or "").strip()
+    brand = _clean(data.get("brand"))
     if brand:
         out["brand"] = extract_fields([brand]).get("brand") or brand.title()[:40]
-    model = re.sub(r"\s+", " ", str(data.get("model") or "")).strip()
-    if model and model.lower() not in {"unknown", "n/a", "na", "none"}:
+    model = _clean(data.get("model"))
+    if model:
         out["model"] = model[:40]
-    try:
-        year = int(str(data.get("year") or "").strip()[:4])
-    except ValueError:
-        year = 0
-    if 1980 <= year <= date.today().year:
+    reg_year = _year_in(data.get("registration_date"))
+    year = _year_in(data.get("manufacturing_year") or data.get("year")) or reg_year
+    if year:
         out["year"] = year
+    if reg_year:
+        out["registration_year"] = reg_year
+    authority = _RTO_WORDS.sub(" ", _clean(data.get("registering_authority")))
+    if authority:
+        parts = [p.strip(" .-") for p in authority.split(",") if p.strip(" .-")]
+        city = parts[0].title() if parts else ""
+        state = parts[-1] if len(parts) > 1 else ""
+        out.update({k: v for k, v in normalize_location(city=city, state=state).items() if k != "country"})
+    fuel = _FUELS.get(_clean(data.get("fuel")).lower())
+    if fuel:
+        out["fuel"] = fuel
     return out
 
 
-def fill_listing_from_photo(db: Session, conv: AiConversation, media_row: AiMedia) -> dict:
-    """Fill only blank card fields from a vehicle photo; capped per card. Returns what was filled."""
+def document_facts(data: dict) -> dict:
+    return {k: _clean(data.get(k))[:60] for k in DOC_FACT_KEYS if _clean(data.get(k))}
+
+
+def extract_vehicle_fields(db: Session, conv: AiConversation, media_row: AiMedia) -> dict:
+    """Listing fields read from a vehicle photo or document ({} when nothing reliable)."""
+    return listing_fields(read_image(db, conv, media_row))
+
+
+def fill_listing_from_photo(
+    db: Session, conv: AiConversation, media_row: AiMedia, is_document: bool = False,
+) -> dict:
+    """Fill only blank card fields from a photo / RC / Vahan screenshot. Returns what was filled.
+
+    Vehicle photos are capped per card; images the sender labels as documents are always read.
+    """
     from .tools import _payload, _write_payload
 
     payload = _payload(conv)
     missing = [k for k in VISION_FILL_KEYS if payload.get(k) in (None, "", [], {})]
-    if not missing:
+    if not missing and not is_document:
         return {}
-    reads = payload.get("vision_reads") if isinstance(payload.get("vision_reads"), dict) else {}
-    if reads.get("draft") != conv.draft_id:
-        reads = {"draft": conv.draft_id, "n": 0}
-    if int(reads.get("n") or 0) >= MAX_VISION_READS_PER_CARD:
-        return {}
-    reads["n"] = int(reads.get("n") or 0) + 1
-    payload["vision_reads"] = reads
-    _write_payload(conv, payload)
+    if not is_document:
+        reads = payload.get("vision_reads") if isinstance(payload.get("vision_reads"), dict) else {}
+        if reads.get("draft") != conv.draft_id:
+            reads = {"draft": conv.draft_id, "n": 0}
+        if int(reads.get("n") or 0) >= MAX_VISION_READS_PER_CARD:
+            return {}
+        reads["n"] = int(reads.get("n") or 0) + 1
+        payload["vision_reads"] = reads
+        _write_payload(conv, payload)
 
-    found = extract_vehicle_fields(db, conv, media_row)
+    data = read_image(db, conv, media_row)
+    found = listing_fields(data)
+    facts = document_facts(data)
     filled = {k: v for k, v in found.items() if k in missing}
-    if filled:
+    if filled or facts:
         payload = _payload(conv)
         for k, v in filled.items():
             if payload.get(k) in (None, "", [], {}):
                 payload[k] = v
+        if "city" in filled and payload.get("location") in (None, ""):
+            payload["location"] = found.get("location") or filled["city"]
+        if found.get("registration_year") and payload.get("registration_year") in (None, ""):
+            payload["registration_year"] = found["registration_year"]
+        if facts:
+            docs = payload.get("vehicle_docs") if isinstance(payload.get("vehicle_docs"), dict) else {}
+            payload["vehicle_docs"] = {**docs, **facts}
         _write_payload(conv, payload)
-        media_row.extracted_text = json.dumps(found, ensure_ascii=False) if found else ""
-        media_row.extract_kind = "vehicle_fields"
+    if data:
+        media_row.extracted_text = json.dumps(data, ensure_ascii=False)
+        media_row.extract_kind = "document_fields" if facts else "vehicle_fields"
     return filled

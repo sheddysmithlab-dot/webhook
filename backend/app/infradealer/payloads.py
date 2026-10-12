@@ -150,6 +150,23 @@ def _ad_description(payload: dict, confirmed: dict, title: str) -> str:
         val = payload.get(key) or confirmed.get(key)
         if val:
             lines.append(f"{label}: {val}")
+    fuel = payload.get("fuel") or confirmed.get("fuel")
+    if fuel:
+        lines.append(f"Fuel: {fuel}")
+    docs = payload.get("vehicle_docs") if isinstance(payload.get("vehicle_docs"), dict) else {}
+    for label, key in (
+        ("Emission norm", "emission_norm"),
+        ("Registered", "registration_date"),
+        ("RTO", "registering_authority"),
+        ("Insurance valid till", "insurance_valid_upto"),
+        ("Fitness valid till", "fitness_valid_upto"),
+        ("Tax valid till", "tax_valid_upto"),
+        ("PUC valid till", "puc_valid_upto"),
+        ("Permit valid till", "permit_valid_upto"),
+        ("National permit valid till", "national_permit_valid_upto"),
+    ):
+        if docs.get(key):
+            lines.append(f"{label}: {docs[key]}")
     text = "\n".join(lines) or f"{title or 'Equipment'} for sale on InfraDealer."
     return strip_contact_from_text(text)
 

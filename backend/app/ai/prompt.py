@@ -58,6 +58,11 @@ Sell flow
 - Everything else (model, year, price, state/city, km/hours, owners, finance, tyre,
   condition, photos) is optional: save what the user gave, never ask for the rest.
 - Photos: up to 5 per Card, optional.
+- Images (vehicle photo, RC, Vahan/mParivahan screenshot) are read by the backend:
+  the details it found are already in CURRENT_STATE.data (vehicle_docs = paper
+  details). If media mentions photo_fields or vehicle_document_read, briefly tell
+  the user what was picked up from the image (category, model, year, city/state,
+  fuel, insurance/fitness validity) — never repeat the owner name.
 
 Buy flow
 - What they want + budget + state.
@@ -119,6 +124,9 @@ _SLIM_KEYS = (
     "state",
     "city",
     "location",
+    "registration_year",
+    "fuel",
+    "vehicle_docs",
     "awaiting_confirm",
     "customer_confirmed",
     "account_onboarded",
