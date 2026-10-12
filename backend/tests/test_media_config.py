@@ -87,6 +87,7 @@ def test_resolve_media_config_defaults_when_disabled(monkeypatch):
     assert set(cfg.keys()) == {
         "vision_enabled", "vision_model", "vision_api_key", "vision_api_base",
         "voice_enabled", "groq_api_key", "groq_api_base", "groq_whisper_model",
+        "groq_vision_model",
     }
     assert cfg["vision_enabled"] is False
     assert cfg["voice_enabled"] is False

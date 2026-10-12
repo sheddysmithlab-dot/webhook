@@ -1,9 +1,9 @@
-"""Phase 3: Document image OCR via Z.AI glm-4.6v-flash (free vision model).
+"""Phase 3: image reading (vehicle photos, RC, Vahan screenshots) via Z.AI glm-4.6v-flash.
 
 Reuses the SAME Z.AI account/api_key as text chat — only the model slug differs.
-Gated on `ai_vision_enabled`. Only runs on document-like media (RC book,
-insurance, fitness cert) to avoid burning the free-tier rate limit on every
-casual vehicle photo. Never raises; returns "" on any failure.
+When Z.AI fails (the free model is often overloaded), the Groq key used for voice
+is tried with `groq_vision_model`. Gated on `ai_vision_enabled`.
+Never raises; returns "" on any failure.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from .media_config import resolve_media_config
 log = logging.getLogger("infradealer.ai.vision")
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+GROQ_MAX_IMAGE_BYTES = 3 * 1024 * 1024
 
 _DOC_CUES = re.compile(
     r"\b("
@@ -113,7 +114,8 @@ def extract_text_from_image(
     api_key = cfg.get("vision_api_key") or ""
     api_base = (cfg.get("vision_api_base") or "").rstrip("/")
     model = cfg.get("vision_model") or "glm-4.6v-flash"
-    if not api_key or not api_base:
+    groq_key = cfg.get("groq_api_key") or ""
+    if not (api_key and api_base) and not groq_key:
         return ""
 
     try:
@@ -122,11 +124,24 @@ def extract_text_from_image(
         log.warning("vision.skip: base64 encode failed %s: %s", path, exc)
         return ""
 
-    url = api_base + "/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    content = ""
+    if api_key and api_base:
+        content = _vision_chat(
+            api_base, api_key, model, prompt, data_url,
+            {"thinking": {"type": "disabled"}, "enable_thinking": False},
+        )
+    # Groq caps base64 image requests at 4 MB.
+    if not content and groq_key and size <= GROQ_MAX_IMAGE_BYTES:
+        content = _vision_chat(
+            (cfg.get("groq_api_base") or "").rstrip("/"), groq_key,
+            cfg.get("groq_vision_model") or "qwen/qwen3.8-27b", prompt, data_url,
+            {"reasoning_effort": "none"},
+        )
+    return content
+
+
+def _vision_chat(api_base: str, api_key: str, model: str, prompt: str, data_url: str, extra: dict) -> str:
+    """One OpenAI-compatible image chat call. Returns the reply text or "" (never raises)."""
     body = {
         "model": model,
         "messages": [
@@ -139,20 +154,19 @@ def extract_text_from_image(
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 700,
-        "thinking": {"type": "disabled"},
-        "enable_thinking": False,
+        "max_tokens": 900,
+        **extra,
     }
-
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     try:
         with httpx.Client(timeout=20.0) as client:
-            resp = client.post(url, headers=headers, json=body)
+            resp = client.post(api_base + "/chat/completions", headers=headers, json=body)
     except Exception as exc:
-        log.warning("vision.http error: %s", exc)
+        log.warning("vision.http error model=%s: %s", model, exc)
         return ""
 
     if resp.status_code >= 400:
-        log.warning("vision.http %s %s", resp.status_code, (resp.text or "")[:200])
+        log.warning("vision.http model=%s %s %s", model, resp.status_code, (resp.text or "")[:200])
         return ""
 
     try:
@@ -165,8 +179,7 @@ def extract_text_from_image(
     choice = (data.get("choices") or [{}])[0]
     content = str((choice.get("message") or {}).get("content") or "").strip()
     if not content:
-        log.warning("vision.empty: no content keys=%s", list(data.keys()))
-        return ""
+        log.warning("vision.empty model=%s keys=%s", model, list(data.keys()))
     return content
 
 

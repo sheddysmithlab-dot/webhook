@@ -113,6 +113,54 @@ def test_ad_description_shows_validity_but_not_owner_or_plate(db, tmp_path, monk
     assert "BR06GG8841" not in text and "K***R" not in text and "Hypothecat" not in text
 
 
+def _media_cfg(**over):
+    cfg = {
+        "vision_enabled": True, "vision_model": "glm-4.6v-flash", "vision_api_key": "zk",
+        "vision_api_base": "https://zai.test/v4", "groq_api_key": "gk",
+        "groq_api_base": "https://groq.test/v1", "groq_vision_model": "qwen/test-vl",
+    }
+    cfg.update(over)
+    return cfg
+
+
+def _image_row(db, tmp_path):
+    img = tmp_path / "rc.jpg"
+    img.write_bytes(b"\xff\xd8jpeg")
+    row = AiMedia(conversation_id=1, kind="image", local_path=str(img), mime="image/jpeg")
+    db.add(row)
+    db.flush()
+    return row
+
+
+def test_groq_used_when_zai_fails(db, tmp_path, monkeypatch):
+    row = _image_row(db, tmp_path)
+    calls = []
+
+    def fake_chat(base, key, model, prompt, data_url, extra):
+        calls.append((base, model, extra))
+        return "" if "zai" in base else '{"fuel": "DIESEL"}'
+
+    monkeypatch.setattr(vision, "resolve_media_config", lambda db_: _media_cfg())
+    monkeypatch.setattr(vision, "_vision_chat", fake_chat)
+    assert vision.extract_text_from_image(db, None, row, prompt="p") == '{"fuel": "DIESEL"}'
+    assert [c[1] for c in calls] == ["glm-4.6v-flash", "qwen/test-vl"]
+    assert "thinking" not in calls[1][2]
+
+
+def test_groq_not_called_when_zai_answers(db, tmp_path, monkeypatch):
+    row = _image_row(db, tmp_path)
+    calls = []
+
+    def fake_chat(base, key, model, prompt, data_url, extra):
+        calls.append(model)
+        return '{"category": "Truck"}'
+
+    monkeypatch.setattr(vision, "resolve_media_config", lambda db_: _media_cfg())
+    monkeypatch.setattr(vision, "_vision_chat", fake_chat)
+    vision.extract_text_from_image(db, None, row, prompt="p")
+    assert calls == ["glm-4.6v-flash"]
+
+
 def test_vision_reads_cap_survives_save(db, tmp_path, monkeypatch):
     conv, row, calls = _setup(db, tmp_path, monkeypatch, {"image_type": "vehicle_photo"}, intent="SELL")
     for _ in range(vision.MAX_VISION_READS_PER_CARD + 2):

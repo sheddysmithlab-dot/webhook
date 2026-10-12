@@ -22,6 +22,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..services import resolve_ai_config
 
 log = logging.getLogger("infradealer.ai.media_config")
@@ -50,6 +51,7 @@ def resolve_media_config(db: Session) -> dict:
         "groq_api_key": cfg.get("groq_api_key") or "",
         "groq_api_base": cfg.get("groq_api_base") or "https://api.groq.com/openai/v1",
         "groq_whisper_model": cfg.get("groq_whisper_model") or "whisper-large-v3-turbo",
+        "groq_vision_model": getattr(settings, "groq_vision_model", "") or "qwen/qwen3.8-27b",
     }
 
 
