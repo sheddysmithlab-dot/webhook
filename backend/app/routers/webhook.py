@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -6,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ..ai.runner import parse_meta_message, process_inbound
@@ -195,13 +196,34 @@ async def receive_webhook(request: Request, background: BackgroundTasks, db: Ses
     return {"ok": True, "stored": stored, "ai_queued": len(ai_jobs), "name_updates": name_updates}
 
 
+def chats_version(db: Session) -> str:
+    """Fingerprint of every field the chat list shows; changes whenever a row is added, edited or removed."""
+    digest = hashlib.sha1()
+    rows = db.query(
+        Chat.id, Chat.status, Chat.unread, func.length(Chat.body), Chat.from_name, Chat.media_id, Chat.timestamp_ms,
+    ).order_by(Chat.id)
+    for row in rows:
+        digest.update(repr(tuple(row)).encode())
+    media = db.query(func.count(AiMedia.id), func.max(AiMedia.id)).one()
+    digest.update(repr(tuple(media)).encode())
+    return digest.hexdigest()[:16]
+
+
 @router.get("/api/chats")
 def list_chats(
     q: str = "",
     unread: bool = False,
     from_number: str = "",
+    version: str | None = None,
     db: Session = Depends(get_db),
 ):
+    """With `version`, polls get {"version", "changed"} and the list only when something changed."""
+    if version is not None:
+        current = chats_version(db)
+        if version == current:
+            return {"version": current, "changed": False}
+        chats = list_chats(q=q, unread=unread, from_number=from_number, version=None, db=db)
+        return {"version": current, "changed": True, "chats": chats}
     rows = db.query(Chat).order_by(Chat.timestamp_ms.desc(), Chat.id.desc()).all()
     if unread:
         rows = [c for c in rows if c.unread]

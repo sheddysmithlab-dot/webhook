@@ -285,6 +285,8 @@ export default function Webhook() {
   const menuRef = useRef(null);
   const stickToBottomRef = useRef(true);
   const lastOpenPeerRef = useRef(null);
+  const chatsRef = useRef([]);
+  const chatsVersionRef = useRef({ q: null, version: "" });
 
   function scrollThread(force = false) {
     const el = threadRef.current;
@@ -303,9 +305,14 @@ export default function Webhook() {
     setS(await api.settings());
   }
   async function loadChats() {
-    const list = await api.chats({ q });
-    setChats(list);
-    return list;
+    const known = chatsVersionRef.current.q === q ? chatsVersionRef.current.version : "";
+    const res = await api.chats({ q, version: known || "none" });
+    chatsVersionRef.current = { q, version: res.version };
+    if (res.changed) {
+      chatsRef.current = res.chats;
+      setChats(res.chats);
+    }
+    return chatsRef.current;
   }
   async function loadBlocked() {
     const list = await api.admin("blocked");
@@ -326,9 +333,16 @@ export default function Webhook() {
 
   useEffect(() => {
     const t = setInterval(() => {
-      loadChats().catch(() => {});
+      if (!document.hidden) loadChats().catch(() => {});
     }, 5000);
-    return () => clearInterval(t);
+    const onVisible = () => {
+      if (!document.hidden) loadChats().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [q]);
 
   useEffect(() => {
