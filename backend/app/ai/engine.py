@@ -1002,32 +1002,6 @@ def avoid_repeat(db, conv: AiConversation, lang: str, reply: str, recents: list[
     return ""
 
 
-def attach_intro(db, conv: AiConversation, lang: str, reply: str) -> str:
-    payload = _payload(conv)
-    if payload.get("ai_introduced"):
-        return reply
-    active = bool(
-        payload.get("brand")
-        or payload.get("model")
-        or payload.get("customer_confirmed")
-        or conv.draft_id
-    )
-    payload["ai_introduced"] = True
-    _write_payload(conv, payload)
-    if active:
-        return reply
-    intro = t(lang, "intro")
-    body = (reply or "").strip()
-    if not body:
-        return intro
-    low = body.lower()
-    if "ai executive" in low or "infradealer ka ai" in low or "i am infradealer" in low:
-        return body
-    if body.lstrip().lower().startswith("namaste"):
-        return body
-    return intro + "\n\n" + body
-
-
 def _ocr_extracted_fields(db, conv: AiConversation) -> dict:
     """Pull the latest OCR'd AiMedia row for this conv and extract vehicle fields.
 
@@ -1170,7 +1144,7 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
             cleaned = avoid_repeat(db, conv, lang, _sanitize_reply(acc, posted=False, lang=lang), recents)
             if not (cleaned or "").strip():
                 cleaned = _sanitize_reply(acc, posted=False, lang=lang)
-            return attach_intro(db, conv, lang, cleaned)
+            return cleaned
 
     # 1e) Create account from WhatsApp when user asks (or short "naya bana do" after mismatch)
     if wants_create_account(text, payload0) and not payload0.get("account_onboarded"):
@@ -1188,7 +1162,7 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
         from .confirm import start_new_listing
 
         start_new_listing(db, conv, {}, [])
-        return attach_intro(db, conv, lang, t(lang, "vehicle_new_ok") + "\n" + t(lang, "intent"))
+        return t(lang, "vehicle_new_ok") + "\n" + t(lang, "intent")
 
     # 2) Casual greetings — never dump CARD summary
     if is_casual_chat(text) and not fields and not media_note:
@@ -1219,7 +1193,7 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
 
     slot = handle_vehicle_slot(db, conv, text, fields, media_note, lang)
     if slot:
-        return attach_intro(db, conv, lang, avoid_repeat(db, conv, lang, _sanitize_reply(slot, posted=False, lang=lang), recents))
+        return avoid_repeat(db, conv, lang, _sanitize_reply(slot, posted=False, lang=lang), recents)
 
     if _new_card_if_new_vehicle(db, conv, fields):
         payload0 = _payload(conv)
@@ -1245,10 +1219,7 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
         payload["optional_asked"] = True
         conv.error_message = "ask:optional_bundle"
         _write_payload(conv, payload)
-        return attach_intro(
-            db, conv, lang,
-            avoid_repeat(db, conv, lang, _sanitize_reply(t(lang, "optional_bundle"), posted=False, lang=lang), recents),
-        )
+        return avoid_repeat(db, conv, lang, _sanitize_reply(t(lang, "optional_bundle"), posted=False, lang=lang), recents)
     if photos_complete(text):
         payload["photos_complete"] = True
         _write_payload(conv, payload)
@@ -1296,7 +1267,6 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
     if cleaned:
         reply = cleaned
     if reply:
-        reply = attach_intro(db, conv, lang, reply)
         # Strip accidental profile-name-only / "Reply Name" style junk
         reply = re.sub(r"(?im)^\s*reply\s+[a-z][a-z\s.]{1,40}\s*$", "", reply).strip() or reply
         if is_repeat_outbound(reply, recents) and not (

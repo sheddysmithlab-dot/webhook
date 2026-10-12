@@ -2,9 +2,9 @@
 
 MESSAGES = {
     "greet": {
-        "hinglish": "Namaste! Main InfraDealer Relationship Manager hoon. Aap gaadi/machine bechna chahte ho ya kharidna?",
-        "hi": "नमस्ते! मैं InfraDealer रिलेशनशिप मैनेजर हूँ। आप गाड़ी/मशीन बेचना चाहते हैं या खरीदना?",
-        "en": "Hello! I'm the InfraDealer Relationship Manager. Do you want to sell or buy a vehicle/machine?",
+        "hinglish": "Namaste! Main InfraDealer AI Agent hoon. Aap gaadi/machine bechna chahte ho ya kharidna?",
+        "hi": "नमस्ते! मैं InfraDealer AI एजेंट हूँ। आप गाड़ी/मशीन बेचना चाहते हैं या खरीदना?",
+        "en": "Hello! I'm the InfraDealer AI Agent. Do you want to sell or buy a vehicle/machine?",
         "pa": "ਸਤ ਸ੍ਰੀ ਅਕਾਲ! ਮੈਂ InfraDealer ਰਿਲੇਸ਼ਨਸ਼ਪ ਮੈਨੇਜਰ ਹਾਂ। ਤੁਸੀਂ ਵਾਹਨ/ਮਸ਼ਨ ਵੇਚਣਾ ਚਾਹੁੰਦੇ ਹੋ ਜਾਂ ਖਰੀਦਣਾ?",
         "pa_roman": "Sat sri akal! Main InfraDealer relationship manager haan. Tusi vaahan/mashin wechna chaahunde ho ya khareedna?",
         "gu": "નમસ્તે! હું InfraDealer રિલેશનશિપ મેનેજર છું. તમે વાહન/મશીન વેચવું છો કે ખરીદવું?",
@@ -53,9 +53,9 @@ MESSAGES = {
         "en": "So you want to sell or buy {label}?",
     },
     "intro": {
-        "hinglish": "Namaste! Main InfraDealer ka AI Relationship Manager hoon.",
-        "hi": "नमस्ते! मैं InfraDealer का AI रिलेशनशिप मैनेजर हूँ।",
-        "en": "Hello! I'm the InfraDealer AI Relationship Manager.",
+        "hinglish": "🤖 Main *InfraDealer AI Agent* hoon — gaadi/machine bechne, kharidne aur listing mein aapki madad karunga.",
+        "hi": "🤖 मैं *InfraDealer AI एजेंट* हूँ — गाड़ी/मशीन बेचने, खरीदने और लिस्टिंग में आपकी मदद करूँगा।",
+        "en": "🤖 I'm the *InfraDealer AI Agent* — here to help you sell, buy and list vehicles & machines.",
     },
     "category": {
         "hinglish": "Kaunsi category hai? (Truck / Tipper / JCB / Excavator / Crane / Bus / Tractor / Other)",

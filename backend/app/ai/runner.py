@@ -382,6 +382,7 @@ def process_inbound(
 
             # Office operator commands (customer select / create) run on the raw
             # text, before typo correction and the same-number account policy.
+            from .agent_intro import with_agent_intro
             from .office_mode import decorate_office_reply, handle_office_turn
 
             office_reply = handle_office_turn(db, conv, text, lang)
@@ -450,6 +451,7 @@ def process_inbound(
                 else:
                     reply, zai = polish_reply(db, text, reply, lang)
                 reply = decorate_office_reply(db, conv, reply)
+                reply = with_agent_intro(db, conv, conv_id, mobile, lang, reply)
 
             pl = _payload(conv)
             if pl.get("active_card_id"):
