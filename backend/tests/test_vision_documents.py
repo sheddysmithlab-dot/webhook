@@ -161,6 +161,34 @@ def test_groq_not_called_when_zai_answers(db, tmp_path, monkeypatch):
     assert calls == ["glm-4.6v-flash"]
 
 
+def test_idle_reset_before_image_keeps_image_fields(db, tmp_path, monkeypatch):
+    from datetime import datetime, timedelta
+
+    from app.ai.session_memory import prepare_turn, reset_if_idle
+
+    old = (datetime.utcnow() - timedelta(minutes=30)).isoformat()
+    conv, row, _ = _setup(
+        db, tmp_path, monkeypatch, VAHAN_SCREENSHOT,
+        intent="SELL", brand="Tata", category="Tipper", last_user_message_at=old,
+    )
+    assert reset_if_idle(db, conv) is True
+    assert _payload(conv).get("brand") in (None, "")
+    vision.fill_listing_from_photo(db, conv, row, is_document=True)
+    prep = prepare_turn(db, conv, "")
+    assert prep["mode"] == "new_chat"
+    pl = _payload(conv)
+    assert (pl["category"], pl["city"], pl["fuel"]) == ("Truck", "Muzaffarpur", "Diesel")
+
+
+def test_truck_model_line_is_not_a_city():
+    from app.ai.data_filteration import extract_fields
+
+    out = extract_fields(["Signa"])
+    assert (out.get("brand"), out.get("model")) == ("Tata", "Signa")
+    assert "city" not in out and "location" not in out
+    assert extract_fields(["Muzaffarpur"]).get("city") == "Muzaffarpur"
+
+
 def test_vision_reads_cap_survives_save(db, tmp_path, monkeypatch):
     conv, row, calls = _setup(db, tmp_path, monkeypatch, {"image_type": "vehicle_photo"}, intent="SELL")
     for _ in range(vision.MAX_VISION_READS_PER_CARD + 2):

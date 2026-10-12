@@ -237,19 +237,33 @@ def prepare_turn(db: Session, conv: AiConversation, text: str) -> dict[str, Any]
             return {"mode": "engine_update", "draft": draft, "reset": False, "card_id": draft.card_id}
         return {"mode": "continue", "draft": None, "reset": False, "missing_last_listing": True}
 
-    # chat_cleared stays True after a reset even once a new card is built, so it must not block this.
-    if idle:
-        had_topic = bool(
-            payload.get("intent")
-            or payload.get("brand")
-            or payload.get("awaiting_confirm")
-            or payload.get("rm_state") not in {"", None, "NEW_SESSION", "INTENT_DETECTION"}
-            or conv.draft_id
-        )
-        if had_topic:
-            reset_idle_chat_memory(db, conv)
-            touch_user_message(conv)
-            return {"mode": "new_chat", "draft": None, "reset": True}
+    if (idle and reset_if_idle(db, conv)) or getattr(conv, "_idle_reset_this_turn", False):
+        touch_user_message(conv)
+        return {"mode": "new_chat", "draft": None, "reset": True}
 
     touch_user_message(conv)
     return {"mode": "continue", "draft": None, "reset": False}
+
+
+def reset_if_idle(db: Session, conv: AiConversation) -> bool:
+    """Run the user-idle reset now; True if it wiped the chat topic.
+
+    The runner calls this before reading an image so card fields filled from the
+    image are not wiped by the reset later in the same turn.
+    """
+    payload = _payload(conv)
+    if not is_memory_idle(conv, payload):
+        return False
+    # chat_cleared stays True after a reset even once a new card is built, so it must not block this.
+    had_topic = bool(
+        payload.get("intent")
+        or payload.get("brand")
+        or payload.get("awaiting_confirm")
+        or payload.get("rm_state") not in {"", None, "NEW_SESSION", "INTENT_DETECTION"}
+        or conv.draft_id
+    )
+    if not had_topic:
+        return False
+    reset_idle_chat_memory(db, conv)
+    conv._idle_reset_this_turn = True
+    return True

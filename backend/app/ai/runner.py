@@ -336,8 +336,12 @@ def process_inbound(
                         .order_by(AiMedia.id.desc())
                         .first()
                     ) if wamid else None
+                    from .session_memory import reset_if_idle
                     from .tools import _payload as _pl
+                    from .tools import _write_payload as _wpl
 
+                    if vis_row and vis_row.local_path:
+                        reset_if_idle(db, conv)
                     # A vehicle photo or paper starts (or adds to) a listing unless the user is buying.
                     if vis_row and vis_row.local_path and (_pl(conv).get("intent") or "").upper() != "BUY":
                         filled = fill_listing_from_photo(
@@ -345,6 +349,11 @@ def process_inbound(
                         )
                         if filled:
                             media_note = (media_note or "") + " photo_fields=" + ",".join(filled)
+                            vis_pl = _pl(conv)
+                            if not vis_pl.get("intent"):
+                                vis_pl["intent"] = "SELL"
+                                _wpl(conv, vis_pl)
+                                conv.intent = "SELL"
                         if vis_row.extract_kind == "document_fields":
                             media_note = (media_note or "") + " vehicle_document_read"
                         log.info("vision.read mobile=***%s kind=%s fields=%s",

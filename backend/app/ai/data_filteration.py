@@ -172,12 +172,33 @@ _CAR_MODELS = {
 }
 
 
-def car_model(text: str) -> tuple[str, str] | None:
+# Truck / tipper model lines sellers type without the maker ("Signa" = Tata Signa).
+_CV_MODELS = {
+    "signa": ("Tata", "Signa"),
+    "prima": ("Tata", "Prima"),
+    "lpt": ("Tata", "LPT"),
+    "lpk": ("Tata", "LPK"),
+    "ultra": ("Tata", "Ultra"),
+    "ecomet": ("Ashok Leyland", "Ecomet"),
+    "blazo": ("Mahindra", "Blazo"),
+    "furio": ("Mahindra", "Furio"),
+}
+
+
+def _model_hit(table: dict, text: str) -> tuple[str, str] | None:
     low = str(text or "").lower()
-    for cue, hit in sorted(_CAR_MODELS.items(), key=lambda x: len(x[0]), reverse=True):
+    for cue, hit in sorted(table.items(), key=lambda x: len(x[0]), reverse=True):
         if re.search(rf"(?<![a-z0-9]){re.escape(cue)}(?![a-z0-9])", low):
             return hit
     return None
+
+
+def car_model(text: str) -> tuple[str, str] | None:
+    return _model_hit(_CAR_MODELS, text)
+
+
+def cv_model(text: str) -> tuple[str, str] | None:
+    return _model_hit(_CV_MODELS, text)
 
 _LABEL_PATTERNS = (
     ("brand", r"brand|make|company|ब्रांड|ब्रान्ड|कंपनी"),
@@ -521,7 +542,7 @@ def _looks_like_place(text: str) -> bool:
         low,
     ):
         return False
-    if canonical_brand(raw) or normalize_vehicle_category(raw):
+    if canonical_brand(raw) or normalize_vehicle_category(raw) or cv_model(raw):
         return False
     # Digits usually mean price/year/km — allow only sector/NH style
     if re.search(r"\d", raw) and not re.search(r"(?:sector|sec\.?|phase|nh)\s*\d", low):
@@ -744,6 +765,9 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
             out["model"] = car[1]
         if _blank(out.get("category")):
             out["category"] = "Other"
+    cv = cv_model(blob)
+    if cv and _blank(out.get("brand")):
+        out["brand"] = cv[0]
 
     if _blank(out.get("brand")):
         out["brand"] = canonical_brand(blob)
@@ -769,6 +793,8 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
             m = _MODEL_CODE_RE.search(blob)
             if m:
                 out["model"] = m.group(1).upper()
+    if _blank(out.get("model")) and cv and out.get("brand") == cv[0]:
+        out["model"] = cv[1]
 
     if _blank(out.get("year")):
         y = normalize_year(blob)
