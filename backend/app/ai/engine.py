@@ -56,6 +56,22 @@ _BUYER_ASK = re.compile(
     re.I,
 )
 
+_PURCHASE = re.compile(
+    r"kharid|khareed|\bbuy\b|purchase|\ble(?:na|ni|ne)\s+(?:hai|h|he|tha|thi|chahte|chahta|chahti)\b|खरीद",
+    re.I,
+)
+_WANT = re.compile(
+    r"\b(chahiye|chaiye|chahie|chahiya|chahte|chahta|chahti|need|wanted|required|requirement)\b|चाहिए",
+    re.I,
+)
+_SELL_WORD = re.compile(r"bech|sell|bikau|बेच", re.I)
+# "token chahiye" / "link chahiye" / "listing chahiye" are not a vehicle purchase.
+_NOT_A_VEHICLE = re.compile(
+    r"\b(token|tokens|wallet|plan|subscription|account|otp|password|link|help|madad|photo|photos|"
+    r"card|listing|listings|info|number|call|baat)\b",
+    re.I,
+)
+
 _CASUAL = re.compile(
     r"^\s*("
     r"hi+|hii+|hello|hey+|namaste|namaskar|"
@@ -176,6 +192,10 @@ def extract_turn(text: str, extra_reps=None, media_note: str = "") -> dict:
     )
     if not fields.get("intent") and not buyish and ((dump and sellish) or wants_new_listing(text)):
         fields["intent"] = "SELL"
+    if not fields.get("intent") and not _SELL_WORD.search(low) and not _NOT_A_VEHICLE.search(low):
+        vehicle = bool(fields.get("brand") or fields.get("model") or fields.get("category"))
+        if _PURCHASE.search(text or "") or (_WANT.search(text or "") and vehicle):
+            fields["intent"] = "BUY"
     return fields
 
 
@@ -196,6 +216,16 @@ def apply_extraction(db, conv: AiConversation, text: str, extra_reps=None, media
         fields = extract_turn(text, extra_reps=extra_reps, media_note=media_note)
     if not fields:
         return fields
+    current = str(_payload(conv).get("intent") or "").upper()
+    if fields.get("intent") == "BUY":
+        from .office_mode import is_office_session
+
+        # The office line only posts listings; a seller mid-card saying "chahiye" is not buying.
+        if is_office_session(db, conv) or (current == "SELL" and not _PURCHASE.search(text or "")):
+            fields.pop("intent")
+    if (fields.get("intent") or current) == "BUY" and fields.get("expected_price") and not fields.get("budget"):
+        fields["budget"] = fields.pop("expected_price")
+        fields.pop("price", None)
     if fields.get("intent"):
         execute_tool(db, conv, "save_customer_data", {"intent": fields["intent"]})
     veh = {k: v for k, v in fields.items() if k not in {"intent", "contact_phone"}}
@@ -349,7 +379,11 @@ def fallback_reply(db, conv: AiConversation, text: str, media_note: str = "") ->
         return t(lang, "optional_bundle")
 
     if collection_ready(payload) and not payload.get("customer_confirmed"):
+        from .buyer import buyer_reply, is_buyer
         from .confirm import send_summary
+
+        if is_buyer(payload):
+            return buyer_reply(db, conv, lang, repeat=True)
         return send_summary(db, conv, lang)
 
     nxt = _next_question(payload, lang)

@@ -169,6 +169,9 @@ _CAT_ALIASES = {
     "tractor": "Tractor", "tracter": "Tractor", "trector": "Tractor", "ट्रैक्टर": "Tractor",
     "road roller": "Road Roller", "roller": "Road Roller", "रोड रोलर": "Road Roller", "रोलर": "Road Roller",
     "other": "Other", "anya": "Other", "अन्य": "Other",
+    # Cars are not a website category; they list under "Others".
+    "car": "Other", "four wheeler": "Other", "4 wheeler": "Other", "fourwheeler": "Other",
+    "4wheeler": "Other", "suv": "Other", "कार": "Other",
 }
 
 
@@ -277,6 +280,7 @@ def empty_payload() -> dict:
         "next_ask": None,
         "awaiting_confirm": False,
         "awaiting_vehicle_choice": False,
+        "buy_search_key": None,
         "ai_introduced": False,
         "lead_welcome_sent": False,
         "lead_menu_pending": False,
@@ -384,7 +388,7 @@ def missing_fields(payload: dict) -> list[str]:
             if not normalize_vehicle_category(payload.get("category") or payload.get("type") or ""):
                 miss.append("category")
             continue
-        if key == "brand" and intent == "SELL":
+        if key == "brand":
             if _blank(payload.get("brand")) and _blank(payload.get("model")):
                 miss.append("brand")
             continue

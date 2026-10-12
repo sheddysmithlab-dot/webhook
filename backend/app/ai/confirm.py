@@ -196,7 +196,11 @@ def no_photo_note(payload: dict, lang: str = "hinglish") -> str:
 
 
 def send_summary(db: Session, conv: AiConversation, lang: str = "hinglish") -> str:
+    from .buyer import buyer_reply, is_buyer
+
     payload = _payload(conv)
+    if is_buyer(payload):
+        return buyer_reply(db, conv, lang)
     text = summary_text(payload, lang=lang)
     note = no_photo_note(payload, lang)
     if note:

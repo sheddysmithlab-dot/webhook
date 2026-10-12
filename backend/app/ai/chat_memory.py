@@ -471,6 +471,11 @@ def collect_message(db: Session, conv: AiConversation, text: str) -> dict:
     # Uncertain language → do not mark confirmed later
     uncertain = bool(re.search(r"\b(shayad|maybe|lagbhag|around|लगभग|शायद)\b", low))
 
+    buying = (extracted.get("intent") or payload.get("intent") or "").upper() == "BUY"
+    if buying and extracted.get("expected_price") and not extracted.get("budget"):
+        extracted["budget"] = extracted.pop("expected_price")
+        extracted.pop("price", None)
+
     if extracted.get("intent"):
         execute_tool(db, conv, "save_customer_data", {"intent": extracted["intent"]})
 
@@ -649,6 +654,10 @@ def build_confirmation_summary(
     """Build the confirmation summary. Pass ``filter_result`` from a prior
     ``filter_memory`` call to avoid running the Data Filter twice on the hot path.
     """
+    from .buyer import buyer_reply, is_buyer
+
+    if is_buyer(_payload(conv)):
+        return buyer_reply(db, conv, lang, repeat=True)
     result = filter_result if filter_result is not None else filter_memory(db, conv)
     payload = handle_data_filter_result(db, conv, result)
     payload["awaiting_confirm"] = True

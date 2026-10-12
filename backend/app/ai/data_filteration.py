@@ -129,6 +129,10 @@ _BRAND_ALIASES = {
     "tata hitachi": "Tata Hitachi",
     "doosan": "Doosan",
     "l&t": "L&T", "larsen": "L&T", "l & t": "L&T",
+    "toyota": "Toyota", "टोयोटा": "Toyota",
+    "maruti": "Maruti Suzuki", "maruti suzuki": "Maruti Suzuki", "suzuki": "Maruti Suzuki",
+    "honda": "Honda", "ford": "Ford", "renault": "Renault", "nissan": "Nissan",
+    "skoda": "Skoda", "volkswagen": "Volkswagen", "force motors": "Force",
     "beml": "BEML",
     "escorts": "Escorts",
     "ace": "ACE",
@@ -147,6 +151,33 @@ _BRAND_ALIASES = {
     "scania": "Scania",
     "mahindra earthmaster": "Mahindra",
 }
+
+# Popular car / SUV names customers type without the brand ("Pb ki innova crysta chahiye").
+_CAR_MODELS = {
+    "innova crysta": ("Toyota", "Innova Crysta"),
+    "innova hycross": ("Toyota", "Innova Hycross"),
+    "innova": ("Toyota", "Innova"),
+    "fortuner": ("Toyota", "Fortuner"),
+    "ertiga": ("Maruti Suzuki", "Ertiga"),
+    "dzire": ("Maruti Suzuki", "Dzire"),
+    "swift": ("Maruti Suzuki", "Swift"),
+    "brezza": ("Maruti Suzuki", "Brezza"),
+    "bolero": ("Mahindra", "Bolero"),
+    "scorpio": ("Mahindra", "Scorpio"),
+    "xuv700": ("Mahindra", "XUV700"),
+    "xuv500": ("Mahindra", "XUV500"),
+    "xuv300": ("Mahindra", "XUV300"),
+    "creta": ("Hyundai", "Creta"),
+    "tempo traveller": ("Force", "Tempo Traveller"),
+}
+
+
+def car_model(text: str) -> tuple[str, str] | None:
+    low = str(text or "").lower()
+    for cue, hit in sorted(_CAR_MODELS.items(), key=lambda x: len(x[0]), reverse=True):
+        if re.search(rf"(?<![a-z0-9]){re.escape(cue)}(?![a-z0-9])", low):
+            return hit
+    return None
 
 _LABEL_PATTERNS = (
     ("brand", r"brand|make|company|ब्रांड|ब्रान्ड|कंपनी"),
@@ -440,6 +471,7 @@ _STATE_ALIASES = {
     "chhattisgarh": "Chhattisgarh",
     "haryana": "Haryana",
     "punjab": "Punjab",
+    "pb": "Punjab",
     "jharkhand": "Jharkhand",
     "odisha": "Odisha",
     "orissa": "Odisha",
@@ -483,6 +515,7 @@ def _looks_like_place(text: str) -> bool:
     if re.search(
         r"lakh|lac|crore|\bcr\b|₹|rs\.?|\bkm\b|hour|hrs?|bech|sell|buy|kharid|"
         r"\btata\b|\bjcb\b|\beicher\b|tipper|dumper|truck|photo|otp|password|"
+        r"wheeler|vehicle|gaadi|gadi|\bcar\b|machine|"
         r"model|price|rate|budget|year|saal|post\s*kr|submit|brand|company|category|"
         r"ब्रांड|मॉडल|कंपनी|कैटेगरी",
         low,
@@ -529,9 +562,10 @@ def _match_state_name(text: str) -> str | None:
     for cue, label in sorted(_STATE_ALIASES.items(), key=lambda x: len(x[0]), reverse=True):
         # Bare "up"/"mp"/"mh" only as whole token — still risky in "price up";
         # require short place-like text for abbreviations.
-        if cue in {"up", "mp", "mh", "rj", "gj"}:
+        if cue in {"up", "mp", "mh", "rj", "gj", "pb"}:
             if not re.fullmatch(rf"{re.escape(cue)}", low) and not re.search(
-                rf"(?:state|location|city|rajya|in)\s+{re.escape(cue)}\b|\b{re.escape(cue)}\s+(?:state|me|mein)\b",
+                rf"(?:state|location|city|rajya|in)\s+{re.escape(cue)}\b"
+                rf"|\b{re.escape(cue)}\s+(?:state|me|mein|ki|ka|ke|se)\b",
                 low,
             ):
                 continue
@@ -701,6 +735,15 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
         cat = resolve_category(blob)
         if cat:
             out["category"] = cat
+
+    car = car_model(blob)
+    if car:
+        if _blank(out.get("brand")):
+            out["brand"] = car[0]
+        if _blank(out.get("model")):
+            out["model"] = car[1]
+        if _blank(out.get("category")):
+            out["category"] = "Other"
 
     if _blank(out.get("brand")):
         out["brand"] = canonical_brand(blob)
