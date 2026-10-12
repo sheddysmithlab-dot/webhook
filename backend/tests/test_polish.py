@@ -54,15 +54,29 @@ def test_dropped_question_keeps_draft(zai):
 
 
 @pytest.mark.parametrize("draft", [
-    "Please confirm details:\nVehicle: Kobelco SK220\nYear: 2022\nPrice: 3200000\n\nSahi hain to Haan likhiye.",
-    "Listing dekhein: https://infradealer.com/listings/200",
     "OTP bhej diya hai, 6 digit OTP likhiye.",
     "Password set kijiye (kam se kam 8 characters).",
 ])
-def test_structured_drafts_never_sent_to_zai(zai, draft):
+def test_secret_drafts_never_sent_to_zai(zai, draft):
     calls = zai("anything")
     assert polish.polish_reply(None, "", draft, "hinglish") == (draft, "skipped")
     assert calls == []
+
+
+def test_card_draft_is_formatted(zai):
+    draft = "Theek hai - Truck 2025 Bihar. Card : CARD-012 / Vehicle: Tata Truck / Year: 2025 Confirm? YES/NO"
+    zai("*Card CARD-012*\n• Vehicle: Tata Truck\n• Year: 2025\n• Location: Bihar\n\nSahi hai? YES/NO")
+    out, how = polish.polish_reply(None, "", draft, "hinglish")
+    assert how == "polished" and "• Vehicle: Tata Truck" in out
+
+
+def test_dropped_yes_no_or_link_keeps_draft(zai):
+    draft = "Card : CARD-012\nVehicle: Tata Truck\nConfirm? YES/NO"
+    zai("*CARD-012* Tata Truck - confirm karein?")
+    assert polish.polish_reply(None, "", draft, "hinglish")[1] == "kept"
+    link = "Listing dekhein: https://infradealer.com/listings/200"
+    zai("Listing dekhein Sir: https://infradealer.com/listings/201")
+    assert polish.polish_reply(None, "", link, "hinglish")[1] == "kept"
 
 
 def test_off_without_key(monkeypatch):

@@ -4,8 +4,9 @@ Flow per turn:
     user msg → Z.AI corrector (understanding) → rules/tools (backend tasks)
     → Z.AI polish (natural reply) → WhatsApp
 
-The rules' draft is the source of truth. A rewrite is used only when it keeps
-every number, link and question of the draft; otherwise the draft is sent.
+The rules' draft is the source of truth. Z.AI formats it for WhatsApp and fixes
+garbled or repeated text; the rewrite is used only when it keeps every number,
+link, question and YES/NO prompt of the draft; otherwise the draft is sent.
 """
 
 from __future__ import annotations
@@ -27,54 +28,59 @@ LLM_WROTE_REPLY: ContextVar[bool] = ContextVar("llm_wrote_reply", default=False)
 
 _PAUSE_AFTER_ERROR = 60.0
 _pause_until = 0.0
-_MAX_DRAFT = 450
+_MAX_DRAFT = 1600
 _URL = re.compile(r"https?://\S+", re.I)
-_FIELD_LINE = re.compile(r"^\s*[^\n:]{1,24}\s*:\s*\S", re.M)
-_SENSITIVE = re.compile(
-    r"otp|password|पासवर्ड|username|user\s*id|wallet|token|card\s*:|confirm|कन्फर्म|post\s*to:|"
-    r"submit|सबमिट|review|रिव्यू|live|लाइव|reject|delete|account\s*(ban|create)",
-    re.I,
-)
+# Secrets and one-time codes never leave the backend.
+_SECRET = re.compile(r"otp|password|पासवर्ड|ओटीपी|username|user\s*id\s*:", re.I)
+_YES_NO = re.compile(r"yes\s*/\s*no", re.I)
 _LANG_NAME = {"hi": "Hindi (Devanagari)", "hindi": "Hindi (Devanagari)", "en": "English", "english": "English"}
 
 
-def _numbers(text: str) -> list[str]:
-    return sorted(re.findall(r"\d+", text or ""))
+def _numbers(text: str) -> set[str]:
+    return {n.lstrip("0") or "0" for n in re.findall(r"\d+", text or "")}
 
 
 def should_polish(draft: str) -> bool:
     msg = (draft or "").strip()
-    if not msg or len(msg) > _MAX_DRAFT:
-        return False
-    if _URL.search(msg) or _SENSITIVE.search(msg):
-        return False
-    return len(_FIELD_LINE.findall(msg)) < 2
+    return bool(msg) and len(msg) <= _MAX_DRAFT and not _SECRET.search(msg)
 
 
 def rewrite_is_safe(draft: str, rewrite: str) -> bool:
     from .engine import _claims_submission
 
     out = (rewrite or "").strip()
-    if not out or len(out) > max(2 * len(draft), len(draft) + 160):
+    if not out or len(out) > max(2 * len(draft), len(draft) + 300):
         return False
-    if _numbers(out) != _numbers(draft) or _URL.search(out):
+    if _numbers(out) != _numbers(draft):
+        return False
+    if set(_URL.findall(out)) != set(_URL.findall(draft)):
         return False
     if ("?" in draft) != ("?" in out):
         return False
-    return not _claims_submission(out)
+    if _YES_NO.search(draft) and not _YES_NO.search(out):
+        return False
+    return _claims_submission(draft) or not _claims_submission(out)
 
 
 def _call_zai(cfg: dict, user_text: str, draft: str, lang: str) -> str:
-    language = _LANG_NAME.get((lang or "").lower(), "Hinglish (Roman Hindi)")
+    language = _LANG_NAME.get(
+        (lang or "").lower(), "the same language and script as the DRAFT (Hinglish = Roman Hindi)",
+    )
     system = (
         "You are the WhatsApp voice of InfraDealer (used trucks & construction machinery marketplace). "
-        "Rewrite the DRAFT reply into one short, warm, natural WhatsApp message that sounds like a "
-        "friendly human sales executive, not a bot. You may open with a brief acknowledgement of the "
-        "customer's message (e.g. 'Bahut badhiya Sir', 'Samajh gaya Sir') without repeating its details.\n"
-        "STRICT: keep exactly the same meaning and the same question; keep every number, brand, model "
-        "and option exactly; do not add facts, offers, links or promises; never say a listing is "
-        "submitted, posted, live or under review; address the user as Sir/Ma'am only; no greetings "
-        f"with names. Write in {language}. Output only the message."
+        "Turn the DRAFT into one clean, well-formatted WhatsApp message that sounds like a friendly "
+        "human sales executive. You may open with a brief acknowledgement of the customer's message "
+        "(e.g. 'Bahut badhiya Sir', 'Samajh gaya Sir') without repeating its details.\n"
+        "FORMAT: a *bold* heading only when the draft lists details; one detail per line as "
+        "'• Label: value'; blank line between sections; short lines; end with the single question or "
+        "next step from the draft. Use • bullets, never numbered lists. Plain messages stay 1-3 lines.\n"
+        "FIX: remove repeated sentences or duplicate detail lines, fix broken/garbled or half-cut "
+        "sentences, mixed-up labels and grammar.\n"
+        "STRICT: keep every fact — every number, date, registration/card id, phone number, link, brand, "
+        "model, option and 'YES/NO' line exactly; keep the same question; do not add facts, offers, "
+        "links or promises; never say a listing is submitted, posted, live or approved unless the "
+        "DRAFT says so; address the user as Sir/Ma'am only; no greetings with names. "
+        f"Write in {language}. Output only the message."
     )
     body = {
         "model": cfg["model"],
@@ -83,11 +89,14 @@ def _call_zai(cfg: dict, user_text: str, draft: str, lang: str) -> str:
             {"role": "user", "content": f"CUSTOMER_MESSAGE:\n{(user_text or '')[:400]}\n\nDRAFT:\n{draft}"},
         ],
         "temperature": 0.3,
-        "max_tokens": 220,
+        "max_tokens": 900,
         "thinking": {"type": "disabled"},
         "enable_thinking": False,
     }
-    resp = zai_chat(cfg, body, float(getattr(settings, "ai_polish_timeout", 6.0)))
+    timeout = float(getattr(settings, "ai_polish_timeout", 6.0))
+    if len(draft) > 300:
+        timeout = max(timeout, 12.0)
+    resp = zai_chat(cfg, body, timeout)
     if resp.status_code >= 400:
         raise RuntimeError(f"http {resp.status_code}")
     data = resp.json() if resp.content else {}

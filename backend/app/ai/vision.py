@@ -81,12 +81,14 @@ def extract_text_from_image(
     conv: AiConversation,
     media_row: AiMedia,
     prompt: str = _OCR_PROMPT,
+    cfg: dict | None = None,
 ) -> str:
     """OCR a document image via Z.AI glm-4.6v-flash. Returns text or "".
 
     Never raises. Side-effect free — caller persists extracted_text/extract_kind.
+    Pass `cfg` when calling from a worker thread (the db session is not thread-safe).
     """
-    cfg = resolve_media_config(db)
+    cfg = cfg if cfg is not None else resolve_media_config(db)
     if not cfg.get("vision_enabled"):
         return ""
 
@@ -187,19 +189,40 @@ _VEHICLE_PROMPT = (
     "A seller of a used commercial vehicle or construction machine in India sent this image. "
     "It may be a photo of the vehicle/machine, an RC book or RC smart card, a Vahan / mParivahan / "
     "RTO 'vehicle search' app screenshot, or an insurance / fitness / permit paper. "
-    "Read everything visible: badges, stickers and every printed label/value. "
+    "Study the whole image carefully: badges, grille/cabin logos, model numbers on doors or bumpers, "
+    "stickers, number plate and every printed label/value.\n"
+    "Rules: brand = the vehicle MAKER only (Tata, Ashok Leyland, Eicher, BharatBenz, Mahindra, Volvo, "
+    "Scania, JCB, Tata Hitachi, Hyundai, Komatsu, Caterpillar, L&T, SANY, Kobelco, ACE, Escorts, "
+    "Swaraj, Sonalika, Force, SML Isuzu...). model = the series or number on the badge (e.g. Signa "
+    "2825.K, Prima 3530, LPT 1613, 1109, Ecomet 1615, Pro 2049, 3DX). Ignore phone camera / app "
+    "watermarks (e.g. 'Shot on ...', POVA, Redmi, vivo, OPPO, realme, Samsung, timestamps) and "
+    "dealer phone numbers — never use them as brand, model or place.\n"
     "Reply with ONLY one JSON object, omitting keys you cannot read: "
     '"image_type" (vehicle_photo, rc_document, app_screenshot, insurance, other), '
     '"category" (one of Truck, Dumper, Tipper, Crane, Poclain, Loader, Backhoe Loader, JCB, '
-    'Excavator, Grader, Crusher, Bus, Tractor, Road Roller), "brand" (maker), "model", '
-    '"manufacturing_year", "registration_number", "vehicle_class", "registration_date", '
-    '"registering_authority", "fuel", "emission_norm", "hypothecated", "insurance_valid_upto", '
-    '"fitness_valid_upto", "tax_valid_upto", "puc_valid_upto", "permit_valid_upto", '
-    '"national_permit_valid_upto". Copy values exactly as printed. Never guess.'
+    'Excavator, Grader, Crusher, Bus, Tractor, Road Roller, Trailer, Transit Mixer), '
+    '"brand", "model", "manufacturing_year", "registration_number", "vehicle_class", '
+    '"registration_date", "registering_authority", "fuel", "emission_norm", "hypothecated", '
+    '"insurance_valid_upto", "fitness_valid_upto", "tax_valid_upto", "puc_valid_upto", '
+    '"permit_valid_upto", "national_permit_valid_upto", '
+    '"colour", "body_type" (e.g. tipper body, open body, container, trailer, bucket), '
+    '"tyres" (count of wheels/tyres visible or implied by axles), "axles", "cabin" (day cab, '
+    'sleeper, AC...), "condition" (short, e.g. good paint, rust on body, tyres worn), '
+    '"details" (list of up to 8 short English facts seen in the image that a buyer would want, '
+    "e.g. 'Rear tipper body with hydraulic ram', 'Front bumper slightly dented'). "
+    "Copy printed values exactly. Never guess a value you cannot see."
 )
 
 VISION_FILL_KEYS = ("category", "brand", "model", "year", "state", "city", "fuel")
-MAX_VISION_READS_PER_CARD = 3
+MAX_VISION_READS_PER_CARD = 5
+BURST_WINDOW_SECONDS = 180
+
+_WATERMARK = re.compile(
+    r"\b(?:pova|redmi|vivo|oppo|realme|samsung|galaxy|iphone|oneplus|tecno|infinix|poco|xiaomi|"
+    r"motorola|moto|nokia|honor|itel|lava|shot\s*on|camera|ai\s*camera|\d+g)\b",
+    re.I,
+)
+VISUAL_KEYS = ("colour", "body_type", "tyres", "axles", "cabin", "condition")
 
 _GOODS_CLASS = re.compile(r"goods\s*carrier|\b[hml]gv\b|\bhtv\b|\btruck\b", re.I)
 _RTO_WORDS = re.compile(r"\b(?:rto|dto|arto|srto|r\.t\.o\.?|regional transport office)\b", re.I)
@@ -226,9 +249,16 @@ def _year_in(value) -> int:
     return year if 1980 <= year <= date.today().year else 0
 
 
-def read_image(db: Session, conv: AiConversation, media_row: AiMedia) -> dict:
+def read_image(db: Session, conv: AiConversation, media_row: AiMedia, cfg: dict | None = None) -> dict:
     """Raw JSON the vision model read from a vehicle photo or vehicle document ({} on failure)."""
-    raw = extract_text_from_image(db, conv, media_row, prompt=_VEHICLE_PROMPT)
+    if cfg is None:
+        raw = extract_text_from_image(db, conv, media_row, prompt=_VEHICLE_PROMPT)
+    else:
+        raw = extract_text_from_image(db, conv, media_row, prompt=_VEHICLE_PROMPT, cfg=cfg)
+    return parse_read(raw)
+
+
+def parse_read(raw: str) -> dict:
     m = re.search(r"\{.*\}", raw or "", re.S)
     if not m:
         return {}
@@ -251,10 +281,19 @@ def listing_fields(data: dict) -> dict:
         cat = normalize_vehicle_category(vclass) or ("Truck" if _GOODS_CLASS.search(vclass) else "")
     if cat and cat != "Other":
         out["category"] = cat
+    from .data_filteration import canonical_brand, cv_model
+
     brand = _clean(data.get("brand"))
-    if brand:
-        out["brand"] = extract_fields([brand]).get("brand") or brand.title()[:40]
     model = _clean(data.get("model"))
+    if _WATERMARK.search(brand):
+        brand = ""
+    if _WATERMARK.search(model):
+        model = ""
+    series = cv_model(brand) if brand and not canonical_brand(brand) else None
+    if series:
+        brand, model = series[0], model or series[1]
+    if brand:
+        out["brand"] = canonical_brand(brand) or extract_fields([brand]).get("brand") or brand.title()[:40]
     if model:
         out["model"] = model[:40]
     reg_year = _year_in(data.get("registration_date"))
@@ -291,23 +330,76 @@ def fill_listing_from_photo(
 
     Vehicle photos are capped per card; images the sender labels as documents are always read.
     """
+    if not _reserve_read(conv, is_document):
+        return {}
+    return _apply_read(conv, media_row, read_image(db, conv, media_row))
+
+
+def fill_listing_from_burst(
+    db: Session, conv: AiConversation, media_row: AiMedia, is_document: bool = False,
+) -> tuple[dict, int]:
+    """Read this image plus the unread photos sent with it (in parallel). Returns (filled, images read)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timedelta
+    from types import SimpleNamespace
+
+    rows = [media_row]
+    since = datetime.utcnow() - timedelta(seconds=BURST_WINDOW_SECONDS)
+    rows += (
+        db.query(AiMedia)
+        .filter(
+            AiMedia.conversation_id == conv.id,
+            AiMedia.id != media_row.id,
+            AiMedia.kind == "image",
+            AiMedia.extract_kind == "",
+            AiMedia.local_path != "",
+            AiMedia.created_at >= since,
+        )
+        .order_by(AiMedia.id.desc())
+        .limit(MAX_VISION_READS_PER_CARD - 1)
+        .all()
+    )
+    rows = [r for i, r in enumerate(rows) if _reserve_read(conv, is_document and i == 0)]
+    if not rows:
+        return {}, 0
+    cfg = resolve_media_config(db)
+    files = [SimpleNamespace(local_path=r.local_path, mime=r.mime) for r in rows]
+    with ThreadPoolExecutor(max_workers=len(files)) as pool:
+        raws = list(pool.map(
+            lambda f: extract_text_from_image(None, None, f, prompt=_VEHICLE_PROMPT, cfg=cfg), files,
+        ))
+    filled: dict = {}
+    reads = 0
+    for row, raw in zip(rows, raws):
+        data = parse_read(raw)
+        reads += bool(data)
+        filled.update({k: v for k, v in _apply_read(conv, row, data).items() if k not in filled})
+    return filled, reads
+
+
+def _reserve_read(conv: AiConversation, is_document: bool) -> bool:
+    """Count one vision call against the card cap (documents are free). False = cap reached."""
+    if is_document:
+        return True
+    from .tools import _payload, _write_payload
+
+    payload = _payload(conv)
+    reads = payload.get("vision_reads") if isinstance(payload.get("vision_reads"), dict) else {}
+    if reads.get("draft") != conv.draft_id:
+        reads = {"draft": conv.draft_id, "n": 0}
+    if int(reads.get("n") or 0) >= MAX_VISION_READS_PER_CARD:
+        return False
+    reads["n"] = int(reads.get("n") or 0) + 1
+    payload["vision_reads"] = reads
+    _write_payload(conv, payload)
+    return True
+
+
+def _apply_read(conv: AiConversation, media_row: AiMedia, data: dict) -> dict:
     from .tools import _payload, _write_payload
 
     payload = _payload(conv)
     missing = [k for k in VISION_FILL_KEYS if payload.get(k) in (None, "", [], {})]
-    if not missing and not is_document:
-        return {}
-    if not is_document:
-        reads = payload.get("vision_reads") if isinstance(payload.get("vision_reads"), dict) else {}
-        if reads.get("draft") != conv.draft_id:
-            reads = {"draft": conv.draft_id, "n": 0}
-        if int(reads.get("n") or 0) >= MAX_VISION_READS_PER_CARD:
-            return {}
-        reads["n"] = int(reads.get("n") or 0) + 1
-        payload["vision_reads"] = reads
-        _write_payload(conv, payload)
-
-    data = read_image(db, conv, media_row)
     found = listing_fields(data)
     facts = document_facts(data)
     filled = {k: v for k, v in found.items() if k in missing}
@@ -327,4 +419,106 @@ def fill_listing_from_photo(
     if data:
         media_row.extracted_text = json.dumps(data, ensure_ascii=False)
         media_row.extract_kind = "document_fields" if facts else "vehicle_fields"
+    else:
+        media_row.extract_kind = "vision_empty"
     return filled
+
+
+_DETAIL_ASK = re.compile(
+    r"(?:image|photo|pic|picture|tasveer|foto|फोटो|इमेज|तस्वीर)\S*.{0,40}?"
+    r"(?:read|padh|parh|detail|details|batao|bataiye|bata\s*do|nikalo|nikal\w*|dekho|dekh\s*kar|info|jankari|जानकारी|पढ़|बताओ)"
+    r"|(?:read|padh|parh|detail|details|jankari|पढ़).{0,25}(?:image|photo|pic|tasveer|फोटो|इमेज)",
+    re.I,
+)
+
+_REPORT_LABELS = {
+    "hinglish": {
+        "title": "📷 *Photo se mili jankari*", "seen": "*Photo me dikha:*",
+        "category": "Category", "brand": "Brand", "model": "Model", "year": "Year", "fuel": "Fuel",
+        "place": "RTO / Jagah", "registration_number": "Gaadi number", "vehicle_class": "Vehicle class",
+        "registration_date": "Registration date", "emission_norm": "Emission norm",
+        "hypothecated": "Loan / hypothecation", "insurance_valid_upto": "Insurance valid till",
+        "fitness_valid_upto": "Fitness valid till", "tax_valid_upto": "Tax valid till",
+        "puc_valid_upto": "PUC valid till", "permit_valid_upto": "Permit valid till",
+        "national_permit_valid_upto": "National permit till", "colour": "Rang", "body_type": "Body",
+        "tyres": "Tyre", "axles": "Axle", "cabin": "Cabin", "condition": "Haalat",
+    },
+    "hi": {
+        "title": "📷 *फोटो से मिली जानकारी*", "seen": "*फोटो में दिखा:*",
+        "category": "कैटेगरी", "brand": "ब्रांड", "model": "मॉडल", "year": "साल", "fuel": "फ्यूल",
+        "place": "RTO / जगह", "registration_number": "गाड़ी नंबर", "vehicle_class": "वाहन क्लास",
+        "registration_date": "रजिस्ट्रेशन तारीख", "emission_norm": "एमिशन नॉर्म",
+        "hypothecated": "लोन / हाइपोथिकेशन", "insurance_valid_upto": "इंश्योरेंस वैध तक",
+        "fitness_valid_upto": "फिटनेस वैध तक", "tax_valid_upto": "टैक्स वैध तक",
+        "puc_valid_upto": "PUC वैध तक", "permit_valid_upto": "परमिट वैध तक",
+        "national_permit_valid_upto": "नेशनल परमिट तक", "colour": "रंग", "body_type": "बॉडी",
+        "tyres": "टायर", "axles": "एक्सल", "cabin": "केबिन", "condition": "हालत",
+    },
+    "en": {
+        "title": "📷 *Details read from the photo*", "seen": "*Seen in the photo:*",
+        "category": "Category", "brand": "Brand", "model": "Model", "year": "Year", "fuel": "Fuel",
+        "place": "RTO / Place", "registration_number": "Registration no.", "vehicle_class": "Vehicle class",
+        "registration_date": "Registration date", "emission_norm": "Emission norm",
+        "hypothecated": "Loan / hypothecation", "insurance_valid_upto": "Insurance valid till",
+        "fitness_valid_upto": "Fitness valid till", "tax_valid_upto": "Tax valid till",
+        "puc_valid_upto": "PUC valid till", "permit_valid_upto": "Permit valid till",
+        "national_permit_valid_upto": "National permit till", "colour": "Colour", "body_type": "Body",
+        "tyres": "Tyres", "axles": "Axles", "cabin": "Cabin", "condition": "Condition",
+    },
+}
+
+
+def wants_image_details(text: str) -> bool:
+    return bool(_DETAIL_ASK.search(text or ""))
+
+
+def _card_reads(db: Session, conv: AiConversation) -> list[dict]:
+    from datetime import datetime, timedelta
+
+    q = db.query(AiMedia).filter(
+        AiMedia.conversation_id == conv.id,
+        AiMedia.extract_kind.in_(["vehicle_fields", "document_fields"]),
+    )
+    if conv.draft_id:
+        q = q.filter(AiMedia.draft_id == conv.draft_id)
+    else:
+        q = q.filter(AiMedia.created_at >= datetime.utcnow() - timedelta(minutes=30))
+    out = []
+    for row in q.order_by(AiMedia.id.desc()).limit(MAX_VISION_READS_PER_CARD).all():
+        data = parse_read(row.extracted_text)
+        if data:
+            out.append(data)
+    return out
+
+
+def image_report(db: Session, conv: AiConversation, lang: str = "hinglish") -> str:
+    """WhatsApp-formatted summary of everything read from this card's images ("" if none)."""
+    reads = _card_reads(db, conv)
+    if not reads:
+        return ""
+    labels = _REPORT_LABELS.get(lang) or _REPORT_LABELS["hi" if lang == "hi" else "hinglish"]
+    merged: dict = {}
+    details: list[str] = []
+    for data in reads:
+        for k, v in data.items():
+            if k == "details":
+                for d in v if isinstance(v, list) else [v]:
+                    d = _clean(d)[:90]
+                    if d and d.lower() not in {x.lower() for x in details}:
+                        details.append(d)
+            elif k not in merged and _clean(v) and not isinstance(v, (list, dict)):
+                merged[k] = v
+    fields = listing_fields(merged)
+    place = ", ".join(x for x in (fields.get("city"), fields.get("state")) if x)
+    rows = [
+        ("category", fields.get("category")), ("brand", fields.get("brand")),
+        ("model", fields.get("model")), ("year", fields.get("year")), ("fuel", fields.get("fuel")),
+        ("place", place),
+    ]
+    rows += [(k, _clean(merged.get(k))[:60]) for k in DOC_FACT_KEYS if k != "registering_authority"]
+    rows += [(k, _clean(merged.get(k))[:60]) for k in VISUAL_KEYS]
+    lines = [labels["title"]]
+    lines += [f"• {labels[k]}: {v}" for k, v in rows if v not in (None, "")]
+    if details:
+        lines += ["", labels["seen"]] + [f"• {d}" for d in details[:8]]
+    return "\n".join(lines) if len(lines) > 1 else ""

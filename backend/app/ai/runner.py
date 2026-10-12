@@ -41,6 +41,14 @@ def _ai_respond(db: Session, conv: AiConversation, text: str, media_note: str = 
 INBOUND_LOCK_ATTEMPTS = 4
 
 
+def _next_ask_line(conv: AiConversation, lang: str) -> str:
+    from .i18n import t
+    from .schema import missing_fields
+
+    keys = missing_fields(_payload(conv))
+    return t(lang, keys[0]) if keys and keys[0] != "intent" else ""
+
+
 @contextmanager
 def _inbound_lock(mobile: str, attempts: int = 1):
     """mobile_lock, retried so a message sent while a slow turn runs is never dropped."""
@@ -280,6 +288,7 @@ def process_inbound(
 
         # Media always attaches to draft/card pipeline (legacy ai_simple_chat removed).
         media_note = attach_media(db, conv, wamid, media)
+        images_read = 0
 
         # Photo/video burst: save every file, but only the newest message gets an AI turn.
         if (
@@ -328,7 +337,7 @@ def process_inbound(
         if media and (media.get("kind") in {"image", "document"}):
             from .media_config import vision_enabled
             if vision_enabled(db):
-                from .vision import fill_listing_from_photo, is_document_media
+                from .vision import fill_listing_from_burst, is_document_media
                 try:
                     vis_row = (
                         db.query(AiMedia)
@@ -344,7 +353,7 @@ def process_inbound(
                         reset_if_idle(db, conv)
                     # A vehicle photo or paper starts (or adds to) a listing unless the user is buying.
                     if vis_row and vis_row.local_path and (_pl(conv).get("intent") or "").upper() != "BUY":
-                        filled = fill_listing_from_photo(
+                        filled, images_read = fill_listing_from_burst(
                             db, conv, vis_row, is_document=is_document_media(vis_row, text or ""),
                         )
                         if filled:
@@ -356,9 +365,9 @@ def process_inbound(
                                 conv.intent = "SELL"
                         if vis_row.extract_kind == "document_fields":
                             media_note = (media_note or "") + " vehicle_document_read"
-                        log.info("vision.read mobile=***%s kind=%s fields=%s",
+                        log.info("vision.read mobile=***%s kind=%s images=%d fields=%s",
                                  conv.mobile[-4:] if conv.mobile else "", vis_row.extract_kind or "-",
-                                 sorted(filled))
+                                 images_read, sorted(filled))
                 except Exception:
                     log.exception("vision.ocr failed mobile=***%s",
                                    conv.mobile[-4:] if conv.mobile else "")
@@ -390,6 +399,10 @@ def process_inbound(
             voice_unheard = bool(
                 media and media.get("kind") == "audio" and (text or "").strip() == "[voice note]"
             )
+            from .vision import image_report, wants_image_details
+
+            detail_report = image_report(db, conv, lang) if not office_reply and wants_image_details(text) else ""
+            force_polish = False
 
             # Step 1: Correct typos
             try:
@@ -414,6 +427,10 @@ def process_inbound(
             elif voice_unheard:
                 reply = t(lang, "voice_not_heard")
                 path = "voice_unheard"
+            elif detail_report:
+                reply = "\n\n".join(x for x in (detail_report, _next_ask_line(conv, lang)) if x)
+                path = "image_report"
+                force_polish = True
             elif use_prompt:
                 # Soft options: after 2 free turns, hint LLM to offer menu (not static dump)
                 if verdict["route"] == "options":
@@ -452,8 +469,13 @@ def process_inbound(
                 reply = t(lang, "infradealer_options")
                 path = "options"
 
+            if images_read and reply and path in {"orchestrator", "free_chat"}:
+                photo_report = image_report(db, conv, lang)
+                if photo_report:
+                    reply = photo_report + "\n\n" + reply
+                    force_polish = True
             if path != "office_mode" and reply:
-                if LLM_WROTE_REPLY.get():
+                if LLM_WROTE_REPLY.get() and not force_polish:
                     zai = "llm"
                 else:
                     reply, zai = polish_reply(db, text, reply, lang)

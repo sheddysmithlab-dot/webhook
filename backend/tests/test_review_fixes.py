@@ -79,6 +79,26 @@ def test_card_clear_keeps_review_notified(db):
     assert json.loads(conv.payload_json or "{}").get("listing_status") == "POSTED"
 
 
+def test_image_detail_request_sends_report_through_polish(db, monkeypatch):
+    from app.ai import runner
+    from app.models import AiMedia
+
+    conv = AiConversation(mobile="919000777003", conversation_id="CONV_9000777003", state="NEW")
+    db.add(conv)
+    db.flush()
+    db.add(AiMedia(
+        conversation_id=conv.id, kind="image", extract_kind="vehicle_fields",
+        extracted_text=json.dumps({"category": "Tipper", "brand": "TATA", "colour": "White"}),
+    ))
+    db.commit()
+    polished = []
+    monkeypatch.setattr(runner, "_ai_respond", lambda *a, **k: "Brand bata dijiye.")
+    monkeypatch.setattr("app.ai.polish.polish_reply", lambda db, u, d, l: (polished.append(d) or d, "polished"))
+    out = runner.process_inbound(db, mobile="919000777003", text="Full image read karo har ek detail", send=False)
+    assert "Photo se mili jankari" in out and "Brand: Tata" in out and "Rang: White" in out
+    assert polished and polished[0] in out
+
+
 def test_untranscribed_voice_note_asks_to_type(db, monkeypatch):
     from app.ai import runner
 

@@ -646,8 +646,8 @@ def test_photo_fills_only_missing_fields(db, client, monkeypatch, tmp_path):
     assert pl["brand"] == "Tata" and pl["model"] == "4525"
     pl["model"] = ""
     _write_payload(conv, pl)
-    vision.fill_listing_from_photo(db, conv, row)
-    vision.fill_listing_from_photo(db, conv, row)
+    for _ in range(vision.MAX_VISION_READS_PER_CARD + 1):
+        vision.fill_listing_from_photo(db, conv, row)
     assert len(calls) == vision.MAX_VISION_READS_PER_CARD
 
 
