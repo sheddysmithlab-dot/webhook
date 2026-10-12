@@ -205,6 +205,7 @@ def test_burst_reads_every_photo_and_report_lists_details(db, tmp_path, monkeypa
         other = AiMedia(conversation_id=conv.id, kind="image", local_path=str(img), mime="image/jpeg")
         db.add(other)
         others.append(other)
+    db.add(AiMedia(conversation_id=conv.id, draft_id=99, kind="image", local_path=str(tmp_path / "x.jpg")))
     db.flush()
     answers = {
         row.local_path: {"image_type": "vehicle_photo", "category": "Tipper", "brand": "TATA",

@@ -75,8 +75,8 @@ def _is_image(media_row: AiMedia) -> bool:
     return (media_row.local_path or "").lower().endswith(_IMAGE_EXTS)
 
 
-PHOTO_SEND_PIXELS = 500_000
-SCREENSHOT_SEND_PIXELS = 1_000_000
+PHOTO_SEND_PIXELS = 350_000
+SCREENSHOT_SEND_PIXELS = 800_000
 
 
 def _shrunk_jpeg(path: str) -> bytes:
@@ -273,7 +273,8 @@ _VEHICLE_PROMPT = (
 
 VISION_FILL_KEYS = ("category", "brand", "model", "year", "state", "city", "fuel")
 MAX_VISION_READS_PER_CARD = 5
-BURST_WINDOW_SECONDS = 180
+# Also picks up photos whose read failed (rate limit) on the next photo turn.
+BURST_WINDOW_SECONDS = 600
 
 _WATERMARK = re.compile(
     r"\b(?:pova|redmi|vivo|oppo|realme|samsung|galaxy|iphone|oneplus|tecno|infinix|poco|xiaomi|"
@@ -408,6 +409,7 @@ def fill_listing_from_burst(
         .filter(
             AiMedia.conversation_id == conv.id,
             AiMedia.id != media_row.id,
+            AiMedia.draft_id == media_row.draft_id,
             AiMedia.kind == "image",
             AiMedia.extract_kind == "",
             AiMedia.local_path != "",
@@ -477,8 +479,6 @@ def _apply_read(conv: AiConversation, media_row: AiMedia, data: dict) -> dict:
     if data:
         media_row.extracted_text = json.dumps(data, ensure_ascii=False)
         media_row.extract_kind = "document_fields" if facts else "vehicle_fields"
-    else:
-        media_row.extract_kind = "vision_empty"
     return filled
 
 
