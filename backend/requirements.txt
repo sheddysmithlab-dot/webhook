@@ -9,3 +9,4 @@ psycopg2-binary==2.9.10
 gunicorn==23.0.0
 bcrypt==4.2.1
 redis==5.2.1
+pillow==11.3.0

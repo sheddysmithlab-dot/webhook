@@ -209,7 +209,7 @@ def test_burst_reads_every_photo_and_report_lists_details(db, tmp_path, monkeypa
     answers = {
         row.local_path: {"image_type": "vehicle_photo", "category": "Tipper", "brand": "TATA",
                          "model": "Signa 2825.K", "colour": "White", "details": ["Rear tipper body"]},
-        others[0].local_path: VAHAN_SCREENSHOT,
+        others[0].local_path: {**VAHAN_SCREENSHOT, "details": ["Owner Name: B***U K***R", "Vehicle Status: ACTIVE"]},
         others[1].local_path: {"tyres": "10", "details": ["Rear tipper body", "Tyres look new"]},
     }
     seen = []
@@ -226,7 +226,7 @@ def test_burst_reads_every_photo_and_report_lists_details(db, tmp_path, monkeypa
     report = vision.image_report(db, conv, "hinglish")
     for part in ("Photo se mili jankari", "Brand: Tata", "Model: Signa 2825.K", "Rang: White",
                  "Tyre: 10", "Insurance valid till: 22-Jul-2027", "Gaadi number: BR06GG8841",
-                 "Rear tipper body", "Tyres look new"):
+                 "Rear tipper body", "Tyres look new", "Vehicle Status: ACTIVE"):
         assert part in report, part
     assert report.count("Rear tipper body") == 1
     assert "B***U" not in report

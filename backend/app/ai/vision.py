@@ -13,6 +13,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 
 import httpx
 from sqlalchemy.orm import Session
@@ -24,6 +26,8 @@ log = logging.getLogger("infradealer.ai.vision")
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 GROQ_MAX_IMAGE_BYTES = 3 * 1024 * 1024
+GROQ_RETRY_SECONDS = 4.0
+_GROQ_GATE = threading.Lock()
 
 _DOC_CUES = re.compile(
     r"\b("
@@ -69,7 +73,36 @@ def _is_image(media_row: AiMedia) -> bool:
     return (media_row.local_path or "").lower().endswith(_IMAGE_EXTS)
 
 
+MAX_SEND_PIXELS = 1_000_000
+
+
+def _shrunk_jpeg(path: str) -> bytes:
+    """Re-encode large images to ~1 MP JPEG: vision APIs bill (and rate-limit) by pixels."""
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return b""
+    import io
+
+    try:
+        with Image.open(path) as img:
+            img = ImageOps.exif_transpose(img).convert("RGB")
+            w, h = img.size
+            if w * h > MAX_SEND_PIXELS:
+                scale = (MAX_SEND_PIXELS / float(w * h)) ** 0.5
+                img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, "JPEG", quality=85)
+            return buf.getvalue()
+    except Exception as exc:
+        log.info("vision.shrink skipped %s: %s", os.path.basename(path), exc)
+        return b""
+
+
 def _data_url(media_row: AiMedia) -> str:
+    small = _shrunk_jpeg(media_row.local_path)
+    if small:
+        return "data:image/jpeg;base64," + base64.b64encode(small).decode("ascii")
     with open(media_row.local_path, "rb") as fh:
         b64 = base64.b64encode(fh.read()).decode("ascii")
     mime = (media_row.mime or "image/jpeg").split(";")[0].strip() or "image/jpeg"
@@ -133,12 +166,14 @@ def extract_text_from_image(
             {"thinking": {"type": "disabled"}, "enable_thinking": False},
         )
     # Groq caps base64 image requests at 4 MB.
-    if not content and groq_key and size <= GROQ_MAX_IMAGE_BYTES:
-        content = _vision_chat(
-            (cfg.get("groq_api_base") or "").rstrip("/"), groq_key,
-            cfg.get("groq_vision_model") or "qwen/qwen3.8-27b", prompt, data_url,
-            {"reasoning_effort": "none"},
-        )
+    if not content and groq_key and len(data_url) * 3 // 4 <= GROQ_MAX_IMAGE_BYTES:
+        # Groq's per-minute token budget is small: one image at a time.
+        with _GROQ_GATE:
+            content = _vision_chat(
+                (cfg.get("groq_api_base") or "").rstrip("/"), groq_key,
+                cfg.get("groq_vision_model") or "qwen/qwen3.8-27b", prompt, data_url,
+                {"reasoning_effort": "none"},
+            )
     return content
 
 
@@ -160,9 +195,14 @@ def _vision_chat(api_base: str, api_key: str, model: str, prompt: str, data_url:
         **extra,
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    tries = 2 if "groq" in api_base else 1
     try:
         with httpx.Client(timeout=20.0) as client:
-            resp = client.post(api_base + "/chat/completions", headers=headers, json=body)
+            for attempt in range(tries):
+                resp = client.post(api_base + "/chat/completions", headers=headers, json=body)
+                if resp.status_code != 429 or attempt == tries - 1:
+                    break
+                time.sleep(GROQ_RETRY_SECONDS)
     except Exception as exc:
         log.warning("vision.http error model=%s: %s", model, exc)
         return ""
@@ -468,6 +508,13 @@ _REPORT_LABELS = {
 }
 
 
+_PRIVATE_DETAIL = re.compile(
+    r"owner|father|husband|s/o|d/o|w/o|mobile|phone|contact|address|मालिक|पिता|\d{10}|"
+    r"chassis|engine\s*no|engine\s*number",
+    re.I,
+)
+
+
 def wants_image_details(text: str) -> bool:
     return bool(_DETAIL_ASK.search(text or ""))
 
@@ -504,6 +551,8 @@ def image_report(db: Session, conv: AiConversation, lang: str = "hinglish") -> s
             if k == "details":
                 for d in v if isinstance(v, list) else [v]:
                     d = _clean(d)[:90]
+                    if _PRIVATE_DETAIL.search(d):
+                        continue
                     if d and d.lower() not in {x.lower() for x in details}:
                         details.append(d)
             elif k not in merged and _clean(v) and not isinstance(v, (list, dict)):
