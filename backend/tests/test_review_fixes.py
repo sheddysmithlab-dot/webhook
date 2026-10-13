@@ -620,7 +620,7 @@ def test_photo_misread_of_typed_brand_still_reports_and_failed_reads_are_retried
     _write_payload(conv, {"intent": "SELL", "brand": "Mahindra", "model": "Jeeto Strong", "category": "Pickup"})
     answers = {
         "a.jpg": json.dumps({"category": "Pickup", "brand": "Force", "model": "Strong", "colour": "White",
-                             "details": ["Open cargo deck"]}),
+                             "details": ["Open cargo deck", "Front grille badge indicates Force brand"]}),
         "b.jpg": json.dumps({"brand": "Force", "colour": "White", "tyres": "4"}),
         "c.jpg": "",
         "d.jpg": "",

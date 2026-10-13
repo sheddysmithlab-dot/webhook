@@ -743,6 +743,16 @@ def _merge_reads(reads: list[dict]) -> tuple[dict, list[str]]:
     return merged, details
 
 
+def _drop_misread_brand(details: list[str], merged: dict, typed_brand) -> list[str]:
+    """Photo lines naming the brand vision guessed, when the seller typed a different one."""
+    seen = _clean(listing_fields(merged).get("brand"))
+    typed = _clean(typed_brand)
+    if not seen or not typed or seen.lower() == typed.lower():
+        return details
+    word = re.compile(rf"\b{re.escape(seen)}\b", re.I)
+    return [d for d in details if not word.search(d)]
+
+
 def _report_text(title: str, rows: list[tuple[str, object]], details: list[str], labels: dict,
                  updated: set | frozenset = frozenset()) -> str:
     lines = [title]
@@ -769,6 +779,7 @@ def image_report(
     fields = listing_fields(merged)
     # What the seller typed beats a guess from the photo (vision mixes up look-alike bodies).
     typed = _payload(conv)
+    details = _drop_misread_brand(details, merged, typed.get("brand"))
     for k in ("category", "brand", "model", "year"):
         if typed.get(k) not in (None, "", [], {}):
             fields[k] = typed[k]
@@ -811,6 +822,7 @@ _PUBLIC_DOC_KEYS = tuple(k for k in DOC_FACT_KEYS if k not in {"registration_num
 def public_photo_facts(db: Session, conv: AiConversation, draft_id, payload: dict) -> list[str]:
     """Website-safe 'Label: value' lines read from this card's photos (no plate/owner/loan)."""
     merged, details = _merge_reads(_draft_reads(db, conv, draft_id, payload))
+    details = _drop_misread_brand(details, merged, payload.get("brand"))
     labels = _REPORT_LABELS["en"]
     docs = payload.get("vehicle_docs") if isinstance(payload.get("vehicle_docs"), dict) else {}
     lines = []
@@ -835,6 +847,7 @@ def card_details(
     payload = _payload(conv)
     labels = _labels(lang)
     merged, details = _merge_reads(_draft_reads(db, conv, conv.draft_id, payload))
+    details = _drop_misread_brand(details, merged, payload.get("brand"))
     seen = listing_fields(merged)
     docs = payload.get("vehicle_docs") if isinstance(payload.get("vehicle_docs"), dict) else {}
 
