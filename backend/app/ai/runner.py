@@ -43,6 +43,44 @@ INBOUND_LOCK_ATTEMPTS = 4
 PHOTO_RESEND_GAP_SECONDS = 120
 
 
+def _queue_photo_report(conv: AiConversation, media_ids: list[int]) -> None:
+    """Photos read this turn wait for a reply that is actually sent (a stale turn's reply is dropped)."""
+    if not media_ids:
+        return
+    payload = _payload(conv)
+    pending = payload.get("photo_report_pending") if isinstance(payload.get("photo_report_pending"), dict) else {}
+    ids = list(pending.get("ids") or []) if pending.get("draft") == conv.draft_id else []
+    payload["photo_report_pending"] = {"draft": conv.draft_id, "ids": ids + [i for i in media_ids if i not in ids]}
+    _write_payload(conv, payload)
+
+
+def _pending_photo_report(db: Session, conv: AiConversation) -> list[int]:
+    """Unreported photo reads of the open card from the current burst (none once it is confirmed)."""
+    from datetime import timedelta
+
+    from .vision import BURST_WINDOW_SECONDS
+
+    payload = _payload(conv)
+    pending = payload.get("photo_report_pending") if isinstance(payload.get("photo_report_pending"), dict) else {}
+    if pending.get("draft") != conv.draft_id or not pending.get("ids") or payload.get("customer_confirmed"):
+        return []
+    since = utcnow() - timedelta(seconds=BURST_WINDOW_SECONDS)
+    rows = db.query(AiMedia.id).filter(
+        AiMedia.id.in_([int(i) for i in pending["ids"]]),
+        AiMedia.draft_id == conv.draft_id,
+        AiMedia.created_at >= since,
+    ).all()
+    return [r[0] for r in rows]
+
+
+def _clear_photo_report(conv: AiConversation, media_ids: list[int]) -> None:
+    payload = _payload(conv)
+    pending = payload.get("photo_report_pending") if isinstance(payload.get("photo_report_pending"), dict) else {}
+    left = [i for i in (pending.get("ids") or []) if i not in media_ids]
+    payload["photo_report_pending"] = {"draft": pending.get("draft"), "ids": left} if left else {}
+    _write_payload(conv, payload)
+
+
 def _replace_card_photos(db: Session, conv: AiConversation, draft_id: int) -> int:
     """Full, unposted card + a fresh photo set: the sender is re-sending the vehicle, so the new
     set replaces the old one (detached, not deleted). Returns how many photos were replaced."""
@@ -95,22 +133,23 @@ def _inbound_lock(mobile: str, attempts: int = 1, db: Session | None = None):
 
 
 def _newer_inbound_exists(db: Session, mobile: str, wamid: str) -> bool:
-    """DB truth (arrival order) — Redis latest can be overwritten by out-of-order jobs."""
+    """A newer inbound message still waits for its turn (DB arrival order — Redis latest can be
+    overwritten by out-of-order jobs). One that already ran cannot report this photo."""
     if not wamid:
         return False
     mine = db.query(Chat.id).filter(Chat.wamid == wamid, Chat.direction == "inbound").first()
     if not mine:
         return False
     newer = (
-        db.query(Chat.id)
+        db.query(Chat.wamid)
         .filter(
             Chat.direction == "inbound",
             Chat.id > mine[0],
             Chat.conversation_id.in_([f"CONV_{mobile}", f"CONV_{mobile[-10:]}", f"CONV_91{mobile[-10:]}"]),
         )
-        .first()
+        .all()
     )
-    return newer is not None
+    return any(not w or not already_processed(db, w) for (w,) in newer)
 
 
 def _is_latest_inbound(db: Session, conversation_id: str, wamid: str, mobile: str = "") -> bool:
@@ -332,6 +371,7 @@ def process_inbound(
         # Media always attaches to draft/card pipeline (legacy ai_simple_chat removed).
         media_note = attach_media(db, conv, wamid, media)
         read_ids: list[int] = []
+        reported_ids: list[int] = []
         photo_unread = False
 
         # Photo/video burst: save every file, but only the newest message gets an AI turn.
@@ -378,21 +418,27 @@ def process_inbound(
 
         # Phase 3: read vehicle photos, RC books and Vahan/mParivahan screenshots via
         # Z.AI glm-4.6v-flash and fill blank card fields. Gated on ai_vision_enabled.
-        if media and (media.get("kind") in {"image", "document"}):
+        # A text turn also reads the card's photos a burst left unread (their own turns were skipped).
+        vision_turn = bool(media and media.get("kind") in {"image", "document"})
+        if vision_turn or (not is_media and conv.draft_id):
             from .media_config import vision_enabled
             if vision_enabled(db):
-                from .vision import fill_listing_from_burst, is_document_media, vision_cap_left
+                from .vision import (
+                    fill_listing_from_burst, is_document_media, newest_unread_image, recent_unread_image,
+                    vision_cap_left,
+                )
                 try:
-                    vis_row = (
-                        db.query(AiMedia)
-                        .filter(AiMedia.wamid == (wamid or ""))
-                        .order_by(AiMedia.id.desc())
-                        .first()
-                    ) if wamid else None
-                    if vis_row is None or not vis_row.local_path:
-                        from .vision import newest_unread_image
-
-                        vis_row = newest_unread_image(db, conv) or vis_row
+                    if vision_turn:
+                        vis_row = (
+                            db.query(AiMedia)
+                            .filter(AiMedia.wamid == (wamid or ""))
+                            .order_by(AiMedia.id.desc())
+                            .first()
+                        ) if wamid else None
+                        if vis_row is None or not vis_row.local_path:
+                            vis_row = newest_unread_image(db, conv) or vis_row
+                    else:
+                        vis_row = recent_unread_image(db, conv)
                     from .session_memory import reset_if_idle
                     from .tools import _payload as _pl
                     from .tools import _write_payload as _wpl
@@ -404,6 +450,7 @@ def process_inbound(
                         filled, read_ids = fill_listing_from_burst(
                             db, conv, vis_row, is_document=is_document_media(vis_row, text or ""),
                         )
+                        _queue_photo_report(conv, read_ids)
                         if filled:
                             media_note = (media_note or "") + " photo_fields=" + ",".join(filled)
                             vis_pl = _pl(conv)
@@ -528,11 +575,15 @@ def process_inbound(
                 reply = t(lang, "infradealer_options")
                 path = "options"
 
-            if read_ids and reply and path in {"orchestrator", "free_chat"}:
-                photo_report = image_report(db, conv, lang, media_ids=read_ids)
+            report_ids = _pending_photo_report(db, conv)
+            if detail_report:
+                reported_ids = report_ids
+            elif report_ids and reply and path in {"orchestrator", "free_chat"}:
+                photo_report = image_report(db, conv, lang, media_ids=report_ids)
                 if photo_report:
                     reply = photo_report + "\n\n" + reply
                     force_polish = True
+                    reported_ids = report_ids
             elif photo_unread and reply and path in {"orchestrator", "free_chat"}:
                 reply = reply + "\n\n" + t(lang, "photo_read_busy")
                 force_polish = True
@@ -594,6 +645,8 @@ def process_inbound(
             )
             return reply
 
+        if reported_ids:
+            _clear_photo_report(conv, reported_ids)
         if send and reply:
             set_processing(mobile, "wa")
             t_wa0 = time.perf_counter()

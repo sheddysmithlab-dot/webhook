@@ -370,6 +370,54 @@ def test_new_photo_set_on_full_card_replaces_old_set(db, monkeypatch):
     assert "5 photo" in _media_ack("hinglish", "photo_rejected_max")
 
 
+def test_text_after_photo_burst_reads_left_photos_and_sends_dropped_report(db, monkeypatch):
+    from datetime import datetime, timezone
+
+    from app.ai import runner, vision
+    from app.ai.tools import _payload, _write_payload
+    from app.models import AiEvent, AiMedia, Chat
+
+    conv, card = _idle_office_conv(db, "919000777017")
+    db.query(AiMedia).filter(AiMedia.draft_id == card.id).update({"draft_id": None}, synchronize_session=False)
+    pl = _payload(conv)
+    pl["last_user_message_at"] = datetime.now(timezone.utc).isoformat()
+    _write_payload(conv, pl)
+    caption = AiMedia(conversation_id=conv.id, draft_id=card.id, kind="image", local_path="/x/c.jpg",
+                      extract_kind="vehicle_fields",
+                      extracted_text=json.dumps({"brand": "Tata", "registration_number": "UP51AT3987"}))
+    unread = [AiMedia(conversation_id=conv.id, draft_id=card.id, kind="image", local_path=f"/x/u{i}.jpg")
+              for i in range(2)]
+    db.add_all([caption, *unread])
+    db.flush()
+    # The caption photo's report went out on a reply that was dropped as stale.
+    runner._queue_photo_report(conv, [caption.id])
+    db.commit()
+    monkeypatch.setattr("app.ai.media_config.vision_enabled", lambda db_: True)
+    monkeypatch.setattr(vision, "resolve_media_config", lambda db_: {})
+    monkeypatch.setattr(vision, "extract_text_from_image", lambda *a, **k: json.dumps(
+        {"brand": "Tata", "colour": "Pink", "tyres": "14"}))
+    monkeypatch.setattr(runner, "_ai_respond", lambda *a, **k: "Kya ye details sahi hain?")
+    monkeypatch.setattr("app.ai.polish.polish_reply", lambda db, u, d, l: (d, "off"))
+
+    out = runner.process_inbound(db, mobile="919000777017", text="Price 20 lakh", wamid="wa-txt-1", send=False)
+    assert all(r.extract_kind == "vehicle_fields" for r in unread)
+    for part in ("Photo se mili jankari", "UP51AT3987", "Pink", "Tyre: 14", "Kya ye details sahi hain?"):
+        assert part in out, part
+    assert not _payload(conv).get("photo_report_pending")
+
+    for i, w in enumerate(("wa-p1", "wa-p2")):
+        db.add(Chat(conversation_id=conv.conversation_id, direction="inbound", from_mobile=conv.mobile, wamid=w,
+                    body="[photo]"))
+        db.flush()
+    db.add(AiEvent(wamid="wa-p2", mobile=conv.mobile, event_type="inbound", detail="[photo]"))
+    db.flush()
+    assert not runner._newer_inbound_exists(db, "919000777017", "wa-p1")
+    db.add(Chat(conversation_id=conv.conversation_id, direction="inbound", from_mobile=conv.mobile, wamid="wa-p3",
+                body="[photo]"))
+    db.flush()
+    assert runner._newer_inbound_exists(db, "919000777017", "wa-p1")
+
+
 def test_burst_report_sees_reads_without_autoflush(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker

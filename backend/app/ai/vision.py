@@ -428,6 +428,20 @@ def newest_unread_image(db: Session, conv: AiConversation) -> AiMedia | None:
     return _unread_images(db, conv, conv.draft_id).order_by(AiMedia.id.desc()).first()
 
 
+def recent_unread_image(db: Session, conv: AiConversation) -> AiMedia | None:
+    """Newest unread photo of the open card from the current burst."""
+    from datetime import datetime, timedelta
+
+    if not conv.draft_id:
+        return None
+    return (
+        _unread_images(db, conv, conv.draft_id)
+        .filter(AiMedia.created_at >= datetime.utcnow() - timedelta(seconds=BURST_WINDOW_SECONDS))
+        .order_by(AiMedia.id.desc())
+        .first()
+    )
+
+
 def read_card_images(db: Session, conv: AiConversation) -> list[int]:
     """"Photo padh ke detail do": read this card's unread photos now. Returns ids read."""
     from .media_config import vision_enabled

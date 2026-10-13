@@ -230,6 +230,7 @@ def empty_payload() -> dict:
         "fuel": None,
         "vehicle_docs": {},
         "vision_filled": {},
+        "photo_report_pending": {},
         "accident_history": None,
         "negotiable": None,
         "location": None,
