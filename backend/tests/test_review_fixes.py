@@ -115,6 +115,9 @@ def test_hindi_brand_and_trailer_are_read():
     out = extract_fields(["Brand name अशोक लेलैंड 5525 टेलर 18 चक्का\n2024 मॉडल"])
     assert (out.get("brand"), out.get("model"), out.get("year")) == ("Ashok Leyland", "5525", 2024)
     assert out.get("category") == "Truck"
+    assert not extract_fields(["अशोक लेलैंड 5525 टेलर 18 चक्का"]).get("year")
+    assert not extract_fields(["Tata 3118 10 tyre"]).get("year")
+    assert extract_fields(["Tata 3118 18 model"]).get("year") == 2018
     assert extract_fields(["Brand name Tata"]).get("brand") == "Tata"
     assert extract_fields(["आयशर 2019"]).get("brand") == "Eicher"
 

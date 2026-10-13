@@ -442,6 +442,13 @@ def normalize_units(raw: Any, *, prefer_hours: bool = False) -> dict | None:
     return {"value": int(round(value)), "unit": unit, "original": text}
 
 
+_COUNT_RE = re.compile(
+    r"\b\d{1,2}\s*(?:chakk?[ae]|tyres?|tayar|wheel(?:er|s)?|ton(?:ne)?s?|feet|ft|fit|kg|hp|cum|cubic)\b"
+    r"|\b\d{1,2}\s*(?:चक्का|चक्के|चक्कों|टायर|पहिया|पहिये|टन|फीट|फुट)",
+    re.I,
+)
+
+
 def normalize_year(raw: Any) -> dict | None:
     if _blank(raw):
         return None
@@ -457,6 +464,8 @@ def normalize_year(raw: Any) -> dict | None:
     # Don't treat price amounts ("18 lakh") as two-digit model years
     if re.search(r"lakh|lac|crore|\bcr\b|₹|rs\.?", text, re.I):
         return None
+    # "18 चक्का" / "10 tyre" / "25 ton" are counts, not years.
+    text = _COUNT_RE.sub(" ", text)
     m2 = re.search(r"\b(\d{2})\s*(?:model|ka|की|का)?\b", text, re.I)
     if m2 and not re.search(r"(?:19|20)\d{2}", text):
         yy = int(m2.group(1))
