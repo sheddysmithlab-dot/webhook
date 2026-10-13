@@ -110,6 +110,26 @@ def _patch_httpx(monkeypatch):
     monkeypatch.setattr("app.ai.vision.httpx.Client", _FakeClient)
 
 
+def test_zai_overload_is_retried_but_empty_balance_is_not(monkeypatch):
+    from app.ai import vision
+
+    _patch_httpx(monkeypatch)
+    waits = []
+    monkeypatch.setattr(vision.time, "sleep", waits.append)
+    busy = _FakeResp(429, text='{"error":{"code":"1305","message":"overloaded"}}')
+    ok = _FakeResp(200, {"choices": [{"message": {"content": "Tata"}}]})
+    replies = [busy, busy, ok]
+    monkeypatch.setattr(_FakeClient, "post", lambda self, *a, **k: replies.pop(0))
+    assert vision._vision_chat("https://api.z.ai/api/paas/v4", "k", "glm-4.6v-flash", "p", "data:", {}) == "Tata"
+    assert waits == [vision.ZAI_RETRY_SECONDS, vision.ZAI_RETRY_SECONDS * 2]
+
+    calls = []
+    broke = _FakeResp(429, text='{"error":{"code":"1113","message":"Insufficient balance"}}')
+    monkeypatch.setattr(_FakeClient, "post", lambda self, *a, **k: calls.append(1) or broke)
+    assert vision._vision_chat("https://api.z.ai/api/paas/v4", "k", "glm-4.6v", "p", "data:", {}) == ""
+    assert len(calls) == 1
+
+
 # --- is_document_media heuristic ---
 
 def test_is_document_media_pdf():

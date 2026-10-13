@@ -29,6 +29,9 @@ GROQ_MAX_IMAGE_BYTES = 3 * 1024 * 1024
 GROQ_RETRY_SECONDS = 4.0
 # Keeps a 3-photo burst well inside the 45 s per-chat lock.
 GROQ_MAX_RETRY_SECONDS = 8.0
+# The free glm-4.6v-flash answers "1305 overloaded" in bursts; a short wait usually gets through.
+ZAI_TRIES = 3
+ZAI_RETRY_SECONDS = 2.0
 _GROQ_GATE = threading.Lock()
 
 _DOC_CUES = re.compile(
@@ -213,14 +216,17 @@ def _vision_chat(api_base: str, api_key: str, model: str, prompt: str, data_url:
         **extra,
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    tries = 2 if "groq" in api_base else 1
+    groq = "groq" in api_base
+    tries = 2 if groq else ZAI_TRIES
     try:
         with httpx.Client(timeout=20.0) as client:
             for attempt in range(tries):
                 resp = client.post(api_base + "/chat/completions", headers=headers, json=body)
-                if resp.status_code != 429 or attempt == tries - 1:
+                text = resp.text or ""
+                # A spent daily quota or an empty balance does not come back in seconds.
+                if resp.status_code != 429 or attempt == tries - 1 or "per day" in text or '"1113"' in text:
                     break
-                time.sleep(_retry_after(resp.text or ""))
+                time.sleep(_retry_after(text) if groq else ZAI_RETRY_SECONDS * (attempt + 1))
     except Exception as exc:
         log.warning("vision.http error model=%s: %s", model, exc)
         return ""
