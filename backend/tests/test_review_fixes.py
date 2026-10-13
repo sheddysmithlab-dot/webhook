@@ -331,6 +331,45 @@ def test_photos_after_idle_start_a_new_card_and_get_read(db, monkeypatch):
     assert "Force" in out and "BR28GB299" not in out
 
 
+def test_new_photo_set_on_full_card_replaces_old_set(db, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from app.ai import runner, vision
+    from app.ai.engine import _media_ack
+    from app.ai.tools import _payload, _write_payload
+    from app.models import AiMedia
+
+    conv, card = _idle_office_conv(db, "919000777016")
+    pl = _payload(conv)
+    pl["last_user_message_at"] = datetime.now(timezone.utc).isoformat()
+    pl["media_ids"] = [r.id for r in db.query(AiMedia).filter(AiMedia.draft_id == card.id, AiMedia.local_path != "")]
+    _write_payload(conv, pl)
+    db.query(AiMedia).filter(AiMedia.draft_id == card.id).update(
+        {"created_at": datetime.utcnow() - timedelta(minutes=10)}, synchronize_session=False)
+    db.commit()
+    monkeypatch.setattr(runner, "download_whatsapp_media", lambda meta, mid, d, name: (f"/x/{mid}.jpg", "image/jpeg"))
+    monkeypatch.setattr(runner, "_newer_inbound_exists", lambda *a: False)
+    monkeypatch.setattr("app.ai.media_config.vision_enabled", lambda db_: True)
+    monkeypatch.setattr(vision, "resolve_media_config", lambda db_: {})
+    monkeypatch.setattr(vision, "extract_text_from_image", lambda *a, **k: json.dumps(
+        {"category": "Truck", "brand": "Ashok Leyland", "model": "5525", "colour": "Orange"}))
+    monkeypatch.setattr(runner, "_ai_respond", lambda *a, **k: "Photo mil gaya.")
+    monkeypatch.setattr("app.ai.polish.polish_reply", lambda db, u, d, l: (d, "off"))
+
+    out = runner.process_inbound(db, mobile="919000777016", text="[photo]", wamid="wa-set2-1",
+                                 media={"id": "set2a", "kind": "image", "mime": "image/jpeg"}, send=False)
+    row = db.query(AiMedia).filter(AiMedia.meta_media_id == "set2a").one()
+    assert conv.draft_id == card.id and row.draft_id == card.id and row.extract_kind == "vehicle_fields"
+    assert db.query(AiMedia).filter(AiMedia.draft_id == card.id, AiMedia.kind == "image").count() == 1
+    assert _payload(conv)["media_ids"] == [row.id]
+    assert "Orange" in out and "BR28GB299" not in out
+
+    for i in range(4):
+        runner.attach_media(db, conv, f"wa-set2-{i + 2}", {"id": f"set2{i}", "kind": "image"})
+    assert runner.attach_media(db, conv, "wa-set2-9", {"id": "set2x", "kind": "image"}) == "photo_rejected_max"
+    assert "5 photo" in _media_ack("hinglish", "photo_rejected_max")
+
+
 def test_burst_report_sees_reads_without_autoflush(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -640,7 +679,7 @@ def test_photo_misread_of_typed_brand_still_reports_and_failed_reads_are_retried
     assert sorted(ids) == sorted(r.id for r in rows[:2])
     pl = _payload(conv)
     assert (pl["brand"], pl["model"]) == ("Mahindra", "Jeeto Strong")
-    assert pl["vision_reads"]["n"] == 2
+    assert vision._reads_left(db, conv, draft.id) == vision.MAX_VISION_READS_PER_CARD - 2
     report = vision.image_report(db, conv, "hinglish", media_ids=ids)
     assert "Mahindra" in report and "Jeeto Strong" in report and "White" in report and "Open cargo deck" in report
     assert "Force" not in report

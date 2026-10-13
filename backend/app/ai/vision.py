@@ -395,12 +395,9 @@ def fill_listing_from_photo(
 
     Vehicle photos are capped per card; images the sender labels as documents are always read.
     """
-    if not _reserve_read(conv, is_document):
+    if not is_document and (media_row.extract_kind or _reads_left(db, conv, media_row.draft_id) <= 0):
         return {}
-    data = read_image(db, conv, media_row)
-    if not data and not is_document:
-        _release_reads(conv, 1)
-    return _apply_read(conv, media_row, data)
+    return _apply_read(conv, media_row, read_image(db, conv, media_row))
 
 
 def photo_guessed_keys(conv: AiConversation, payload: dict) -> set[str]:
@@ -462,7 +459,10 @@ def fill_listing_from_burst(
     if window_seconds:
         q = q.filter(AiMedia.created_at >= datetime.utcnow() - timedelta(seconds=window_seconds))
     rows += q.order_by(AiMedia.id.desc()).limit(MAX_VISION_READS_PER_CARD - 1).all()
-    rows = [r for i, r in enumerate(rows) if _reserve_read(conv, is_document and i == 0)]
+    if media_row.extract_kind and not is_document:
+        rows = rows[1:]
+    # Papers the sender labels as documents are always read; photos share the card cap.
+    rows = rows[:_reads_left(db, conv, media_row.draft_id) + (1 if is_document else 0)]
     if not rows:
         return {}, []
     cfg = resolve_media_config(db)
@@ -475,8 +475,6 @@ def fill_listing_from_burst(
     from .tools import _payload
 
     reads = [(row, parse_read(raw)) for row, raw in zip(rows, raws)]
-    # A failed read (rate limit / timeout) must not use up the card's cap: retried on the next ask.
-    _release_reads(conv, sum(1 for i, (_, d) in enumerate(reads) if not d and not (is_document and i == 0)))
     main = _main_brand([d for _, d in reads], prefer=_payload(conv).get("brand"))
     # Photos agreeing with the burst's vehicle fill the card first; an odd read
     # (cabin interior, a second vehicle) is kept for the report but fills nothing.
@@ -522,45 +520,21 @@ def _main_brand(reads: list[dict], prefer=None) -> str:
     return max(score, key=score.get) if score else ""
 
 
-def _reserve_read(conv: AiConversation, is_document: bool) -> bool:
-    """Count one vision call against the card cap (documents are free). False = cap reached."""
-    if is_document:
-        return True
-    from .tools import _payload, _write_payload
-
-    payload = _payload(conv)
-    reads = payload.get("vision_reads") if isinstance(payload.get("vision_reads"), dict) else {}
-    if reads.get("draft") != conv.draft_id:
-        reads = {"draft": conv.draft_id, "n": 0}
-    if int(reads.get("n") or 0) >= MAX_VISION_READS_PER_CARD:
-        return False
-    reads["n"] = int(reads.get("n") or 0) + 1
-    payload["vision_reads"] = reads
-    _write_payload(conv, payload)
-    return True
+def _reads_left(db: Session, conv: AiConversation, draft_id) -> int:
+    """Vision reads still allowed on this card. Only photos actually read count — a rate-limited
+    attempt stores nothing, so it is retried on the next photo or "detail do"."""
+    if not draft_id:
+        return MAX_VISION_READS_PER_CARD
+    done = db.query(AiMedia).filter(
+        AiMedia.conversation_id == conv.id,
+        AiMedia.draft_id == draft_id,
+        AiMedia.extract_kind.in_(["vehicle_fields", "document_fields"]),
+    ).count()
+    return max(0, MAX_VISION_READS_PER_CARD - done)
 
 
-def vision_cap_left(conv: AiConversation) -> bool:
-    from .tools import _payload
-
-    reads = _payload(conv).get("vision_reads")
-    if not isinstance(reads, dict) or reads.get("draft") != conv.draft_id:
-        return True
-    return int(reads.get("n") or 0) < MAX_VISION_READS_PER_CARD
-
-
-def _release_reads(conv: AiConversation, count: int) -> None:
-    if count <= 0:
-        return
-    from .tools import _payload, _write_payload
-
-    payload = _payload(conv)
-    reads = payload.get("vision_reads") if isinstance(payload.get("vision_reads"), dict) else {}
-    if reads.get("draft") != conv.draft_id:
-        return
-    reads["n"] = max(0, int(reads.get("n") or 0) - count)
-    payload["vision_reads"] = reads
-    _write_payload(conv, payload)
+def vision_cap_left(db: Session, conv: AiConversation) -> bool:
+    return _reads_left(db, conv, conv.draft_id) > 0
 
 
 def _apply_read(conv: AiConversation, media_row: AiMedia, data: dict) -> dict:

@@ -39,6 +39,30 @@ def _ai_respond(db: Session, conv: AiConversation, text: str, media_note: str = 
 
 # Each attempt waits up to 20s; together they outlast the 45s lock TTL so no message is dropped.
 INBOUND_LOCK_ATTEMPTS = 4
+# A photo this long after the card's last one starts a new set, not more of the same burst.
+PHOTO_RESEND_GAP_SECONDS = 120
+
+
+def _replace_card_photos(db: Session, conv: AiConversation, draft_id: int) -> int:
+    """Full, unposted card + a fresh photo set: the sender is re-sending the vehicle, so the new
+    set replaces the old one (detached, not deleted). Returns how many photos were replaced."""
+    from datetime import timedelta
+
+    if _payload(conv).get("listing_edit_mode"):
+        return 0
+    rows = db.query(AiMedia).filter(AiMedia.draft_id == draft_id, AiMedia.kind.in_(["image", "photo"])).all()
+    newest = max((r.created_at for r in rows if r.created_at), default=None)
+    if newest is None or utcnow() - newest < timedelta(seconds=PHOTO_RESEND_GAP_SECONDS):
+        return 0
+    for row in rows:
+        row.draft_id = None
+    payload = _payload(conv)
+    payload["media_ids"] = []
+    _write_payload(conv, payload)
+    db.flush()
+    log.info("ai.photo_set_replaced mobile=***%s draft=%s old=%d", conv.mobile[-4:] if conv.mobile else "",
+             draft_id, len(rows))
+    return len(rows)
 
 
 def _next_ask_line(conv: AiConversation, lang: str) -> str:
@@ -199,7 +223,9 @@ def attach_media(db: Session, conv: AiConversation, wamid: str, media: dict | No
             draft = _draft_for(db, conv)
             target_draft_id = draft.id
             conv.draft_id = draft.id
-        if card_photo_count(db, target_draft_id) >= MAX_PHOTOS:
+        if card_photo_count(db, target_draft_id) >= MAX_PHOTOS and not _replace_card_photos(
+            db, conv, target_draft_id
+        ):
             return "photo_rejected_max"
 
     meta = get_or_create_settings(db)
@@ -387,7 +413,7 @@ def process_inbound(
                                 conv.intent = "SELL"
                         if vis_row.extract_kind == "document_fields":
                             media_note = (media_note or "") + " vehicle_document_read"
-                        photo_unread = not read_ids and vision_cap_left(conv)
+                        photo_unread = not read_ids and vision_cap_left(db, conv)
                         log.info("vision.read mobile=***%s kind=%s images=%d fields=%s",
                                  conv.mobile[-4:] if conv.mobile else "", vis_row.extract_kind or "-",
                                  len(read_ids), sorted(filled))

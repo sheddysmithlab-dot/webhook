@@ -247,8 +247,19 @@ def test_detail_request_is_detected():
         assert not vision.wants_image_details(text), text
 
 
-def test_vision_reads_cap_survives_save(db, tmp_path, monkeypatch):
+def test_photo_read_once_and_card_cap_counts_only_real_reads(db, tmp_path, monkeypatch):
     conv, row, calls = _setup(db, tmp_path, monkeypatch, {"image_type": "vehicle_photo"}, intent="SELL")
-    for _ in range(vision.MAX_VISION_READS_PER_CARD + 2):
+    for _ in range(3):
         vision.fill_listing_from_photo(db, conv, row)
-    assert len(calls) == vision.MAX_VISION_READS_PER_CARD
+    assert len(calls) == 1
+    row.draft_id = conv.draft_id = 77
+    for _ in range(vision.MAX_VISION_READS_PER_CARD - 1):
+        db.add(AiMedia(conversation_id=conv.id, draft_id=77, kind="image", extract_kind="vehicle_fields"))
+    db.flush()
+    extra = tmp_path / "extra.jpg"
+    extra.write_bytes(b"x")
+    late = AiMedia(conversation_id=conv.id, draft_id=77, kind="image", local_path=str(extra), mime="image/jpeg")
+    db.add(late)
+    db.flush()
+    vision.fill_listing_from_photo(db, conv, late)
+    assert len(calls) == 1 and not vision.vision_cap_left(db, conv)

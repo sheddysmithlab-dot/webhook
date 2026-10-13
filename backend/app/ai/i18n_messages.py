@@ -269,9 +269,9 @@ MESSAGES = {
         "en": "✅ Your InfraDealer account is ready on this WhatsApp number ({phone}) — no OTP or password needed.",
     },
     "photo_at_max": {
-        "hinglish": "Is card pe max photos lag chuki hain.",
-        "hi": "इस कार्ड पर अधिकतम फोटो लग चुकी हैं।",
-        "en": "Maximum photos reached for this card.",
+        "hinglish": "📷 Is card par {max} photo lag chuki hain (max) — baaki photo nahi judi.",
+        "hi": "📷 इस कार्ड पर {max} फोटो लग चुकी हैं (अधिकतम) — बाकी फोटो नहीं जुड़ीं।",
+        "en": "📷 This card already has {max} photos (the maximum) — the extra photos were not added.",
     },
     "photo_fail": {
         "hinglish": "Photo download nahi ho paayi. Dobara bhej dijiye.",

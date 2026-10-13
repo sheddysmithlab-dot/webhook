@@ -633,6 +633,14 @@ def prepare_prompt_state(db, conv: AiConversation, text: str, media_note: str = 
     return payload
 
 
+def _media_ack(lang: str, media_note: str) -> str:
+    if "photo_rejected_max" in (media_note or ""):
+        from .cards import MAX_PHOTOS
+
+        return t(lang, "photo_at_max", max=MAX_PHOTOS) + "\n\n"
+    return t(lang, "media_got")
+
+
 def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") -> str | None:
     """Phase-2 LLM-first turn: hard gates → prepare state → LLM. None → rules fallback."""
     if not prompt_chat_enabled(db):
@@ -798,7 +806,7 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         from .confirm import snapshot
 
         if media_only_msg(msg, media_note):
-            return t(lang, "media_got") + t(lang, "confirm_ask")
+            return _media_ack(lang, media_note) + t(lang, "confirm_ask")
         before = payload.get("summary_json") if isinstance(payload.get("summary_json"), dict) else {}
         now = snapshot(payload)
         if now != before:
@@ -829,7 +837,7 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
             return t(lang, "photo_fail")
         if need:
             conv.error_message = f"ask:{need}"
-        return t(lang, "media_got") + (_next_question(payload, lang) or t(lang, "more_detail"))
+        return _media_ack(lang, media_note) + (_next_question(payload, lang) or t(lang, "more_detail"))
     if need and "?" not in msg and open_card:
         conv.error_message = f"ask:{need}"
         return _next_question(payload, lang)
@@ -1115,7 +1123,7 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
 
     lang0 = _conv_lang(db, conv, text)
     if media_note and "photo_rejected_max" in media_note:
-        return t(lang0, "photo_at_max")
+        return _media_ack(lang0, media_note).strip()
 
     mentioned = parse_card_mention(text or "")
     payload_pre = _payload(conv)

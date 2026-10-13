@@ -663,7 +663,7 @@ def test_photo_fills_only_missing_fields(db, client, monkeypatch, tmp_path):
     _write_payload(conv, pl)
     for _ in range(vision.MAX_VISION_READS_PER_CARD + 1):
         vision.fill_listing_from_photo(db, conv, row)
-    assert len(calls) == vision.MAX_VISION_READS_PER_CARD
+    assert len(calls) == 1
 
 
 def test_labeled_kobelco_listing_is_read():
