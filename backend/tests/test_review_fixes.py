@@ -524,3 +524,16 @@ def test_website_make_model_not_doubled_and_photo_scene_dropped(db):
     assert (listing["km"], listing["km_unit"]) == (6500, "Hours")
     assert "Rusty bucket" in listing["description"] and "gravel" not in listing["description"]
     assert "Usage: 6500 hours" in listing["description"]
+
+
+def test_website_payload_drops_junk_city(db):
+    from app.infradealer.payloads import build_listing_payload
+
+    conv = AiConversation(mobile="919000777011", conversation_id="CONV_9000777011", state="NEW")
+    db.add(conv)
+    db.flush()
+    payload = {"intent": "SELL", "category": "Bus", "brand": "Force", "state": "Haryana", "city": "bhi"}
+    listing = build_listing_payload(db, conv, None, payload, "req-desc-3")["listing"]
+    assert "city" not in listing and listing["state"] == "Haryana"
+    payload["city"] = "Sirsa"
+    assert build_listing_payload(db, conv, None, payload, "req-desc-4")["listing"]["city"] == "Sirsa"

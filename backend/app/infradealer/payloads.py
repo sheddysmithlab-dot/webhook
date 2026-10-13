@@ -314,9 +314,13 @@ def build_listing_payload(
     owner = (office_target or {}).get("name") or name or conv.customer_name or "Seller"
     state = payload.get("state") or confirmed.get("state") or ""
     city = payload.get("city") or confirmed.get("city") or ""
-    if city and city == state:
+    from ..ai.data_filteration import _looks_like_place
+
+    if city and (city == state or not _looks_like_place(str(city))):
         city = ""
     area = payload.get("area") or payload.get("locality") or ""
+    if area and not _looks_like_place(str(area)):
+        area = ""
     try:
         from ..ai.vision import public_photo_facts
 
