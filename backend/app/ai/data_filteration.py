@@ -150,6 +150,11 @@ _BRAND_ALIASES = {
     "sml isuzu": "SML Isuzu", "isuzu": "Isuzu",
     "scania": "Scania",
     "mahindra earthmaster": "Mahindra",
+    "अशोक लेलैंड": "Ashok Leyland", "अशोक लीलैंड": "Ashok Leyland", "अशोक लेलैण्ड": "Ashok Leyland",
+    "अशोक लेलेंड": "Ashok Leyland", "लेलैंड": "Ashok Leyland", "लीलैंड": "Ashok Leyland",
+    "आयशर": "Eicher", "आइशर": "Eicher", "महिंद्रा": "Mahindra", "महिन्द्रा": "Mahindra",
+    "भारत बेंज": "BharatBenz", "भारतबेंज": "BharatBenz", "वोल्वो": "Volvo", "स्कैनिया": "Scania",
+    "हिताची": "Hitachi", "टाटा हिताची": "Tata Hitachi", "कोमात्सु": "Komatsu", "एस्कॉर्ट्स": "Escorts",
 }
 
 # Popular car / SUV names customers type without the brand ("Pb ki innova crysta chahiye").
@@ -231,6 +236,7 @@ _NOT_A_BRAND = {
     "hai", "h", "ka", "ki", "ke", "kya", "kaun", "konsa", "kon", "bata", "batao", "new", "naya", "the", "is",
     "haan", "han", "ha", "hn", "ok", "okay", "yes", "no", "nahi", "nhi", "na", "theek", "thik", "sahi",
     "pata", "malum", "skip", "baad", "me", "hello", "hi", "done", "confirm", "cancel",
+    "name", "naam", "nam", "model", "vehicle", "gaadi", "gadi",
 }
 _MODEL_CODE_RE = re.compile(r"\b([A-Za-z]{1,3}\d{3,4}[A-Za-z]{0,4}|[A-Za-z]{1,3}\d{2}[A-Za-z]{1,4})\b")
 

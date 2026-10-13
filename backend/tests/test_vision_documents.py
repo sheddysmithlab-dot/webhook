@@ -221,8 +221,8 @@ def test_burst_reads_every_photo_and_report_lists_details(db, tmp_path, monkeypa
 
     monkeypatch.setattr(vision, "extract_text_from_image", fake)
     monkeypatch.setattr(vision, "resolve_media_config", lambda db_: {})
-    filled, n = vision.fill_listing_from_burst(db, conv, row)
-    assert n == 3 and sorted(seen) == sorted(answers)
+    filled, ids = vision.fill_listing_from_burst(db, conv, row)
+    assert len(ids) == 3 and sorted(seen) == sorted(answers)
     assert filled["brand"] == "Tata" and filled["category"] == "Tipper" and filled["fuel"] == "Diesel"
     report = vision.image_report(db, conv, "hinglish")
     for part in ("Photo se mili jankari", "Brand: Tata", "Model: Signa 2825.K", "Rang: White",

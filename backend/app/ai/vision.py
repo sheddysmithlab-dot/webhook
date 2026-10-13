@@ -396,8 +396,8 @@ def fill_listing_from_photo(
 
 def fill_listing_from_burst(
     db: Session, conv: AiConversation, media_row: AiMedia, is_document: bool = False,
-) -> tuple[dict, int]:
-    """Read this image plus the unread photos sent with it (in parallel). Returns (filled, images read)."""
+) -> tuple[dict, list[int]]:
+    """Read this image plus the unread photos sent with it (in parallel). Returns (filled, ids read)."""
     from concurrent.futures import ThreadPoolExecutor
     from datetime import datetime, timedelta
     from types import SimpleNamespace
@@ -421,7 +421,7 @@ def fill_listing_from_burst(
     )
     rows = [r for i, r in enumerate(rows) if _reserve_read(conv, is_document and i == 0)]
     if not rows:
-        return {}, 0
+        return {}, []
     cfg = resolve_media_config(db)
     files = [SimpleNamespace(local_path=r.local_path, mime=r.mime) for r in rows]
     with ThreadPoolExecutor(max_workers=len(files)) as pool:
@@ -429,12 +429,13 @@ def fill_listing_from_burst(
             lambda f: extract_text_from_image(None, None, f, prompt=_VEHICLE_PROMPT, cfg=cfg), files,
         ))
     filled: dict = {}
-    reads = 0
+    read_ids: list[int] = []
     for row, raw in zip(rows, raws):
         data = parse_read(raw)
-        reads += bool(data)
+        if data:
+            read_ids.append(row.id)
         filled.update({k: v for k, v in _apply_read(conv, row, data).items() if k not in filled})
-    return filled, reads
+    return filled, read_ids
 
 
 def _reserve_read(conv: AiConversation, is_document: bool) -> bool:
@@ -537,28 +538,47 @@ def wants_image_details(text: str) -> bool:
     return bool(_DETAIL_ASK.search(text or ""))
 
 
-def _card_reads(db: Session, conv: AiConversation) -> list[dict]:
-    from datetime import datetime, timedelta
+def _card_reads(db: Session, conv: AiConversation, media_ids: list[int] | None = None) -> list[dict]:
+    """Reads of the given images, else of the latest photo burst (one vehicle, not the whole draft)."""
+    from datetime import timedelta
 
     q = db.query(AiMedia).filter(
         AiMedia.conversation_id == conv.id,
         AiMedia.extract_kind.in_(["vehicle_fields", "document_fields"]),
     )
-    if conv.draft_id:
-        q = q.filter(AiMedia.draft_id == conv.draft_id)
+    if media_ids is not None:
+        rows = q.filter(AiMedia.id.in_(media_ids or [-1])).order_by(AiMedia.id.desc()).all()
     else:
-        q = q.filter(AiMedia.created_at >= datetime.utcnow() - timedelta(minutes=30))
-    out = []
-    for row in q.order_by(AiMedia.id.desc()).limit(MAX_VISION_READS_PER_CARD).all():
+        latest = q.order_by(AiMedia.id.desc()).first()
+        if latest is None:
+            return []
+        q = q.filter(AiMedia.draft_id == latest.draft_id)
+        if latest.created_at is not None:
+            q = q.filter(AiMedia.created_at >= latest.created_at - timedelta(seconds=BURST_WINDOW_SECONDS))
+        rows = q.order_by(AiMedia.id.desc()).limit(MAX_VISION_READS_PER_CARD).all()
+    out: list[dict] = []
+    brand = ""
+    for row in rows:
         data = parse_read(row.extracted_text)
-        if data:
-            out.append(data)
+        if not data:
+            continue
+        # A photo of another vehicle in the same burst must not mix into this report.
+        b = _clean(listing_fields(data).get("brand")).lower()
+        if b and brand and b != brand:
+            continue
+        brand = brand or b
+        out.append(data)
     return out
 
 
-def image_report(db: Session, conv: AiConversation, lang: str = "hinglish") -> str:
-    """WhatsApp-formatted summary of everything read from this card's images ("" if none)."""
-    reads = _card_reads(db, conv)
+_NA = re.compile(r"^(n/?a|na|none|null|unknown|not\s+(visible|available|clear)|-+)$", re.I)
+
+
+def image_report(
+    db: Session, conv: AiConversation, lang: str = "hinglish", media_ids: list[int] | None = None,
+) -> str:
+    """WhatsApp-formatted summary of what was read from the latest images ("" if none)."""
+    reads = _card_reads(db, conv, media_ids)
     if not reads:
         return ""
     labels = _REPORT_LABELS.get(lang) or _REPORT_LABELS["hi" if lang == "hi" else "hinglish"]
@@ -569,11 +589,11 @@ def image_report(db: Session, conv: AiConversation, lang: str = "hinglish") -> s
             if k == "details":
                 for d in v if isinstance(v, list) else [v]:
                     d = _clean(d)[:90]
-                    if _PRIVATE_DETAIL.search(d):
+                    if _PRIVATE_DETAIL.search(d) or _NA.match(d) or re.search(r":\s*(n/?a|none|unknown)\s*$", d, re.I):
                         continue
                     if d and d.lower() not in {x.lower() for x in details}:
                         details.append(d)
-            elif k not in merged and _clean(v) and not isinstance(v, (list, dict)):
+            elif k not in merged and _clean(v) and not _NA.match(_clean(v)) and not isinstance(v, (list, dict)):
                 merged[k] = v
     fields = listing_fields(merged)
     place = ", ".join(x for x in (fields.get("city"), fields.get("state")) if x)

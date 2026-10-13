@@ -779,6 +779,25 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         if summary:
             return summary
 
+    # Confirm card open and the reply is not a question: the model loops ("Kuch aur details?") or
+    # claims the listing is ready — re-show the card if this message changed it, else ask for Haan.
+    if (
+        payload.get("awaiting_confirm")
+        and not payload.get("customer_confirmed")
+        and "?" not in msg
+        and str(payload.get("intent") or "").upper() == "SELL"
+        and collection_ready(payload)
+    ):
+        from .confirm import snapshot
+
+        if media_only_msg(msg, media_note):
+            return t(lang, "media_got") + t(lang, "confirm_ask")
+        if snapshot(payload) != payload.get("summary_json"):
+            summary = _summary_or_photo_gate(db, conv, payload, lang)
+            if summary:
+                return summary
+        return t(lang, "confirm_ask")
+
     # A bare "Haan" with no confirm card open must not reach the model (it improvises confirm loops).
     if is_yes(msg) and str(payload.get("intent") or "").upper() == "SELL" and not payload.get("awaiting_confirm"):
         from .confirm import card_submitted
@@ -794,7 +813,7 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
     need = _next_ask_key(payload) if selling else None
     open_card = not payload.get("awaiting_confirm") and not payload.get("customer_confirmed")
     # A bare photo/video must answer instantly: a slow model turn holds the chat lock while more messages queue.
-    media_only = bool(media_note) and re.fullmatch(r"(\[(photo|video|document)\])?", msg.lower()) is not None
+    media_only = media_only_msg(msg, media_note)
     if media_only and selling and open_card:
         if "DOWNLOAD_FAILED" in media_note:
             return t(lang, "photo_fail")
@@ -853,6 +872,10 @@ def _usage_gap(payload: dict) -> str | None:
         if gap.get("field") in {"hours", "km"}:
             return gap["field"]
     return None
+
+
+def media_only_msg(msg: str, media_note: str) -> bool:
+    return bool(media_note) and re.fullmatch(r"(\[(photo|video|document)\])?", (msg or "").lower()) is not None
 
 
 def _summary_or_photo_gate(db, conv: AiConversation, payload: dict, lang: str) -> str | None:

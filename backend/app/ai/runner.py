@@ -50,12 +50,23 @@ def _next_ask_line(conv: AiConversation, lang: str) -> str:
 
 
 @contextmanager
-def _inbound_lock(mobile: str, attempts: int = 1):
-    """mobile_lock, retried so a message sent while a slow turn runs is never dropped."""
+def _inbound_lock(mobile: str, attempts: int = 1, db: Session | None = None):
+    """mobile_lock, retried so a message sent while a slow turn runs is never dropped.
+
+    Commits `db` before the lock is released: otherwise the next queued message reads the
+    old payload and its commit overwrites what this turn saved (lost photo/vision fields).
+    """
     for attempt in range(max(1, attempts)):
         with mobile_lock(mobile) as held:
             if held or attempt == attempts - 1:
-                yield held
+                try:
+                    yield held
+                except BaseException:
+                    if db is not None:
+                        db.rollback()
+                    raise
+                if held and db is not None:
+                    db.commit()
                 return
 
 
@@ -263,7 +274,7 @@ def process_inbound(
         set_latest_wamid(mobile, wamid)
 
     is_media = bool(media and media.get("id"))
-    with _inbound_lock(mobile, INBOUND_LOCK_ATTEMPTS) as held:
+    with _inbound_lock(mobile, INBOUND_LOCK_ATTEMPTS, db) as held:
         t_lock = (time.perf_counter() - t0) * 1000
         if not held:
             log.info("ai.lock_busy mobile=***%s", mobile[-4:] if mobile else "")
@@ -288,7 +299,7 @@ def process_inbound(
 
         # Media always attaches to draft/card pipeline (legacy ai_simple_chat removed).
         media_note = attach_media(db, conv, wamid, media)
-        images_read = 0
+        read_ids: list[int] = []
 
         # Photo/video burst: save every file, but only the newest message gets an AI turn.
         if (
@@ -353,7 +364,7 @@ def process_inbound(
                         reset_if_idle(db, conv)
                     # A vehicle photo or paper starts (or adds to) a listing unless the user is buying.
                     if vis_row and vis_row.local_path and (_pl(conv).get("intent") or "").upper() != "BUY":
-                        filled, images_read = fill_listing_from_burst(
+                        filled, read_ids = fill_listing_from_burst(
                             db, conv, vis_row, is_document=is_document_media(vis_row, text or ""),
                         )
                         if filled:
@@ -367,7 +378,7 @@ def process_inbound(
                             media_note = (media_note or "") + " vehicle_document_read"
                         log.info("vision.read mobile=***%s kind=%s images=%d fields=%s",
                                  conv.mobile[-4:] if conv.mobile else "", vis_row.extract_kind or "-",
-                                 images_read, sorted(filled))
+                                 len(read_ids), sorted(filled))
                 except Exception:
                     log.exception("vision.ocr failed mobile=***%s",
                                    conv.mobile[-4:] if conv.mobile else "")
@@ -469,8 +480,8 @@ def process_inbound(
                 reply = t(lang, "infradealer_options")
                 path = "options"
 
-            if images_read and reply and path in {"orchestrator", "free_chat"}:
-                photo_report = image_report(db, conv, lang)
+            if read_ids and reply and path in {"orchestrator", "free_chat"}:
+                photo_report = image_report(db, conv, lang, media_ids=read_ids)
                 if photo_report:
                     reply = photo_report + "\n\n" + reply
                     force_polish = True

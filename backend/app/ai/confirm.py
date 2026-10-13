@@ -394,7 +394,14 @@ def maybe_start_new_card(db: Session, conv: AiConversation, fields: dict | None)
     if not fresh:
         cur_brand, cur_model = _norm(payload.get("brand")), _norm(payload.get("model"))
         new_brand, new_model = _norm(fields.get("brand")), _norm(fields.get("model"))
-        different = bool(
+        # Same model under a real brand fixes a junk brand ("Name 5525" → "Ashok Leyland 5525");
+        # Tata 2518 vs Ashok Leyland 2518 stay different vehicles.
+        from .data_filteration import canonical_brand
+
+        fixes_brand = bool(
+            new_model and new_model == cur_model and cur_brand and not canonical_brand(cur_brand)
+        )
+        different = not fixes_brand and bool(
             (new_brand and cur_brand and new_brand != cur_brand)
             or (new_model and cur_model and new_model != cur_model and (not new_brand or new_brand == cur_brand))
         )
