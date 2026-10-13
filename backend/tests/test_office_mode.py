@@ -1,4 +1,4 @@
-﻿"""Office operator (postdesk) mode: customer select/create, confirm guard, listing target."""
+"""Office operator (postdesk) mode: customer select/create, confirm guard, listing target."""
 
 from __future__ import annotations
 
