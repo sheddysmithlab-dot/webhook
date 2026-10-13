@@ -195,6 +195,107 @@ def test_open_confirm_card_reshows_after_change(db, monkeypatch):
     assert "2020" in out and _payload(conv)["awaiting_confirm"]
 
 
+def test_update_on_open_card_shows_full_card_with_photo_details(db, monkeypatch):
+    from app.ai.tools import _payload, _write_payload
+    from app.models import AiMedia
+
+    eng, conv = _confirm_card(db, monkeypatch)
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="DRAFT", card_id="CARD-006")
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    db.add(AiMedia(
+        conversation_id=conv.id, draft_id=draft.id, kind="image", extract_kind="vehicle_fields",
+        extracted_text=json.dumps({"brand": "JCB", "colour": "Yellow", "tyres": "4",
+                                   "registration_number": "BR01AB1234", "details": ["Bucket in good shape"]}),
+    ))
+    pl = _payload(conv)
+    pl.update({"year": 2020, "active_card_id": "CARD-006"})
+    _write_payload(conv, pl)
+    out = eng.prompt_chat_turn(db, conv, "Model 2020")
+    for part in ("Listing details* — CARD-006", "Brand: JCB", "Model: 3DX", "Year: 2020 ✏️",
+                 "Rang: Yellow", "Tyre: 4", "Gaadi number: BR01AB1234", "Bucket in good shape", "Haan"):
+        assert part in out, part
+    assert "Brand: JCB ✏️" not in out
+    assert _payload(conv)["summary_json"]["year"] == 2020
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.kv, self.lists = {}, {}
+
+    def get(self, k):
+        return self.kv.get(k)
+
+    def set(self, k, v, ex=None):
+        self.kv[k] = v
+
+    def delete(self, *keys):
+        for k in keys:
+            self.kv.pop(k, None)
+            self.lists.pop(k, None)
+
+    def lpush(self, k, v):
+        self.lists.setdefault(k, []).insert(0, v)
+
+    def ltrim(self, k, a, b):
+        self.lists[k] = self.lists.get(k, [])[a:b + 1]
+
+    def expire(self, k, ttl):
+        pass
+
+    def pipeline(self):
+        return self
+
+    def execute(self):
+        pass
+
+
+def test_card_ledger_restores_lost_fields_and_keeps_versions(db, monkeypatch):
+    from app.ai import card_ledger
+    from app.ai.tools import _payload, _write_payload
+
+    fake = _FakeRedis()
+    monkeypatch.setattr(card_ledger, "get_redis", lambda: fake)
+    conv = _office_card(db, monkeypatch, "919000777009", brand="Tata", model="1418", category="Truck",
+                        year=2020, city="Pune", expected_price=1500000)
+    assert card_ledger.sync(conv) == []
+    assert card_ledger.load(conv)["fields"]["year"] == 2020
+
+    pl = _payload(conv)
+    pl.update({"year": None, "expected_price": None, "model": "1618"})
+    _write_payload(conv, pl)
+    assert sorted(card_ledger.sync(conv)) == ["expected_price", "year"]
+    pl = _payload(conv)
+    assert (pl["year"], pl["expected_price"], pl["model"]) == (2020, 1500000, "1618")
+    assert card_ledger.load(conv)["v"] == 2
+
+    pl["customer_confirmed"] = True
+    pl["city"] = None
+    _write_payload(conv, pl)
+    assert card_ledger.sync(conv) == []
+    final = card_ledger.load(conv)
+    assert final["final"] and final["fields"]["model"] == "1618" and "city" not in final["fields"]
+    assert len(fake.lists[next(iter(fake.lists))]) == 3
+
+
+def test_card_ledger_skips_junk_places_and_buy_intent(db, monkeypatch):
+    from app.ai import card_ledger
+    from app.ai.tools import _payload, _write_payload
+
+    fake = _FakeRedis()
+    monkeypatch.setattr(card_ledger, "get_redis", lambda: fake)
+    conv = _office_card(db, monkeypatch, "919000777010", brand="Eicher", category="Bus", city="haan")
+    card_ledger.sync(conv)
+    assert "city" not in card_ledger.load(conv)["fields"]
+    pl = _payload(conv)
+    pl["intent"] = "BUY"
+    _write_payload(conv, pl)
+    conv.intent = "BUY"
+    card_ledger.sync(conv)
+    assert card_ledger.load(conv) == {}
+
+
 def test_inbound_lock_commits_before_release(db, monkeypatch):
     from contextlib import contextmanager
 

@@ -738,6 +738,11 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
     if _detect_rm_intent(msg, payload, media_note=media_note) == "SUBMIT_NOW":
         return None
 
+    from .card_ledger import sync as ledger_sync
+
+    if ledger_sync(conv):
+        payload = _payload(conv)
+
     # Hard: Haan / Yes confirmation only via confirm handler
     if payload.get("awaiting_confirm") or conv.state == "AWAITING_CONFIRMATION":
         hit = handle_confirmation(db, conv, text, lang)
@@ -758,6 +763,8 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         _write_payload(conv, payload)
     except Exception:
         log.exception("prepare_prompt_state failed — continuing to LLM")
+        payload = _payload(conv)
+    if ledger_sync(conv):
         payload = _payload(conv)
 
     # Hard: machine categories also need usage (hours) before the summary — ask once, then skip.
@@ -792,10 +799,13 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
 
         if media_only_msg(msg, media_note):
             return t(lang, "media_got") + t(lang, "confirm_ask")
-        if snapshot(payload) != payload.get("summary_json"):
+        before = payload.get("summary_json") if isinstance(payload.get("summary_json"), dict) else {}
+        now = snapshot(payload)
+        if now != before:
+            changed = {k for k in now if k not in {"vehicle", "card_id"} and now.get(k) != before.get(k)}
             summary = _summary_or_photo_gate(db, conv, payload, lang)
             if summary:
-                return summary
+                return _full_card(db, conv, lang, changed) or summary
         return t(lang, "confirm_ask")
 
     # A bare "Haan" with no confirm card open must not reach the model (it improvises confirm loops).
@@ -872,6 +882,18 @@ def _usage_gap(payload: dict) -> str | None:
         if gap.get("field") in {"hours", "km"}:
             return gap["field"]
     return None
+
+
+def _full_card(db, conv: AiConversation, lang: str, changed: set) -> str:
+    """Updated card with the photo details kept, changed fields marked, then the Haan prompt."""
+    from .vision import card_details
+
+    try:
+        body = card_details(db, conv, lang, changed)
+    except Exception:
+        log.exception("card_details failed")
+        return ""
+    return f"{body}\n\n{t(lang, 'confirm_ask')}" if body else ""
 
 
 def media_only_msg(msg: str, media_note: str) -> bool:

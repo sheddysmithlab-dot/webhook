@@ -501,6 +501,8 @@ _REPORT_LABELS = {
         "puc_valid_upto": "PUC valid till", "permit_valid_upto": "Permit valid till",
         "national_permit_valid_upto": "National permit till", "colour": "Rang", "body_type": "Body",
         "tyres": "Tyre", "axles": "Axle", "cabin": "Cabin", "condition": "Haalat",
+        "card_title": "📋 *Listing details*", "updated": "update hua", "km": "KM", "hours": "Hours",
+        "price": "Price",
     },
     "hi": {
         "title": "📷 *फोटो से मिली जानकारी*", "seen": "*फोटो में दिखा:*",
@@ -512,6 +514,8 @@ _REPORT_LABELS = {
         "puc_valid_upto": "PUC वैध तक", "permit_valid_upto": "परमिट वैध तक",
         "national_permit_valid_upto": "नेशनल परमिट तक", "colour": "रंग", "body_type": "बॉडी",
         "tyres": "टायर", "axles": "एक्सल", "cabin": "केबिन", "condition": "हालत",
+        "card_title": "📋 *लिस्टिंग डिटेल*", "updated": "अपडेट हुआ", "km": "KM", "hours": "घंटे",
+        "price": "कीमत",
     },
     "en": {
         "title": "📷 *Details read from the photo*", "seen": "*Seen in the photo:*",
@@ -523,6 +527,8 @@ _REPORT_LABELS = {
         "puc_valid_upto": "PUC valid till", "permit_valid_upto": "Permit valid till",
         "national_permit_valid_upto": "National permit till", "colour": "Colour", "body_type": "Body",
         "tyres": "Tyres", "axles": "Axles", "cabin": "Cabin", "condition": "Condition",
+        "card_title": "📋 *Listing details*", "updated": "updated", "km": "KM", "hours": "Hours",
+        "price": "Price",
     },
 }
 
@@ -574,14 +580,12 @@ def _card_reads(db: Session, conv: AiConversation, media_ids: list[int] | None =
 _NA = re.compile(r"^(n/?a|na|none|null|unknown|not\s+(visible|available|clear)|-+)$", re.I)
 
 
-def image_report(
-    db: Session, conv: AiConversation, lang: str = "hinglish", media_ids: list[int] | None = None,
-) -> str:
-    """WhatsApp-formatted summary of what was read from the latest images ("" if none)."""
-    reads = _card_reads(db, conv, media_ids)
-    if not reads:
-        return ""
-    labels = _REPORT_LABELS.get(lang) or _REPORT_LABELS["hi" if lang == "hi" else "hinglish"]
+def _labels(lang: str) -> dict:
+    return _REPORT_LABELS.get(lang) or _REPORT_LABELS["hi" if lang == "hi" else "hinglish"]
+
+
+def _merge_reads(reads: list[dict]) -> tuple[dict, list[str]]:
+    """Newest read wins per key; free-text details de-duplicated, private / N/A ones dropped."""
     merged: dict = {}
     details: list[str] = []
     for data in reads:
@@ -595,6 +599,30 @@ def image_report(
                         details.append(d)
             elif k not in merged and _clean(v) and not _NA.match(_clean(v)) and not isinstance(v, (list, dict)):
                 merged[k] = v
+    return merged, details
+
+
+def _report_text(title: str, rows: list[tuple[str, object]], details: list[str], labels: dict,
+                 updated: set | frozenset = frozenset()) -> str:
+    lines = [title]
+    lines += [
+        f"• {labels[k]}: {v}" + (f" ✏️ _{labels['updated']}_" if k in updated else "")
+        for k, v in rows if v not in (None, "")
+    ]
+    if details:
+        lines += ["", labels["seen"]] + [f"• {d}" for d in details[:8]]
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def image_report(
+    db: Session, conv: AiConversation, lang: str = "hinglish", media_ids: list[int] | None = None,
+) -> str:
+    """WhatsApp-formatted summary of what was read from the latest images ("" if none)."""
+    reads = _card_reads(db, conv, media_ids)
+    if not reads:
+        return ""
+    labels = _labels(lang)
+    merged, details = _merge_reads(reads)
     fields = listing_fields(merged)
     place = ", ".join(x for x in (fields.get("city"), fields.get("state")) if x)
     rows = [
@@ -604,8 +632,58 @@ def image_report(
     ]
     rows += [(k, _clean(merged.get(k))[:60]) for k in DOC_FACT_KEYS if k != "registering_authority"]
     rows += [(k, _clean(merged.get(k))[:60]) for k in VISUAL_KEYS]
-    lines = [labels["title"]]
-    lines += [f"• {labels[k]}: {v}" for k, v in rows if v not in (None, "")]
-    if details:
-        lines += ["", labels["seen"]] + [f"• {d}" for d in details[:8]]
-    return "\n".join(lines) if len(lines) > 1 else ""
+    return _report_text(labels["title"], rows, details, labels)
+
+
+def card_details(
+    db: Session, conv: AiConversation, lang: str = "hinglish", updated: set | frozenset = frozenset(),
+) -> str:
+    """Full card: what the user typed (wins) + everything read from this card's photos/papers."""
+    from .tools import _payload
+
+    payload = _payload(conv)
+    reads: list[dict] = []
+    if conv.draft_id:
+        rows_q = (
+            db.query(AiMedia)
+            .filter(
+                AiMedia.conversation_id == conv.id,
+                AiMedia.draft_id == conv.draft_id,
+                AiMedia.extract_kind.in_(["vehicle_fields", "document_fields"]),
+            )
+            .order_by(AiMedia.id.desc())
+            .limit(MAX_VISION_READS_PER_CARD)
+            .all()
+        )
+        brand = _clean(payload.get("brand")).lower()
+        for row in rows_q:
+            data = parse_read(row.extracted_text)
+            b = _clean(listing_fields(data).get("brand")).lower() if data else ""
+            if data and not (b and brand and b != brand):
+                reads.append(data)
+    labels = _labels(lang)
+    merged, details = _merge_reads(reads)
+    seen = listing_fields(merged)
+    docs = payload.get("vehicle_docs") if isinstance(payload.get("vehicle_docs"), dict) else {}
+
+    def pick(key):
+        v = payload.get(key)
+        return v if v not in (None, "", [], {}) else seen.get(key)
+
+    place = ", ".join(str(x) for x in dict.fromkeys(x for x in (pick("city"), pick("state")) if x))
+    rows = [
+        ("category", pick("category")), ("brand", pick("brand")), ("model", pick("model")),
+        ("year", pick("year")), ("fuel", pick("fuel")), ("place", place),
+        ("km", payload.get("running_km")), ("hours", payload.get("operating_hours")),
+        ("price", payload.get("expected_price")),
+    ]
+    rows += [
+        (k, _clean(docs.get(k) or merged.get(k))[:60]) for k in DOC_FACT_KEYS if k != "registering_authority"
+    ]
+    rows += [(k, _clean(payload.get(k) if k == "condition" and payload.get(k) else merged.get(k))[:60])
+             for k in VISUAL_KEYS]
+    card = payload.get("active_card_id") or ""
+    title = labels["card_title"] + (f" — {card}" if card else "")
+    marks = {"place" if k in {"city", "state", "location"} else
+             {"running_km": "km", "operating_hours": "hours", "expected_price": "price"}.get(k, k) for k in updated}
+    return _report_text(title, rows, details, labels, marks)

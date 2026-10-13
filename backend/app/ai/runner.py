@@ -493,6 +493,9 @@ def process_inbound(
                 reply = decorate_office_reply(db, conv, reply)
                 reply = with_agent_intro(db, conv, conv_id, mobile, lang, reply)
 
+            from .card_ledger import sync as ledger_sync
+
+            ledger_sync(conv)
             pl = _payload(conv)
             if pl.get("active_card_id"):
                 set_active_card(mobile, pl["active_card_id"])
