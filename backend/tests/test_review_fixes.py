@@ -446,3 +446,50 @@ def test_photo_report_covers_only_this_vehicle(db):
     assert "JCB" in asked and "Haalat: Good" in asked
     assert "Half body" not in asked and "BR01AB1234" not in asked and "N/A" not in asked
     assert other.id
+
+
+def test_website_payload_fills_fields_and_puts_the_rest_in_description(db):
+    """After YES: every detail goes to its website field; the rest goes into the description."""
+    from app.infradealer.payloads import build_listing_payload
+    from app.models import AiMedia
+
+    conv = AiConversation(mobile="919000777009", conversation_id="CONV_9000777009", state="NEW")
+    db.add(conv)
+    db.flush()
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="READY", title="Force Traveller")
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    payload = {
+        "intent": "SELL", "category": "Bus", "brand": "Force", "model": "Traveller",
+        "registration_year": 2019, "running_km": "180000", "expected_price": "8 lakh",
+        "state": "Bihar", "city": "Patna", "description": "18 seter school passing MH12AB1234 call 9876543210",
+        "condition": "Very good", "owners": "2", "fuel": "Diesel", "tyre_percent": "70%",
+        "vehicle_docs": {"insurance_valid_upto": "22-Jul-2027", "registration_number": "BR06GG8841",
+                         "hypothecated": "Yes"},
+    }
+    conv.payload_json = json.dumps(payload)
+    db.add(AiMedia(conversation_id=conv.id, draft_id=draft.id, kind="image", extract_kind="vehicle_fields",
+                   extracted_text=json.dumps({"brand": "Force", "colour": "Yellow", "body_type": "Minibus",
+                                              "owner_name": "R***", "details": ["Roof carrier", "Owner: Ram"]})))
+    db.flush()
+
+    listing = build_listing_payload(db, conv, draft, payload, "req-desc-1")["listing"]
+    assert (listing["category"], listing["make_model"], listing["year"]) == ("buses", "Force Traveller", 2019)
+    assert (listing["km"], listing["price"], listing["state"], listing["city"]) == (180000, 800000, "Bihar", "Patna")
+    desc = listing["description"]
+    assert desc.startswith("18 seter school passing")
+    for line in ("Condition: Very good", "Owners: 2", "Fuel: Diesel", "Tyre: 70%",
+                 "Insurance valid till: 22-Jul-2027", "Colour: Yellow", "Body: Minibus", "Roof carrier"):
+        assert line in desc, line
+    for secret in ("MH12AB1234", "BR06GG8841", "9876543210", "Ram", "R***", "Hypothecat"):
+        assert secret not in desc, secret
+
+
+def test_hours_machine_keeps_unit_in_description(db):
+    from app.infradealer.payloads import _ad_description
+
+    text = _ad_description({"operating_hours": "6500", "condition": "Good"}, {}, "JCB 3DX", [], "Hours")
+    assert text.startswith("JCB 3DX for sale.")
+    assert "Usage: 6500 hours" in text and "Condition: Good" in text
+    assert "BS 6 2024" in _ad_description({"description": "BS 6 2024 model"}, {}, "Truck")

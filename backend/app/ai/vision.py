@@ -673,6 +673,52 @@ def image_report(
     return _report_text(labels["title"], rows, details, labels)
 
 
+def _draft_reads(db: Session, conv: AiConversation, draft_id, payload: dict) -> list[dict]:
+    """This card's photo/paper reads, minus photos of a different brand than the card."""
+    if not draft_id:
+        return []
+    rows = (
+        db.query(AiMedia)
+        .filter(
+            AiMedia.conversation_id == conv.id,
+            AiMedia.draft_id == draft_id,
+            AiMedia.extract_kind.in_(["vehicle_fields", "document_fields"]),
+        )
+        .order_by(AiMedia.id.desc())
+        .limit(MAX_VISION_READS_PER_CARD)
+        .all()
+    )
+    brand = _clean(payload.get("brand")).lower()
+    reads: list[dict] = []
+    for row in rows:
+        data = parse_read(row.extracted_text)
+        b = _clean(listing_fields(data).get("brand")).lower() if data else ""
+        if data and not (b and brand and b != brand):
+            reads.append(data)
+    return reads
+
+
+_PUBLIC_DOC_KEYS = tuple(k for k in DOC_FACT_KEYS if k not in {"registration_number", "hypothecated"})
+
+
+def public_photo_facts(db: Session, conv: AiConversation, draft_id, payload: dict) -> list[str]:
+    """Website-safe 'Label: value' lines read from this card's photos (no plate/owner/loan)."""
+    merged, details = _merge_reads(_draft_reads(db, conv, draft_id, payload))
+    labels = _REPORT_LABELS["en"]
+    docs = payload.get("vehicle_docs") if isinstance(payload.get("vehicle_docs"), dict) else {}
+    lines = []
+    for k in VISUAL_KEYS:
+        v = _clean(merged.get(k))[:60]
+        if v and not (k == "condition" and payload.get("condition")):
+            lines.append(f"{labels[k]}: {v}")
+    for k in _PUBLIC_DOC_KEYS:
+        v = _clean(merged.get(k))[:60]
+        if v and not docs.get(k) and k in labels:
+            lines.append(f"{labels[k]}: {v}")
+    lines += [d for d in details[:8] if not _PRIVATE_DETAIL.search(d)]
+    return lines
+
+
 def card_details(
     db: Session, conv: AiConversation, lang: str = "hinglish", updated: set | frozenset = frozenset(),
 ) -> str:
@@ -680,27 +726,8 @@ def card_details(
     from .tools import _payload
 
     payload = _payload(conv)
-    reads: list[dict] = []
-    if conv.draft_id:
-        rows_q = (
-            db.query(AiMedia)
-            .filter(
-                AiMedia.conversation_id == conv.id,
-                AiMedia.draft_id == conv.draft_id,
-                AiMedia.extract_kind.in_(["vehicle_fields", "document_fields"]),
-            )
-            .order_by(AiMedia.id.desc())
-            .limit(MAX_VISION_READS_PER_CARD)
-            .all()
-        )
-        brand = _clean(payload.get("brand")).lower()
-        for row in rows_q:
-            data = parse_read(row.extracted_text)
-            b = _clean(listing_fields(data).get("brand")).lower() if data else ""
-            if data and not (b and brand and b != brand):
-                reads.append(data)
     labels = _labels(lang)
-    merged, details = _merge_reads(reads)
+    merged, details = _merge_reads(_draft_reads(db, conv, conv.draft_id, payload))
     seen = listing_fields(merged)
     docs = payload.get("vehicle_docs") if isinstance(payload.get("vehicle_docs"), dict) else {}
 

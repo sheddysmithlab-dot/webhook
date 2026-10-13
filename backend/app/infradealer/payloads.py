@@ -127,48 +127,78 @@ def _km_and_unit(payload: dict, category: str) -> tuple[int | None, str]:
     return None, "Hours" if category in HOUR_CATEGORIES else "KM"
 
 
-def _ad_description(payload: dict, confirmed: dict, title: str) -> str:
-    raw = str(payload.get("description") or confirmed.get("description") or "").strip()
-    if raw:
-        return strip_contact_from_text(raw)
-    lines = []
-    if title:
-        lines.append(f"{title} for sale.")
-    cond = payload.get("condition") or confirmed.get("condition")
-    if cond:
-        lines.append(f"Condition: {cond}")
-    running = payload.get("running") or payload.get("running_km") or payload.get("operating_hours")
-    if running:
-        lines.append(f"Running: {running}")
+_DOC_LINES = (
+    ("Vehicle class", "vehicle_class"),
+    ("Emission norm", "emission_norm"),
+    ("Registered", "registration_date"),
+    ("RTO", "registering_authority"),
+    ("Insurance valid till", "insurance_valid_upto"),
+    ("Fitness valid till", "fitness_valid_upto"),
+    ("Tax valid till", "tax_valid_upto"),
+    ("PUC valid till", "puc_valid_upto"),
+    ("Permit valid till", "permit_valid_upto"),
+    ("National permit valid till", "national_permit_valid_upto"),
+)
+_PLATE_RE = re.compile(r"\b[A-Z]{2}[\s-]?\d{1,2}[\s-]?[A-Z]{1,3}[\s-]?\d{4}\b", re.I)
+# Never public from photo reads: plate, owner, chassis/engine numbers, loan status.
+_PRIVATE = re.compile(
+    r"owner|father|husband|s/o|d/o|w/o|mobile|phone|contact|address|chassis|engine\s*(?:no|number)|"
+    r"hypothecat|registration\s*(?:no|number)|\d{10}",
+    re.I,
+)
+
+
+def _ad_description(
+    payload: dict, confirmed: dict, title: str, photo_facts: list[str] | None = None, km_unit: str = "",
+) -> str:
+    """Seller's own words first, then every collected detail the Post Your Ad form has no field for."""
+    def val(key):
+        v = payload.get(key)
+        return v if v not in (None, "", [], {}) else confirmed.get(key)
+
+    raw = strip_contact_from_text(_PLATE_RE.sub("", str(val("description") or "")).strip())
+    lines: list[str] = []
+    hours = _running_number(payload.get("operating_hours"))
+    if km_unit == "Hours" and hours:
+        lines.append(f"Usage: {hours} hours")
+    elif payload.get("running") and not _running_number(payload.get("running_km")):
+        lines.append(f"Running: {payload['running']}")
     for label, key in (
+        ("Condition", "condition"),
         ("Owners", "owners"),
+        ("Fuel", "fuel"),
+        ("Registration year", "registration_year"),
+        ("Tyre", "tyre_percent"),
         ("Finance", "finance_amount"),
         ("Finance condition", "finance_condition"),
-        ("Tyre", "tyre_percent"),
         ("Work/issues", "work_issues"),
+        ("Accident history", "accident_history"),
+        ("Negotiable", "negotiable"),
     ):
-        val = payload.get(key) or confirmed.get(key)
-        if val:
-            lines.append(f"{label}: {val}")
-    fuel = payload.get("fuel") or confirmed.get("fuel")
-    if fuel:
-        lines.append(f"Fuel: {fuel}")
+        v = val(key)
+        if v not in (None, "", [], {}):
+            lines.append(f"{label}: {'Yes' if v is True else 'No' if v is False else v}")
     docs = payload.get("vehicle_docs") if isinstance(payload.get("vehicle_docs"), dict) else {}
-    for label, key in (
-        ("Emission norm", "emission_norm"),
-        ("Registered", "registration_date"),
-        ("RTO", "registering_authority"),
-        ("Insurance valid till", "insurance_valid_upto"),
-        ("Fitness valid till", "fitness_valid_upto"),
-        ("Tax valid till", "tax_valid_upto"),
-        ("PUC valid till", "puc_valid_upto"),
-        ("Permit valid till", "permit_valid_upto"),
-        ("National permit valid till", "national_permit_valid_upto"),
-    ):
-        if docs.get(key):
-            lines.append(f"{label}: {docs[key]}")
-    text = "\n".join(lines) or f"{title or 'Equipment'} for sale on InfraDealer."
-    return strip_contact_from_text(text)
+    lines += [f"{label}: {docs[key]}" for label, key in _DOC_LINES if docs.get(key)]
+    lines += [str(x) for x in (photo_facts or []) if not _PRIVATE.search(str(x))]
+
+    seen = raw.lower()
+    extra: list[str] = []
+    for line in lines:
+        line = strip_contact_from_text(str(line)).strip()
+        if not line or _PLATE_RE.search(line):
+            continue
+        value = line.split(":", 1)[-1].strip().lower()
+        if len(value) >= 4 and re.search(rf"(?<!\w){re.escape(value)}(?!\w)", seen):
+            continue
+        seen += "\n" + line.lower()
+        extra.append(line)
+
+    parts = [raw] if raw else ([f"{title} for sale."] if title else [])
+    if extra:
+        parts.append("Details:\n" + "\n".join(f"• {x}" for x in extra))
+    text = "\n\n".join(parts) or f"{title or 'Equipment'} for sale on InfraDealer."
+    return strip_contact_from_text(text)[:5000]
 
 
 def _phone_e164(mobile: str) -> str:
@@ -241,7 +271,7 @@ def build_listing_payload(
     ]
     price_raw = payload.get("expected_price") or payload.get("budget") or confirmed.get("rate") or ""
     price_num = parse_listing_price(str(price_raw)) if price_raw else 0.0
-    year = _year(payload.get("year") or confirmed.get("year"))
+    year = _year(payload.get("year") or confirmed.get("year") or payload.get("registration_year"))
     internal_cat = listing_category(
         payload,
         str(payload.get("category") or confirmed.get("category") or "Other"),
@@ -285,7 +315,13 @@ def build_listing_payload(
     if city and city == state:
         city = ""
     area = payload.get("area") or payload.get("locality") or ""
-    description = _ad_description(payload, confirmed, title)
+    try:
+        from ..ai.vision import public_photo_facts
+
+        photo_facts = public_photo_facts(db, conv, draft.id if draft else conv.draft_id, payload)
+    except Exception:
+        photo_facts = []
+    description = _ad_description(payload, confirmed, title, photo_facts, km_unit)
     customer = {
         "name": owner,
         # Always the WhatsApp / InfraDealer account number for account lookup.
