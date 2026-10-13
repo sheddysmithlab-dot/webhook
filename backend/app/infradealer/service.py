@@ -285,8 +285,22 @@ class InfraDealerIntegrationService:
             .first()
         )
 
+    @staticmethod
+    def listing_rejected(draft: AiListingDraft, payload: dict | None = None) -> bool:
+        """Admin rejected the last push — a fresh YES must push again (draft status may have
+        been reset to COLLECTING by later edits, so the payload is checked too)."""
+        pl = payload or {}
+        sub = pl.get("submission") if isinstance(pl.get("submission"), dict) else {}
+        return "REJECTED" in {
+            (draft.status or "").upper(),
+            str(pl.get("listing_status") or "").upper(),
+            str(sub.get("status") or "").upper(),
+        }
+
     def listing_already_pushed(self, conv: AiConversation, draft: AiListingDraft, payload: dict | None = None) -> bool:
         pl = payload or {}
+        if self.listing_rejected(draft, pl):
+            return False
         if pl.get("infradealer_listing_id"):
             return True
         if (draft.status or "").upper() in {"POSTED", "PENDING_REVIEW", "APPROVED", "LIVE"}:
@@ -650,7 +664,7 @@ class InfraDealerIntegrationService:
         state.pending_draft_id = None
 
     def push_listing_for_draft(self, conv: AiConversation, draft: AiListingDraft, payload: dict) -> InfraDealerOutbox | None:
-        rejected = (draft.status or "").upper() == "REJECTED"
+        rejected = self.listing_rejected(draft, payload)
         existing = self._find_listing_push_outbox(draft.id)
         if existing and not (existing.status == "DONE" and rejected):
             return existing

@@ -185,15 +185,15 @@ def summary_text(payload_or_snap: dict, lang: str = "hinglish", card_id: str = "
 
 
 def no_photo_note(payload: dict, lang: str = "hinglish") -> str:
-    """Photos are optional: mention them on the summary instead of asking for them."""
-    if str(payload.get("intent") or "").upper() != "SELL" or payload.get("media_ids") or payload.get("photos_complete"):
+    """Listing needs at least 2 photos: say so on the summary before the YES."""
+    if str(payload.get("intent") or "").upper() != "SELL" or len(payload.get("media_ids") or []) >= 2 or payload.get("photos_complete"):
         return ""
     code = (lang or "hinglish").lower()
     if code in {"hi", "hindi"}:
-        return "फोटो नहीं है — हों तो हाँ से पहले भेज दें।"
+        return "📷 कम से कम 2 फोटो ज़रूरी हैं — हाँ से पहले गाड़ी की फोटो भेजें।"
     if code in {"en", "english"}:
-        return "No photos yet — send them before replying YES if you have any."
-    return "Photo nahi hai — ho to Haan se pehle bhej dijiye."
+        return "📷 At least 2 photos are required — send the vehicle photos before replying YES."
+    return "📷 Kam se kam 2 photo zaroori hain — Haan se pehle gaadi ki photos bhejiye."
 
 
 def send_summary(db: Session, conv: AiConversation, lang: str = "hinglish") -> str:
@@ -256,6 +256,10 @@ def handle_confirmation(
     if is_yes(text) or _POST_CONFIRM.search(text or ""):
         result = submit_confirmed_listing(db, conv)
         if result.get("ok") is False:
+            if result.get("error") == "photos_required":
+                from .chat_memory import submit_failure_reply
+
+                return submit_failure_reply(lang, result)
             if result.get("error") == "token_insufficient":
                 buy = result.get("buy_link") or "https://infradealer.com/wallet"
                 return t(lang, "tokens_buy", link=buy)

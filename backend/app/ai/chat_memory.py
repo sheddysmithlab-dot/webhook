@@ -732,6 +732,21 @@ def interpret_confirmation(text: str, payload: dict) -> str:
     return "UNCLEAR"
 
 
+MIN_LISTING_PHOTOS = 2
+
+
+def submit_failure_reply(lang: str, result: dict) -> str:
+    """What to tell the user when a YES did not reach the website (never "submitted")."""
+    err = str(result.get("error") or "")
+    if err == "photos_required":
+        return t(lang, "photos_required", have=int(result.get("photos") or 0), need=MIN_LISTING_PHOTOS)
+    if err == "token_insufficient":
+        return t(lang, "tokens_buy", link=result.get("buy_link") or "https://infradealer.com/wallet")
+    if result.get("status") in {"RETRY", "DELIVERY_FAILED", "FAILED"}:
+        return t(lang, "submit_retry")
+    return t(lang, "submit_blocked")
+
+
 def submit_confirmed_listing(db: Session, conv: AiConversation) -> dict:
     payload = _payload(conv)
 
@@ -740,6 +755,18 @@ def submit_confirmed_listing(db: Session, conv: AiConversation) -> dict:
         _set_rm_state(payload, "WAITING_FOR_MISSING_DATA")
         _write_payload(conv, payload)
         return {"ok": False, "error": "account_not_eligible", "status": "SUBMISSION_BLOCKED"}
+
+    # The website rejects listings without photos — never push one (user or office desk).
+    if str(payload.get("intent") or "SELL").upper() != "BUY":
+        from ..identity import unique_photo_ids
+
+        have = len(unique_photo_ids(db, conv, payload))
+        if have < MIN_LISTING_PHOTOS:
+            payload["awaiting_confirm"] = True
+            payload["customer_confirmed"] = False
+            payload["photos_complete"] = False
+            _write_payload(conv, payload)
+            return {"ok": False, "error": "photos_required", "photos": have, "status": "SUBMISSION_BLOCKED"}
 
     version = int(payload.get("draft_version") or 1)
     payload["customer_confirmed"] = True
@@ -1253,8 +1280,8 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                         buy = result.get("buy_link") or (_payload(conv).get("account_buy_link") or "https://infradealer.com/wallet")
                         reply = t(lang, "tokens_buy", link=buy)
                         response_type = "ERROR_MESSAGE"
-                    elif result.get("ok") is False and result.get("status") in {"RETRY", "DELIVERY_FAILED", "FAILED"}:
-                        reply = t(lang, "submit_retry")
+                    elif result.get("ok") is False:
+                        reply = submit_failure_reply(lang, result)
                         response_type = "ERROR_MESSAGE"
                     else:
                         reply = t(lang, "submitted")
@@ -1283,8 +1310,8 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                     buy = result.get("buy_link") or (_payload(conv).get("account_buy_link") or "https://infradealer.com/wallet")
                     reply = t(lang, "tokens_buy", link=buy)
                     response_type = "ERROR_MESSAGE"
-                elif result.get("ok") is False and result.get("status") in {"RETRY", "DELIVERY_FAILED", "FAILED"}:
-                    reply = t(lang, "submit_retry")
+                elif result.get("ok") is False:
+                    reply = submit_failure_reply(lang, result)
                     response_type = "ERROR_MESSAGE"
                 else:
                     reply = t(lang, "submitted")

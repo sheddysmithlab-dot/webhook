@@ -537,3 +537,84 @@ def test_website_payload_drops_junk_city(db):
     assert "city" not in listing and listing["state"] == "Haryana"
     payload["city"] = "Sirsa"
     assert build_listing_payload(db, conv, None, payload, "req-desc-4")["listing"]["city"] == "Sirsa"
+
+
+def test_rejected_card_is_pushed_again_after_edits(db, monkeypatch):
+    """Website rejected the listing; later edits reset the draft to COLLECTING — YES must push again."""
+    from app.ai.data_push import _idempotent_short_circuit
+    from app.infradealer.service import InfraDealerIntegrationService
+    from app.models import InfraDealerOutbox
+
+    pl = {"intent": "SELL", "category": "Truck", "brand": "BharatBenz", "model": "1314",
+          "listing_status": "REJECTED", "infradealer_listing_id": "211",
+          "submission": {"status": "REJECTED", "idempotency_key": "k1"}}
+    conv = AiConversation(mobile="919000777012", conversation_id="CONV_9000777012", state="NEW",
+                          payload_json=json.dumps(pl))
+    db.add(conv)
+    db.flush()
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="COLLECTING", title="BharatBenz 1314")
+    db.add(draft)
+    db.flush()
+    db.add(InfraDealerOutbox(event_type="LISTING_PUSH", request_id="old-211", status="DONE",
+                             conversation_id=conv.id, draft_id=draft.id))
+    db.flush()
+
+    svc = InfraDealerIntegrationService(db)
+    assert svc.listing_rejected(draft, pl) and not svc.listing_already_pushed(conv, draft, pl)
+    queued = []
+    monkeypatch.setattr(svc, "enqueue", lambda event, body, **kw: queued.append(kw.get("request_id")) or "new")
+    assert svc.push_listing_for_draft(conv, draft, pl) == "new"
+    assert queued and queued[0] != "old-211"
+    assert _idempotent_short_circuit(pl, "k1", "r") is None
+
+
+def test_burst_interior_misread_does_not_fill_card(db, monkeypatch, tmp_path):
+    from app.ai import vision
+    from app.ai.tools import _payload, _write_payload
+    from app.models import AiMedia
+
+    conv = AiConversation(mobile="919000777013", conversation_id="CONV_9000777013", state="NEW")
+    db.add(conv)
+    db.flush()
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="COLLECTING")
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    _write_payload(conv, {"intent": "SELL"})
+    answers = {
+        "a.jpg": {"category": "Truck", "brand": "Tata", "model": "1314", "registration_number": "RJ14AJ5094",
+                  "colour": "White", "tyres": "10"},
+        "b.jpg": {"category": "Bus", "brand": "Force", "model": "Traveller", "details": ["Cabin interior"]},
+    }
+    rows = []
+    for name in ("a.jpg", "b.jpg"):
+        p = tmp_path / name
+        p.write_bytes(b"x")
+        row = AiMedia(conversation_id=conv.id, draft_id=draft.id, kind="image", local_path=str(p), mime="image/jpeg")
+        db.add(row)
+        db.flush()
+        rows.append(row)
+    monkeypatch.setattr(vision, "resolve_media_config", lambda db_: {})
+    monkeypatch.setattr(vision, "extract_text_from_image",
+                        lambda db_, conv_, f, prompt="", cfg=None: json.dumps(answers[f.local_path.split("\\")[-1].split("/")[-1]]))
+    filled, ids = vision.fill_listing_from_burst(db, conv, rows[1], window_seconds=None)
+    pl = _payload(conv)
+    assert (pl["brand"], pl["model"], pl["category"]) == ("Tata", "1314", "Truck")
+    assert sorted(ids) == sorted(r.id for r in rows)
+    report = vision.image_report(db, conv, "hinglish", media_ids=ids)
+    assert "Tata" in report and "Force" not in report and "Cabin interior" not in report
+
+
+def test_yes_without_two_photos_is_not_pushed(db, monkeypatch):
+    from app.ai import chat_memory
+    from app.ai.tools import _payload, _write_payload
+
+    conv = AiConversation(mobile="919000777014", conversation_id="CONV_9000777014", state="NEW")
+    db.add(conv)
+    db.flush()
+    _write_payload(conv, {"intent": "SELL", "brand": "Tata", "awaiting_confirm": True})
+    monkeypatch.setattr(chat_memory, "execute_tool", lambda *a, **k: pytest.fail("must not submit"))
+    out = chat_memory.submit_confirmed_listing(db, conv)
+    assert out == {"ok": False, "error": "photos_required", "photos": 0, "status": "SUBMISSION_BLOCKED"}
+    assert _payload(conv)["awaiting_confirm"] and not _payload(conv)["customer_confirmed"]
+    assert "kam se kam 2 photo" in chat_memory.submit_failure_reply("hinglish", out).lower()

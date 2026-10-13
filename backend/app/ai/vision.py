@@ -255,9 +255,11 @@ _VEHICLE_PROMPT = (
     "2825.K, Prima 3530, LPT 1613, 1109, Ecomet 1615, Pro 2049, 3DX). Ignore phone camera / app "
     "watermarks (e.g. 'Shot on ...', POVA, Redmi, vivo, OPPO, realme, Samsung, timestamps) and "
     "dealer phone numbers — never use them as brand, model or place. "
-    "A tall van-shaped minibus with a flat sloping nose (often yellow school van) is a Force Traveller "
-    "(category Bus). If no maker logo or badge is readable, leave brand and model out instead of "
-    "guessing from the body shape.\n"
+    "Only an OUTSIDE view of a tall van-shaped minibus with a flat sloping nose and a Force badge is a "
+    "Force Traveller (category Bus). A photo taken INSIDE a cabin or body (seats, bed, roof, dashboard, "
+    "garlands) does not show the vehicle type: leave category, brand and model out. "
+    "If no maker logo or badge is readable, leave brand and model out instead of guessing from the "
+    "body shape.\n"
     "Reply with ONLY one JSON object, omitting keys you cannot read: "
     '"image_type" (vehicle_photo, rc_document, app_screenshot, insurance, other), '
     '"category" (one of Truck, Dumper, Tipper, Crane, Poclain, Loader, Backhoe Loader, JCB, '
@@ -465,16 +467,51 @@ def fill_listing_from_burst(
         raws = list(pool.map(
             lambda f: extract_text_from_image(None, None, f, prompt=_VEHICLE_PROMPT, cfg=cfg), files,
         ))
+    from .tools import _payload
+
+    reads = [(row, parse_read(raw)) for row, raw in zip(rows, raws)]
+    main = _main_brand([d for _, d in reads], prefer=_payload(conv).get("brand"))
+    # Photos agreeing with the burst's vehicle fill the card first; an odd read
+    # (cabin interior, a second vehicle) is kept for the report but fills nothing.
+    reads.sort(key=lambda rd: not _same_brand(rd[1], main))
     filled: dict = {}
     read_ids: list[int] = []
-    for row, raw in zip(rows, raws):
-        data = parse_read(raw)
+    for row, data in reads:
         if data:
             read_ids.append(row.id)
+        if data and not _same_brand(data, main):
+            row.extracted_text = json.dumps(data, ensure_ascii=False)
+            row.extract_kind = "vehicle_fields"
+            continue
         filled.update({k: v for k, v in _apply_read(conv, row, data).items() if k not in filled})
     # SessionLocal has autoflush off: the report query must see these reads.
     db.flush()
     return filled, read_ids
+
+
+def _read_brand(data: dict | None) -> str:
+    return _clean(listing_fields(data or {}).get("brand")).lower() if data else ""
+
+
+def _same_brand(data: dict | None, main: str) -> bool:
+    b = _read_brand(data)
+    return not b or not main or b == main
+
+
+def _main_brand(reads: list[dict], prefer=None) -> str:
+    """The vehicle these photos show: the card's brand, else the brand most reads agree on
+    (ties go to the read with the most details — an exterior shot beats a cabin interior)."""
+    want = _clean(prefer).lower()
+    if want:
+        return want
+    score: dict[str, tuple[int, int]] = {}
+    for data in reads:
+        b = _read_brand(data)
+        if not b:
+            continue
+        n, rich = score.get(b, (0, 0))
+        score[b] = (n + 1, max(rich, sum(1 for k, v in data.items() if k != "details" and _clean(v))))
+    return max(score, key=score.get) if score else ""
 
 
 def _reserve_read(conv: AiConversation, is_document: bool) -> bool:
@@ -610,19 +647,12 @@ def _card_reads(db: Session, conv: AiConversation, media_ids: list[int] | None =
         if latest.created_at is not None:
             q = q.filter(AiMedia.created_at >= latest.created_at - timedelta(seconds=BURST_WINDOW_SECONDS))
         rows = q.order_by(AiMedia.id.desc()).limit(MAX_VISION_READS_PER_CARD).all()
-    out: list[dict] = []
-    brand = ""
-    for row in rows:
-        data = parse_read(row.extracted_text)
-        if not data:
-            continue
-        # A photo of another vehicle in the same burst must not mix into this report.
-        b = _clean(listing_fields(data).get("brand")).lower()
-        if b and brand and b != brand:
-            continue
-        brand = brand or b
-        out.append(data)
-    return out
+    from .tools import _payload
+
+    datas = [d for d in (parse_read(row.extracted_text) for row in rows) if d]
+    # A photo of another vehicle (or a misread interior) in the same burst must not mix into this report.
+    main = _main_brand(datas, prefer=_payload(conv).get("brand"))
+    return [d for d in datas if _same_brand(d, main)]
 
 
 _NA = re.compile(r"^(n/?a|na|none|null|unknown|not\s+(visible|available|clear)|-+)$", re.I)

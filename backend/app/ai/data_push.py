@@ -810,6 +810,8 @@ def _idempotent_short_circuit(
 ) -> PushResult | None:
     """Return existing submission if same key already acknowledged."""
     existing = payload.get("submission") if isinstance(payload.get("submission"), dict) else {}
+    if "REJECTED" in {str(existing.get("status") or "").upper(), str(payload.get("listing_status") or "").upper()}:
+        return None
     if (
         existing.get("idempotency_key") == idem
         and STATUS_RANK.get(str(existing.get("status") or "").upper(), 0) >= STATUS_RANK["ADMIN_ACKNOWLEDGED"]

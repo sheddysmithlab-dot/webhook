@@ -740,6 +740,30 @@ def is_office_session(db: Session, conv: AiConversation) -> bool:
 _COOLDOWN_LINE = re.compile(r"^.*(?:\b10\s*(?:minute|minutes|min)\b|10\s*मिनट).*$\n?", re.I | re.M)
 
 
+def _office_post_result(payload: dict, who: str) -> str:
+    """Only claim "posted" when the website actually returned a listing for this card."""
+    status = str(payload.get("listing_status") or "").upper()
+    lid = str(payload.get("infradealer_listing_id") or "")
+    if status == "REJECTED":
+        reason = payload.get("rejection_reason") or "-"
+        return (
+            f"❌ Listing post nahi hui — website ne reject ki hai.\nKaran: {reason}\n\n"
+            "Theek karke (photos / details) dobara bhejein, phir YES likhein."
+        )
+    if not lid or status not in {"POSTED", "PENDING_REVIEW", "LIVE", "APPROVED"}:
+        return "⏳ Listing website ko bheji ja rahi hai — confirm hote hi link yahin bhej denge."
+    link = payload.get("listing_url") or ""
+    if not link:
+        from .data_push import public_listing_url
+
+        link = public_listing_url(lid)
+    return (
+        f"✅ Listing {who} ke account par post ho gayi (live)."
+        + (f"\n🔗 {link}" if link else "")
+        + "\n\nAgli listing: isi customer ki agli gaadi bhejein, ya naya customer select karein (98XXXXXXXX)."
+    )
+
+
 def decorate_office_reply(db: Session, conv: AiConversation, reply: str) -> str:
     """Show which customer account a listing will post to at the confirm step."""
     if not reply:
@@ -751,10 +775,7 @@ def decorate_office_reply(db: Session, conv: AiConversation, reply: str) -> str:
             # Office listings are approved on creation; a failed push never reaches this text.
             target = active_target(operator) or {}
             who = target.get("name") or target.get("phone") or "customer"
-            reply = (
-                f"✅ Listing {who} ke account par post ho gayi (live)."
-                "\n\nAgli listing: isi customer ki agli gaadi bhejein, ya naya customer select karein (98XXXXXXXX)."
-            )
+            reply = _office_post_result(_payload(conv), who)
     except Exception:
         log.exception("office_mode: cooldown strip failed")
     if "Post to:" in reply:

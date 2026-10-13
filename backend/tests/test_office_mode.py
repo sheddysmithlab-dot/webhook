@@ -1,4 +1,4 @@
-"""Office operator (postdesk) mode: customer select/create, confirm guard, listing target."""
+﻿"""Office operator (postdesk) mode: customer select/create, confirm guard, listing target."""
 
 from __future__ import annotations
 
@@ -490,8 +490,20 @@ def test_office_submit_reply_has_no_cooldown(db, client):
     conv = _conv(db, account_type="office")
     om.handle_office_turn(db, conv, "customer 9876543210")
     out = om.decorate_office_reply(db, conv, t("hi", "submitted"))
+    assert "post ho gayi" not in out and "10 मिनट" not in out
+
+    pl = _payload(conv)
+    pl.update({"listing_status": "POSTED", "infradealer_listing_id": "211"})
+    _write_payload(conv, pl)
+    out = om.decorate_office_reply(db, conv, t("hi", "submitted"))
     assert "10 मिनट" not in out and "रिव्यू" not in out and "Agli listing" in out
     assert "ramesh.kumar" in out and "post ho gayi (live)" in out
+    assert "https://infradealer.com/listings/211" in out
+
+    pl.update({"listing_status": "REJECTED", "rejection_reason": "photos not present"})
+    _write_payload(conv, pl)
+    out = om.decorate_office_reply(db, conv, t("hi", "submitted"))
+    assert "post ho gayi" not in out and "photos not present" in out
     regular = _conv(db, mobile="9000111333", account_type="free")
     assert "10 मिनट" in om.decorate_office_reply(db, regular, t("hi", "submitted"))
 
@@ -530,7 +542,7 @@ def test_full_listing_text_without_photos_goes_to_summary(db, client, monkeypatc
     monkeypatch.setattr(eng, "needs_account_gate", lambda payload: False)
     monkeypatch.setattr(eng, "prompt_chat_enabled", lambda db: True)
     out = eng.prompt_chat_turn(db, conv, "Eicher Pro 3015 truck 2019 Sagar 12 lakh")
-    assert "Eicher" in out and "Photo nahi hai" in out
+    assert "Eicher" in out and "2 photo zaroori" in out
     assert _payload(conv).get("awaiting_confirm")
 
 
@@ -619,6 +631,9 @@ def test_office_submit_reply_says_live(db, client):
 
     conv = _conv(db, account_type="office")
     om.handle_office_turn(db, conv, "customer 9876543210")
+    pl = _payload(conv)
+    pl.update({"listing_status": "POSTED", "infradealer_listing_id": "7"})
+    _write_payload(conv, pl)
     out = om.decorate_office_reply(db, conv, t("hi", "submitted"))
     assert "post ho gayi (live)" in out and "submit ho gayi" not in out
 
@@ -890,6 +905,7 @@ def test_summary_then_yes_pushes_and_sends_link(db, client, monkeypatch):
 
     monkeypatch.setattr(data_push, "push_listing", fake_push)
     monkeypatch.setattr(services, "send_whatsapp_button", lambda *a, **k: sent.append(a) or {})
+    _card_photos(db, conv)
     done = eng.prompt_chat_turn(db, conv, "Haan")
     assert pushed == [conv.id]
     assert sent and sent[0][3][0]["url"] == "https://infradealer.com/listings/200"
@@ -985,14 +1001,27 @@ def test_category_and_name_alone_reach_summary_and_submit(db, client, monkeypatc
     monkeypatch.setattr(eng, "llm_configured", lambda db: True)
     monkeypatch.setattr(eng, "llm_reply", lambda *a, **k: pytest.fail("LLM must not run"))
     summary = eng.prompt_chat_turn(db, conv, "Hyundai excavator")
-    assert "Hyundai" in summary and "Photo nahi hai" in summary
+    assert "Hyundai" in summary and "2 photo zaroori" in summary
     assert _payload(conv)["awaiting_confirm"]
 
     pushed = []
     monkeypatch.setattr(data_push, "push_listing", lambda db_, conv_: pushed.append(conv_.id) or data_push.PushResult(
         ok=True, status="POSTED", listing_id="300"))
+    blocked = eng.prompt_chat_turn(db, conv, "Haan")
+    assert pushed == [] and "kam se kam 2 photo" in blocked.lower()
+    assert _payload(conv)["awaiting_confirm"]
+    _card_photos(db, conv)
     eng.prompt_chat_turn(db, conv, "Haan")
     assert pushed == [conv.id]
+
+
+def _card_photos(db, conv, n=2):
+    from app.models import AiMedia
+
+    for i in range(n):
+        db.add(AiMedia(conversation_id=conv.id, draft_id=conv.draft_id, kind="image",
+                       local_path=f"/tmp/p{conv.id}_{i}.jpg", meta_media_id=f"m{conv.id}_{i}"))
+    db.flush()
 
 
 def test_website_plural_category_labels_are_understood():

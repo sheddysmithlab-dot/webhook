@@ -235,6 +235,11 @@ MESSAGES = {
         "hi": "अभी {count} फोटो मिली। कम से कम 2 साफ फोटो भेजिए।",
         "en": "Got {count} photo(s). Please send at least 2 clear photos.",
     },
+    "photos_required": {
+        "hinglish": "📷 Listing post karne ke liye kam se kam {need} photo zaroori hain (abhi {have} hai). Gaadi ki photos bhejiye, phir *Haan* likhiye.",
+        "hi": "📷 लिस्टिंग पोस्ट करने के लिए कम से कम {need} फोटो ज़रूरी हैं (अभी {have} है)। गाड़ी की फोटो भेजें, फिर *हाँ* लिखें।",
+        "en": "📷 At least {need} photos are required to post the listing (you have {have}). Send the vehicle photos, then reply *YES*.",
+    },
     "photo_not_read": {
         "hinglish": "Is card ki photo abhi padh nahi paya 📷 — photo dobara bhejiye, ya details likh kar bhej dijiye.",
         "hi": "इस कार्ड की फोटो अभी पढ़ नहीं पाया 📷 — फोटो दोबारा भेजें, या डिटेल लिखकर भेज दें।",
