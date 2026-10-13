@@ -328,6 +328,11 @@ def process_inbound(
     t_lock = t_ai = t_wa = 0.0
     path = "none"
     stale = False
+    from .i18n import normalize_input_text
+
+    text = normalize_input_text(text)
+    if media and media.get("caption"):
+        media = {**media, "caption": normalize_input_text(media["caption"])}
 
     if db.query(BlockedNumber).filter(BlockedNumber.mobile == mobile).first():
         return None

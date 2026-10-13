@@ -90,6 +90,7 @@ TOOL_DEFS = [
                     "state": {"type": "string"},
                     "city": {"type": "string"},
                     "owners": {"type": "string"},
+                    "fuel": {"type": "string"},
                     "finance_amount": {"type": "string"},
                     "tyre_percent": {"type": "string"},
                     "finance_condition": {"type": "string"},
@@ -288,7 +289,7 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
             "category", "type", "brand", "model", "year", "year_min", "registration_year",
             "running", "running_km", "operating_hours", "condition", "accident_history",
             "negotiable", "location", "state", "city", "owners", "finance_amount",
-            "tyre_percent", "finance_condition", "work_issues",
+            "tyre_percent", "finance_condition", "work_issues", "fuel",
             "expected_price", "budget", "budget_max", "description",
         )
         conf = payload.setdefault("confidence", {})
@@ -296,7 +297,7 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
             val = args.get(key)
             if val is None or str(val).strip() == "":
                 continue
-            clean = str(val).strip()[:200]
+            clean = str(val).strip()[:1000 if key == "description" else 200]
             if key in {"category", "type"}:
                 canon = normalize_vehicle_category(clean)
                 if key == "category" and not canon:

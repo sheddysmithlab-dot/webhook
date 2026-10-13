@@ -210,6 +210,7 @@ def extract_turn(text: str, extra_reps=None, media_note: str = "") -> dict:
     sellish = bool(
         media_note
         or re.search(r"bech|sell|bikau|dena|fitness|bima|insurance|tax|kimat|keemat|photo|price|rate|location", low)
+        or re.search(r"बेच|बिकाऊ|बिकाउ|विक्री|विकणे|विकायची|सेल|कीमत|किंमत|डिमांड|इंश्योरेंस|इन्शुरन्स|फोटो", text or "")
         or re.search(r"[6-9]\d{9}", low)
     )
     if not fields.get("intent") and not buyish and ((dump and sellish) or wants_new_listing(text)):

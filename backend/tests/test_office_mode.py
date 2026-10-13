@@ -82,6 +82,14 @@ def test_select_existing_customer(db, client):
     assert (row.target_user_id, row.target_phone) == ("77", "9876543210")
 
 
+def test_select_with_devanagari_digits(db, client):
+    from app.ai.i18n import normalize_input_text
+
+    conv = _conv(db)
+    assert "Customer selected" in om.handle_office_turn(db, conv, normalize_input_text("customer ९८७६५४३२१०"))
+    assert "Customer selected" in om.handle_office_turn(db, conv, normalize_input_text("९८७६५४३२१०"))
+
+
 def test_select_accepts_country_code_and_spaces(db, client):
     conv = _conv(db)
     assert "Customer selected" in om.handle_office_turn(db, conv, "Customer +91 98765 43210")

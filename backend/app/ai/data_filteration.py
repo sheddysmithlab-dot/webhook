@@ -217,16 +217,17 @@ _TATA_TRUCK_CODES = {"407", "610", "709", "710", "712", "909", "912", "1109", "1
 def _is_truck_model(blob: str, brand, model) -> bool:
     if re.search(r"(?<![a-z])(?:sfc|lpt)(?![a-z])", str(blob or "").lower()):
         return True
-    return brand == "Tata" and str(model or "") in _TATA_TRUCK_CODES
+    return brand == "Tata" and any(tok in _TATA_TRUCK_CODES for tok in str(model or "").split())
 
 _LABEL_PATTERNS = (
     ("brand", r"brand\s*name|brand|make|company|ब्रांड|ब्रान्ड|कंपनी"),
     ("description", r"description|discription|descripton|descriptions|desc|विवरण|डिस्क्रिप्शन"),
     ("year", r"model\s*year|year|yom|वर्ष|ईयर|साल"),
-    ("model", r"model\s*name|model|मॉडल|माडल|मोडल"),
+    ("model", r"model\s*name|model|मॉडल|माडल|मोडल|मॉडेल|मोडेल"),
     ("category", r"category|vehicle\s*type|कैटेगरी|श्रेणी"),
-    ("location", r"location|city|place|लोकेशन|शहर|जगह"),
-    ("_stop", r"price|कीमत|demand|rate|condition|photos?|km|running|hours?|owner|contact|state|राज्य"),
+    ("location", r"location|city|place|address|लोकेशन|शहर|जगह|पता|पत्ता|ठिकाण|स्थान"),
+    ("_stop", r"price|कीमत|किंमत|किमत|demand|डिमांड|rate|condition|photos?|km|running|hours?|owner|ओनर|"
+              r"contact|संपर्क|state|राज्य|किलोमीटर|टायर्स|टायर"),
 )
 _LABEL_RE = re.compile(
     r"(?<![A-Za-z\u0900-\u097F])(" + "|".join(p for _, p in _LABEL_PATTERNS) + r")\s*[:=\-–]\s*",
@@ -746,6 +747,68 @@ def _extract_bare_price(text: str, year: Any = None) -> int | None:
     return max(candidates)
 
 
+_KM_UNIT = r"kms?\b|kilomet\w*|किमी|कि\.\s*मी\.?|किलोमीटर|किलो\s*मीटर"
+_KM_LABEL_RE = re.compile(
+    rf"(?:{_KM_UNIT}|running|chali|चली|चालली|रनिंग)\s*[:=\-–]\s*(\d[\d,]*(?:\.\d+)?\s*(?:lakh|lac|लाख|हजार|k\b)?)",
+    re.I,
+)
+_OWNER_WORD = r"owners?|ownership|onar|ओनर|ऑनर|आनर|मालक|मालिक"
+_OWNER_NUM_RE = re.compile(
+    rf"(?:{_OWNER_WORD})\s*[:=\-–]\s*(\d)(?!\d)|(?<!\d)(\d)\s*(?:st|nd|rd|th)?\s*(?:{_OWNER_WORD})",
+    re.I,
+)
+_OWNER_WORDS = (
+    (1, r"first|1st|fast|pehla|pehli|pahla|पहला|पहिला|फर्स्ट|फास्ट|फस्ट|सिंगल|single"),
+    (2, r"second|2nd|dusra|doosra|dusri|दूसरा|दुसरा|सेकंड"),
+    (3, r"third|3rd|teesra|tisra|तीसरा|तिसरा"),
+)
+_FUELS = (
+    ("Diesel", r"diesel|डीजल|डिझेल|डिजल|डीझेल"),
+    ("Petrol", r"petrol|पेट्रोल"),
+    ("CNG", r"\bcng\b|सीएनजी"),
+    ("Electric", r"electric|इलेक्ट्रिक"),
+)
+_PHONE_LINE_RE = re.compile(r"(?<!\d)(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}(?!\d)")
+_EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F]")
+
+
+def owners_from_text(text: str) -> int | None:
+    m = _OWNER_NUM_RE.search(text or "")
+    if m:
+        return int(m.group(1) or m.group(2)) or None
+    for n, words in _OWNER_WORDS:
+        if re.search(rf"(?<![A-Za-z\u0900-\u097F])(?:{words})\s*(?:hand\s*)?(?:{_OWNER_WORD})", text or "", re.I):
+            return n
+    return None
+
+
+def fuel_from_text(text: str) -> str | None:
+    for name, pat in _FUELS:
+        if re.search(rf"(?<![A-Za-z\u0900-\u097F])(?:{pat})", text or "", re.I):
+            return name
+    return None
+
+
+_CONTACT_LABEL_RE = re.compile(
+    r"(?:contact|call|mobile|phone|whats\s*app|संपर्क|मोबाइल|मोबाईल|फोन|कॉल|नंबर|number|no\.?)"
+    r"(?:\s*(?:करा|करें|करे|kare|karo|kijiye|no\.?|number|नंबर|करें))*",
+    re.I,
+)
+
+
+def listing_paste_description(text: str) -> str:
+    """An ad pasted from another group keeps its own words for the website (phone numbers
+    dropped); every field the rules can read is saved separately as well."""
+    lines = []
+    for ln in (text or "").splitlines():
+        ln = _EMOJI_RE.sub("", _PHONE_LINE_RE.sub("", ln)).strip(" \t*•-:|,")
+        if len(ln) > 2 and not _CONTACT_LABEL_RE.fullmatch(ln):
+            lines.append(re.sub(r"\s{2,}", " ", ln))
+    if len(lines) < 4 and len(" ".join(lines).split()) < 12:
+        return ""
+    return "\n".join(lines)[:1000]
+
+
 _MODEL_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-/.+]*")
 _UNIT_AFTER_RE = re.compile(r"^(?:lakh|lac|lacs|l|cr|crore|km|kms|hours?|hrs?|ghante|tyre|tyres|wheel|wheeler)$", re.I)
 _HMR_RE = re.compile(r"\b(?:hmr\s*[:=\-–]?|(?:hrs|hours?|meter\s*reading)\s*[:=\-–])\s*(\d[\d,]{1,7})\b", re.I)
@@ -760,11 +823,21 @@ def _model_after_brand(text: str, brand: str) -> str:
     parts: list[str] = []
     for i, tok in enumerate(tokens):
         nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
-        if not tok or not _MODEL_TOKEN_RE.fullmatch(tok) or _YEAR_RE.match(tok) or _UNIT_AFTER_RE.match(nxt):
+        year_like = bool(_YEAR_RE.match(tok)) and _YEAR_MIN <= int(tok) <= _current_year() + 1
+        if not tok or not _MODEL_TOKEN_RE.fullmatch(tok) or year_like or _UNIT_AFTER_RE.match(nxt):
             break
-        if not any(ch.isdigit() for ch in tok) or tok.upper().startswith("BS"):
+        if not any(ch.isdigit() for ch in tok):
+            # Series word before the code ("Pro 2080", "Signa 4825") or a short suffix after it ("2080 XPT").
+            series = (not parts and tok.isalpha() and tok[0].isupper() and len(tok) <= 8
+                      and any(ch.isdigit() for ch in nxt))
+            suffix = parts and tok.isalpha() and tok.isupper() and 2 <= len(tok) <= 4
+            if (series or suffix) and normalize_vehicle_category(tok) in (None, "", "Other"):
+                parts.append(tok)
+                continue
             break
-        if parts and tok.isdigit():
+        if tok.upper().startswith("BS"):
+            break
+        if parts and tok.isdigit() and any(ch.isdigit() for p in parts for ch in p):
             break
         if not parts and tok.isdigit() and len(tok) < 3:
             break
@@ -774,13 +847,15 @@ def _model_after_brand(text: str, brand: str) -> str:
 
 def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
     """Merge explicit fields with light NL extraction from latest messages."""
+    from .i18n import normalize_input_text
+
     out = dict(fields or {})
     texts = []
     for msg in messages or []:
         if isinstance(msg, dict):
-            texts.append(str(msg.get("text") or ""))
+            texts.append(normalize_input_text(str(msg.get("text") or "")))
         else:
-            texts.append(str(msg or ""))
+            texts.append(normalize_input_text(str(msg or "")))
     blob = " ".join(texts).strip()
     if not blob:
         return out
@@ -924,8 +999,13 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
                 out["price"] = bare
 
     if _blank(out.get("running_km")) and _blank(out.get("operating_hours")) and _blank(out.get("km")):
+        km = _KM_LABEL_RE.search(blob)
+        unit = normalize_units(km.group(1)) if km else None
+        if unit:
+            out["running_km"] = out["km"] = unit["value"]
+    if _blank(out.get("running_km")) and _blank(out.get("operating_hours")) and _blank(out.get("km")):
         for m in re.finditer(
-            r"(\d+(?:[.,]\d+)?\s*(?:(?:lakh|lac|लाख)\s*)?(?:हजार|kms?\b|k\b|hours?\b|hrs?\b|घंटे?))",
+            rf"(\d[\d,]*(?:\.\d+)?\s*(?:(?:lakh|lac|लाख)\s*)?(?:हजार\s*)?(?:{_KM_UNIT}|हजार|k\b|hours?\b|hrs?\b|घंटे?))",
             blob,
             re.I,
         ):
@@ -938,6 +1018,15 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
                 out["running_km"] = unit["value"]
                 out["km"] = unit["value"]
             break
+
+    if _blank(out.get("owners")):
+        owners = owners_from_text(blob)
+        if owners:
+            out["owners"] = str(owners)
+    if _blank(out.get("fuel")):
+        fuel = fuel_from_text(blob)
+        if fuel:
+            out["fuel"] = fuel
 
     if _blank(out.get("city")) and _blank(out.get("location")) and _blank(out.get("state")):
         loc = normalize_location(location=re.sub(r"\b(location|loc|state)\s*[-:=]+\s*", r"\1 ", blob, flags=re.I))

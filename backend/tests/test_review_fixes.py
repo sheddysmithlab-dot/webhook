@@ -740,6 +740,56 @@ def test_photo_misread_of_typed_brand_still_reports_and_failed_reads_are_retried
     assert "Jeeto badge on grille" in vision.image_report(db, conv, "hinglish")
 
 
+MARATHI_AD = (
+    "🌟 विक्रीसाठी उपलब्ध आहे! 🌟\n"
+    "\u200bइशर प्रो २०८० एक्सपीटी टिपर (Eicher Pro 2080 XPT Tipper)\n"
+    "गाडी एकदम चांगल्या कंडिशनमध्ये आणि सर्व कागदपत्रांसह विक्रीसाठी उपलब्ध आहे.\n"
+    "\u200bमॉडेल: २०२३\n"
+    "\u200bपासिंग आणि इन्शुरन्स: एप्रिल २०२७ पर्यंत (सर्व कागदपत्रे चोख आणि क्लिअर)\n"
+    "\u200bओनर: २ (दुसरा मालक)\n"
+    "\u200bरंग/इंधन: डिझेल\n"
+    "\u200bकिलोमीटर: १,३१,००० किमी\n"
+    "\u200bटायर्स: २ नवीन आणि ४ लोकल टायर्स\n"
+    "\u200bविशेष वैशिष्ट्य: पॉवर स्टीयरिंग\n"
+    "\u200b💰 किंमत: ₹ १४,००,०००/- (चौदा लाख रुपये) - किंचित तडजोड संभव.\n"
+    "\u200b📍 पत्ता: कान्हे फाटा, तळेगांव दाभाडे, मुंबई-पुणे रोड, ता. मावळ, जि. पुणे.\n"
+    "\u200b📞 संपर्क करा:\n\u200b९४२२३५६१६१\n\u200b९६०४४२२९७७"
+)
+
+
+def test_indic_digits_and_invisible_marks_are_normalized():
+    from app.ai.i18n import normalize_input_text
+
+    assert normalize_input_text("९६०४४२२९७७") == "9604422977"
+    assert normalize_input_text("\u200bमॉडेल: २०२३ ₹ १४,००,०००") == "मॉडेल: 2023 ₹ 14,00,000"
+    assert normalize_input_text("૧૨ ৩৪ ੫੬") == "12 34 56"
+    assert normalize_input_text("Tata 407") == "Tata 407"
+
+
+def test_marathi_ad_with_devanagari_digits_fills_every_field():
+    from app.ai.engine import extract_turn
+    from app.ai.i18n import normalize_input_text
+
+    f = extract_turn(normalize_input_text(MARATHI_AD))
+    assert (f["brand"], f["model"], f["category"], f["year"]) == ("Eicher", "Pro 2080 XPT", "Tipper", 2023)
+    assert (f["expected_price"], f["running_km"], f["owners"], f["fuel"]) == (1400000, 131000, "2", "Diesel")
+    assert (f["city"], f["state"], f["intent"]) == ("Pune", "Maharashtra", "SELL")
+    desc = f["description"]
+    assert "पॉवर स्टीयरिंग" in desc and "2 नवीन आणि 4 लोकल टायर्स" in desc and "एप्रिल 2027" in desc
+    assert "9604422977" not in desc and "9422356161" not in desc and "संपर्क" not in desc
+
+
+def test_hindi_ad_owner_price_and_place():
+    from app.ai.engine import extract_turn
+
+    f = extract_turn(
+        "95808 18181 गाड़ी मालिक का नंबर\nअशोक लीलैंड की 22 चक्का टिप ट्रेलर गाड़ी बिकाऊ है डिमांड 25.5 लाख "
+        "रुपया है फास्ट आनर गाडी है एकदम कम चली हुई है लोकेशन बस्ती है"
+    )
+    assert (f["brand"], f["expected_price"], f["owners"], f["intent"]) == ("Ashok Leyland", 2550000, "1", "SELL")
+    assert "95808" not in f.get("description", "")
+
+
 def test_yes_without_two_photos_is_not_pushed(db, monkeypatch):
     from app.ai import chat_memory
     from app.ai.tools import _payload, _write_payload

@@ -13,6 +13,24 @@ from .i18n_messages import MESSAGES
 
 log = logging.getLogger("infradealer.ai.i18n")
 
+# Zero-width space / direction marks / BOM; ZWJ and ZWNJ stay — they shape Indic conjuncts.
+_INVISIBLE = re.compile("[\u200b\u200e\u200f\u2060\ufeff]")
+
+
+def normalize_input_text(text: str) -> str:
+    """Devanagari / Gujarati / Bengali / … digits → 0-9 and invisible joiners dropped, so
+    "९६०४४२२९७७" is a mobile number and "₹ १४,००,०००" a price for every rule downstream."""
+    if not text:
+        return text or ""
+    import unicodedata
+
+    text = _INVISIBLE.sub("", text)
+    if text.isascii():
+        return text
+    return "".join(
+        str(unicodedata.decimal(ch)) if not ch.isascii() and ch.isdecimal() else ch for ch in text
+    )
+
 DEFAULT_LANG = "hinglish"
 SUPPORTED_LANGS = (
     "hinglish", "hi", "en",
