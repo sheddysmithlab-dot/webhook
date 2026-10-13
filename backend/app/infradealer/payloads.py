@@ -280,6 +280,8 @@ def build_listing_payload(
     ad_category = map_post_ad_category(internal_cat)
     brand = str(payload.get("brand") or "").strip()
     model = str(payload.get("model") or "").strip()
+    if model.lower() == brand.lower():
+        model = ""
     make_model = " ".join(p for p in [brand, model] if p).strip() or str(confirmed.get("vehicle") or "")
     title = (draft.title if draft and draft.title else "") or listing_title(payload) or make_model
     km_val, km_unit = _km_and_unit(payload, internal_cat)

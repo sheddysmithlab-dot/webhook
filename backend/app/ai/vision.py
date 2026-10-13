@@ -698,6 +698,8 @@ def _draft_reads(db: Session, conv: AiConversation, draft_id, payload: dict) -> 
     return reads
 
 
+# Background of the photo, not the vehicle.
+_SCENE_DETAIL = re.compile(r"\bparked\b|\bsurface\b|\bbackground\b|\bsky\b|\bstanding\b|\bground\b|\bwatermark\b", re.I)
 _PUBLIC_DOC_KEYS = tuple(k for k in DOC_FACT_KEYS if k not in {"registration_number", "hypothecated"})
 
 
@@ -715,7 +717,7 @@ def public_photo_facts(db: Session, conv: AiConversation, draft_id, payload: dic
         v = _clean(merged.get(k))[:60]
         if v and not docs.get(k) and k in labels:
             lines.append(f"{labels[k]}: {v}")
-    lines += [d for d in details[:8] if not _PRIVATE_DETAIL.search(d)]
+    lines += [d for d in details if not _PRIVATE_DETAIL.search(d) and not _SCENE_DETAIL.search(d)][:8]
     return lines
 
 

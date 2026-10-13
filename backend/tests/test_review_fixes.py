@@ -493,3 +493,34 @@ def test_hours_machine_keeps_unit_in_description(db):
     assert text.startswith("JCB 3DX for sale.")
     assert "Usage: 6500 hours" in text and "Condition: Good" in text
     assert "BS 6 2024" in _ad_description({"description": "BS 6 2024 model"}, {}, "Truck")
+
+
+def test_place_filter_rejects_filler_but_keeps_real_towns():
+    for word in ("bhi", "bhai", "wahi"):
+        assert not _looks_like_place(word), word
+    for city in ("Sirsa", "Shrirampur", "Kharsia"):
+        assert _looks_like_place(city), city
+    assert not _looks_like_place("5 lac") and not _looks_like_place("Rs 500000")
+
+
+def test_website_make_model_not_doubled_and_photo_scene_dropped(db):
+    from app.infradealer.payloads import build_listing_payload
+    from app.models import AiMedia
+
+    conv = AiConversation(mobile="919000777010", conversation_id="CONV_9000777010", state="NEW")
+    db.add(conv)
+    db.flush()
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="READY", title="JCB Backhoe Loader")
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    payload = {"intent": "SELL", "category": "JCB", "brand": "JCB", "model": "JCB", "operating_hours": "6500"}
+    conv.payload_json = json.dumps(payload)
+    db.add(AiMedia(conversation_id=conv.id, draft_id=draft.id, kind="image", extract_kind="vehicle_fields",
+                   extracted_text=json.dumps({"brand": "JCB", "details": ["Parked on a gravel surface", "Rusty bucket"]})))
+    db.flush()
+    listing = build_listing_payload(db, conv, draft, payload, "req-desc-2")["listing"]
+    assert listing["make_model"] == "JCB" and "model" not in listing
+    assert (listing["km"], listing["km_unit"]) == (6500, "Hours")
+    assert "Rusty bucket" in listing["description"] and "gravel" not in listing["description"]
+    assert "Usage: 6500 hours" in listing["description"]
