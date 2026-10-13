@@ -1,4 +1,4 @@
-"""Office operator (postdesk) mode: customer select/create, confirm guard, listing target."""
+﻿"""Office operator (postdesk) mode: customer select/create, confirm guard, listing target."""
 
 from __future__ import annotations
 
@@ -1388,3 +1388,19 @@ def test_user_typed_details_update_photo_card_with_full_card(db, client, monkeyp
     for part in ("📋", "5521 ✏️", "Side ladders present", "Rang: red"):
         assert part in out, part
     assert "Post to" not in out
+
+
+def test_office_details_ask_on_photo_card_is_not_account_info(db, client):
+    from app.ai.vision import wants_card_details
+
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    assert om.handle_office_turn(db, conv, "Details nhi mili details batao") is not None
+    _card(db, conv, brand="Mahindra")
+    _card_photos(db, conv)
+    assert om.handle_office_turn(db, conv, "Details nhi mili details batao") is None
+    assert "Customer account" in om.handle_office_turn(db, conv, "account details batao")
+    for msg in ("details batao", "Details nhi mili", "detail do"):
+        assert wants_card_details(msg), msg
+    for msg in ("details sahi hai", "account details", "details: 2019 model 4 lakh"):
+        assert not wants_card_details(msg), msg

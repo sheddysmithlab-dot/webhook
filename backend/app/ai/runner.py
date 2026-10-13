@@ -306,6 +306,7 @@ def process_inbound(
         # Media always attaches to draft/card pipeline (legacy ai_simple_chat removed).
         media_note = attach_media(db, conv, wamid, media)
         read_ids: list[int] = []
+        photo_unread = False
 
         # Photo/video burst: save every file, but only the newest message gets an AI turn.
         if (
@@ -354,7 +355,7 @@ def process_inbound(
         if media and (media.get("kind") in {"image", "document"}):
             from .media_config import vision_enabled
             if vision_enabled(db):
-                from .vision import fill_listing_from_burst, is_document_media
+                from .vision import fill_listing_from_burst, is_document_media, vision_cap_left
                 try:
                     vis_row = (
                         db.query(AiMedia)
@@ -386,6 +387,7 @@ def process_inbound(
                                 conv.intent = "SELL"
                         if vis_row.extract_kind == "document_fields":
                             media_note = (media_note or "") + " vehicle_document_read"
+                        photo_unread = not read_ids and vision_cap_left(conv)
                         log.info("vision.read mobile=***%s kind=%s images=%d fields=%s",
                                  conv.mobile[-4:] if conv.mobile else "", vis_row.extract_kind or "-",
                                  len(read_ids), sorted(filled))
@@ -420,12 +422,19 @@ def process_inbound(
             voice_unheard = bool(
                 media and media.get("kind") == "audio" and (text or "").strip() == "[voice note]"
             )
-            from .vision import image_report, read_card_images, wants_image_details
+            from .vision import (
+                card_details, card_has_photos, image_report, read_card_images,
+                wants_card_details, wants_image_details,
+            )
 
             detail_report = ""
-            if not office_reply and wants_image_details(text):
+            if not office_reply and (
+                wants_image_details(text) or (wants_card_details(text) and card_has_photos(db, conv))
+            ):
                 read_card_images(db, conv)
-                detail_report = image_report(db, conv, lang) or t(lang, "photo_not_read")
+                detail_report = (
+                    image_report(db, conv, lang) or card_details(db, conv, lang) or t(lang, "photo_not_read")
+                )
             force_polish = False
 
             # Step 1: Correct typos
@@ -498,6 +507,9 @@ def process_inbound(
                 if photo_report:
                     reply = photo_report + "\n\n" + reply
                     force_polish = True
+            elif photo_unread and reply and path in {"orchestrator", "free_chat"}:
+                reply = reply + "\n\n" + t(lang, "photo_read_busy")
+                force_polish = True
             if path != "office_mode" and reply:
                 if LLM_WROTE_REPLY.get() and not force_polish:
                     zai = "llm"

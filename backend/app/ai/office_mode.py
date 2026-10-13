@@ -684,6 +684,10 @@ def _handle_office_turn(db: Session, conv: AiConversation, text: str, lang: str 
         return None
 
     if _DETAIL.search(msg) and _short(msg) and not (_LISTING_SIGNAL.search(msg) or _DETAIL_SKIP.search(msg)):
+        from .vision import card_has_photos, wants_card_details
+
+        if wants_card_details(msg) and card_has_photos(db, conv):
+            return None
         row = _known_operator(db, conv)
         if row is not None:
             return _cmd_details(db, row, mobile)

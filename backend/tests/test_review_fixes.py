@@ -605,6 +605,54 @@ def test_burst_interior_misread_does_not_fill_card(db, monkeypatch, tmp_path):
     assert "Tata" in report and "Force" not in report and "Cabin interior" not in report
 
 
+def test_photo_misread_of_typed_brand_still_reports_and_failed_reads_are_retried(db, monkeypatch, tmp_path):
+    from app.ai import vision
+    from app.ai.tools import _payload, _write_payload
+    from app.models import AiMedia
+
+    conv = AiConversation(mobile="919000777015", conversation_id="CONV_9000777015", state="NEW")
+    db.add(conv)
+    db.flush()
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="COLLECTING")
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    _write_payload(conv, {"intent": "SELL", "brand": "Mahindra", "model": "Jeeto Strong", "category": "Pickup"})
+    answers = {
+        "a.jpg": json.dumps({"category": "Pickup", "brand": "Force", "model": "Strong", "colour": "White",
+                             "details": ["Open cargo deck"]}),
+        "b.jpg": json.dumps({"brand": "Force", "colour": "White", "tyres": "4"}),
+        "c.jpg": "",
+        "d.jpg": "",
+    }
+    rows = []
+    for name in answers:
+        p = tmp_path / name
+        p.write_bytes(b"x")
+        row = AiMedia(conversation_id=conv.id, draft_id=draft.id, kind="image", local_path=str(p), mime="image/jpeg")
+        db.add(row)
+        db.flush()
+        rows.append(row)
+    monkeypatch.setattr(vision, "resolve_media_config", lambda db_: {})
+    monkeypatch.setattr(vision, "extract_text_from_image",
+                        lambda db_, conv_, f, prompt="", cfg=None: answers[f.local_path.replace("\\", "/").split("/")[-1]])
+    filled, ids = vision.fill_listing_from_burst(db, conv, rows[-1], window_seconds=None)
+    assert sorted(ids) == sorted(r.id for r in rows[:2])
+    pl = _payload(conv)
+    assert (pl["brand"], pl["model"]) == ("Mahindra", "Jeeto Strong")
+    assert pl["vision_reads"]["n"] == 2
+    report = vision.image_report(db, conv, "hinglish", media_ids=ids)
+    assert "Mahindra" in report and "Jeeto Strong" in report and "White" in report and "Open cargo deck" in report
+    assert "Force" not in report
+    assert "White" in vision.card_details(db, conv, "hinglish")
+
+    answers["c.jpg"] = json.dumps({"brand": "Mahindra", "details": ["Jeeto badge on grille"]})
+    answers["d.jpg"] = json.dumps({"colour": "White"})
+    monkeypatch.setattr("app.ai.media_config.vision_enabled", lambda db_: True)
+    assert sorted(vision.read_card_images(db, conv)) == sorted(r.id for r in rows[2:])
+    assert "Jeeto badge on grille" in vision.image_report(db, conv, "hinglish")
+
+
 def test_yes_without_two_photos_is_not_pushed(db, monkeypatch):
     from app.ai import chat_memory
     from app.ai.tools import _payload, _write_payload

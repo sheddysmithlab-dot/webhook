@@ -278,6 +278,7 @@ _VEHICLE_PROMPT = (
 
 VISION_FILL_KEYS = ("category", "brand", "model", "year", "state", "city", "fuel")
 MAX_VISION_READS_PER_CARD = 5
+BURST_READ_WORKERS = 2
 # Also picks up photos whose read failed (rate limit) on the next photo turn.
 BURST_WINDOW_SECONDS = 600
 
@@ -396,7 +397,10 @@ def fill_listing_from_photo(
     """
     if not _reserve_read(conv, is_document):
         return {}
-    return _apply_read(conv, media_row, read_image(db, conv, media_row))
+    data = read_image(db, conv, media_row)
+    if not data and not is_document:
+        _release_reads(conv, 1)
+    return _apply_read(conv, media_row, data)
 
 
 def photo_guessed_keys(conv: AiConversation, payload: dict) -> set[str]:
@@ -463,13 +467,16 @@ def fill_listing_from_burst(
         return {}, []
     cfg = resolve_media_config(db)
     files = [SimpleNamespace(local_path=r.local_path, mime=r.mime) for r in rows]
-    with ThreadPoolExecutor(max_workers=len(files)) as pool:
+    # Free vision tiers rate-limit bursts: more than two calls at once mostly come back 429.
+    with ThreadPoolExecutor(max_workers=min(BURST_READ_WORKERS, len(files))) as pool:
         raws = list(pool.map(
             lambda f: extract_text_from_image(None, None, f, prompt=_VEHICLE_PROMPT, cfg=cfg), files,
         ))
     from .tools import _payload
 
     reads = [(row, parse_read(raw)) for row, raw in zip(rows, raws)]
+    # A failed read (rate limit / timeout) must not use up the card's cap: retried on the next ask.
+    _release_reads(conv, sum(1 for i, (_, d) in enumerate(reads) if not d and not (is_document and i == 0)))
     main = _main_brand([d for _, d in reads], prefer=_payload(conv).get("brand"))
     # Photos agreeing with the burst's vehicle fill the card first; an odd read
     # (cabin interior, a second vehicle) is kept for the report but fills nothing.
@@ -499,11 +506,9 @@ def _same_brand(data: dict | None, main: str) -> bool:
 
 
 def _main_brand(reads: list[dict], prefer=None) -> str:
-    """The vehicle these photos show: the card's brand, else the brand most reads agree on
-    (ties go to the read with the most details — an exterior shot beats a cabin interior)."""
-    want = _clean(prefer).lower()
-    if want:
-        return want
+    """The vehicle these photos show: the card's brand when a photo agrees with it, else the brand
+    most reads agree on (ties go to the read with the most details — an exterior shot beats a
+    cabin interior). A typed brand no photo shows means the photos were misread, not discarded."""
     score: dict[str, tuple[int, int]] = {}
     for data in reads:
         b = _read_brand(data)
@@ -511,6 +516,9 @@ def _main_brand(reads: list[dict], prefer=None) -> str:
             continue
         n, rich = score.get(b, (0, 0))
         score[b] = (n + 1, max(rich, sum(1 for k, v in data.items() if k != "details" and _clean(v))))
+    want = _clean(prefer).lower()
+    if want in score:
+        return want
     return max(score, key=score.get) if score else ""
 
 
@@ -530,6 +538,29 @@ def _reserve_read(conv: AiConversation, is_document: bool) -> bool:
     payload["vision_reads"] = reads
     _write_payload(conv, payload)
     return True
+
+
+def vision_cap_left(conv: AiConversation) -> bool:
+    from .tools import _payload
+
+    reads = _payload(conv).get("vision_reads")
+    if not isinstance(reads, dict) or reads.get("draft") != conv.draft_id:
+        return True
+    return int(reads.get("n") or 0) < MAX_VISION_READS_PER_CARD
+
+
+def _release_reads(conv: AiConversation, count: int) -> None:
+    if count <= 0:
+        return
+    from .tools import _payload, _write_payload
+
+    payload = _payload(conv)
+    reads = payload.get("vision_reads") if isinstance(payload.get("vision_reads"), dict) else {}
+    if reads.get("draft") != conv.draft_id:
+        return
+    reads["n"] = max(0, int(reads.get("n") or 0) - count)
+    payload["vision_reads"] = reads
+    _write_payload(conv, payload)
 
 
 def _apply_read(conv: AiConversation, media_row: AiMedia, data: dict) -> dict:
@@ -624,6 +655,38 @@ _PRIVATE_DETAIL = re.compile(
 
 def wants_image_details(text: str) -> bool:
     return bool(_DETAIL_ASK.search(text or ""))
+
+
+_CARD_DETAIL_WORD = re.compile(r"\b(?:detail\w*|detial\w*|deatil\w*|detal\w*|jaa?nkari|info)\b|डिटेल|जानकारी", re.I)
+_CARD_DETAIL_VERB = re.compile(
+    r"\b(?:bata\w*|dikha\w*|show|send|bhej\w*|chahiye|chaiye|do|dijiye|dena|nikal\w*|mili|mila|kaha|kahan|kya)\b"
+    r"|बताओ|बताइए|दिखाओ|चाहिए|दो",
+    re.I,
+)
+_CARD_DETAIL_NOT = re.compile(
+    r"\b(?:account|acount|customer|grahak|balance|tokens?|wallet|khata|listings?|profile|"
+    r"sahi|shi|galat|theek|thik|correct|wrong|change|badal\w*|update)\b",
+    re.I,
+)
+
+
+def wants_card_details(text: str) -> bool:
+    """A bare "details batao / details nahi mili" — about the open card, not the account."""
+    msg = text or ""
+    return bool(
+        _CARD_DETAIL_WORD.search(msg) and _CARD_DETAIL_VERB.search(msg)
+        and not _CARD_DETAIL_NOT.search(msg) and not re.search(r"\d", msg) and len(msg.split()) <= 8
+    )
+
+
+def card_has_photos(db: Session, conv: AiConversation) -> bool:
+    if not conv.draft_id:
+        return False
+    return db.query(AiMedia.id).filter(
+        AiMedia.conversation_id == conv.id,
+        AiMedia.draft_id == conv.draft_id,
+        AiMedia.kind == "image",
+    ).first() is not None
 
 
 def _card_reads(db: Session, conv: AiConversation, media_ids: list[int] | None = None) -> list[dict]:
@@ -721,7 +784,7 @@ def image_report(
 
 
 def _draft_reads(db: Session, conv: AiConversation, draft_id, payload: dict) -> list[dict]:
-    """This card's photo/paper reads, minus photos of a different brand than the card."""
+    """This card's photo/paper reads, minus odd photos of a different vehicle than the rest."""
     if not draft_id:
         return []
     rows = (
@@ -735,14 +798,9 @@ def _draft_reads(db: Session, conv: AiConversation, draft_id, payload: dict) -> 
         .limit(MAX_VISION_READS_PER_CARD)
         .all()
     )
-    brand = _clean(payload.get("brand")).lower()
-    reads: list[dict] = []
-    for row in rows:
-        data = parse_read(row.extracted_text)
-        b = _clean(listing_fields(data).get("brand")).lower() if data else ""
-        if data and not (b and brand and b != brand):
-            reads.append(data)
-    return reads
+    datas = [d for d in (parse_read(row.extracted_text) for row in rows) if d]
+    main = _main_brand(datas, prefer=payload.get("brand"))
+    return [d for d in datas if _same_brand(d, main)]
 
 
 # Background of the photo, not the vehicle.
