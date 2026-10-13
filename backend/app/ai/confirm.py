@@ -402,7 +402,15 @@ def maybe_start_new_card(db: Session, conv: AiConversation, fields: dict | None)
         fixes_brand = bool(
             new_model and new_model == cur_model and cur_brand and not canonical_brand(cur_brand)
         )
-        different = not fixes_brand and bool(
+        # Typed details correcting what a photo read guessed are the same vehicle (photos stay on this card).
+        from .vision import photo_guessed_keys
+
+        guessed = photo_guessed_keys(conv, payload)
+        fixes_photo = bool(guessed) and all(
+            not new or not cur or new == cur or key in guessed
+            for key, new, cur in (("brand", new_brand, cur_brand), ("model", new_model, cur_model))
+        )
+        different = not (fixes_brand or fixes_photo) and bool(
             (new_brand and cur_brand and new_brand != cur_brand)
             or (new_model and cur_model and new_model != cur_model and (not new_brand or new_brand == cur_brand))
         )

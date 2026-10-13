@@ -397,6 +397,17 @@ def fill_listing_from_photo(
     return _apply_read(conv, media_row, read_image(db, conv, media_row))
 
 
+def photo_guessed_keys(conv: AiConversation, payload: dict) -> set[str]:
+    """Card fields that still hold the value a photo read guessed (the user never typed them)."""
+    guessed = payload.get("vision_filled") if isinstance(payload.get("vision_filled"), dict) else {}
+    if not conv.draft_id or guessed.get("draft") != conv.draft_id:
+        return set()
+    return {
+        k for k, v in (guessed.get("fields") or {}).items()
+        if str(payload.get(k) or "").strip().lower() == str(v or "").strip().lower() != ""
+    }
+
+
 def _unread_images(db: Session, conv: AiConversation, draft_id):
     return db.query(AiMedia).filter(
         AiMedia.conversation_id == conv.id,
@@ -497,6 +508,12 @@ def _apply_read(conv: AiConversation, media_row: AiMedia, data: dict) -> dict:
         for k, v in filled.items():
             if payload.get(k) in (None, "", [], {}):
                 payload[k] = v
+        if filled:
+            guessed = payload.get("vision_filled") if isinstance(payload.get("vision_filled"), dict) else {}
+            if guessed.get("draft") != conv.draft_id:
+                guessed = {"draft": conv.draft_id, "fields": {}}
+            guessed["fields"] = {**filled, **(guessed.get("fields") or {})}
+            payload["vision_filled"] = guessed
         if "city" in filled and payload.get("location") in (None, ""):
             payload["location"] = found.get("location") or filled["city"]
         if found.get("registration_year") and payload.get("registration_year") in (None, ""):

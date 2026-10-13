@@ -1288,3 +1288,74 @@ def test_revoked_operator_session_is_dropped(db, client):
     client.operators.clear()
     assert om.handle_office_turn(db, conv, "customer 9876543210") is None
     assert db.query(AiOfficeSession).count() == 0
+
+
+def _photo_read_card(db, conv):
+    import json as _json
+    from app.ai import vision
+    from app.ai.confirm import send_summary, start_new_listing
+    from app.models import AiMedia
+
+    if not conv.draft_id:
+        start_new_listing(db, conv, {"intent": "SELL"}, [])
+    row = AiMedia(conversation_id=conv.id, draft_id=conv.draft_id, kind="image", local_path="x.jpg")
+    db.add(row)
+    db.flush()
+    read = {"category": "Truck", "brand": "Tata", "model": "Signa", "colour": "red", "tyres": "8",
+            "registration_number": "BR28G3913", "details": ["Side ladders present"]}
+    vision._apply_read(conv, row, read)
+    db.flush()
+    send_summary(db, conv, "hinglish")
+    return conv.draft_id
+
+
+def test_office_typed_details_update_photo_card_not_new_card(db, client, monkeypatch, fake_redis):
+    eng, conv = _office_prompt_conv(db, monkeypatch)
+    draft_id = _photo_read_card(db, conv)
+    assert _payload(conv)["model"] == "Signa"
+
+    out = eng.prompt_chat_turn(
+        db, conv,
+        "Brand name signa 5521 (18 चक्का)\nमॉडल 2025\nPrice डिमांड 3350000\n"
+        "Discription आनर फर्स्ट गाड़ी गोरखपुर जिले में है\nCategory tipper",
+    )
+    pl = _payload(conv)
+    assert conv.draft_id == draft_id
+    assert (pl["brand"], pl["model"], str(pl["year"])) == ("Tata", "5521", "2025")
+    for part in ("📋", "5521 ✏️", "2025 ✏️", "Side ladders present", "BR28G3913"):
+        assert part in out, part
+    assert "Post to" in om.decorate_office_reply(db, conv, out)
+
+
+def test_office_paste_of_really_other_vehicle_after_photo_still_new_card(db, client, monkeypatch, fake_redis):
+    eng, conv = _office_prompt_conv(db, monkeypatch)
+    draft_id = _photo_read_card(db, conv)
+    pl = _payload(conv)
+    pl["model"] = "4825"
+    from app.ai.tools import _write_payload
+
+    _write_payload(conv, pl)
+    eng.prompt_chat_turn(db, conv, "Ashok Leyland 2518 truck 2019")
+    assert conv.draft_id != draft_id
+
+
+def test_user_typed_details_update_photo_card_with_full_card(db, client, monkeypatch, fake_redis):
+    from app.ai import engine as eng
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "ai_prompt_chat", True)
+    monkeypatch.setattr(eng, "handle_account_info", lambda *a, **k: None)
+    monkeypatch.setattr(eng, "needs_account_gate", lambda payload: False)
+    monkeypatch.setattr(eng, "prompt_chat_enabled", lambda db_: True)
+    monkeypatch.setattr(eng, "llm_configured", lambda db_: True)
+    monkeypatch.setattr(eng, "llm_reply", lambda *a, **k: pytest.fail("LLM must not run"))
+    conv = _conv(db, mobile="9811122233", account_type="free", account_eligibility="ELIGIBLE",
+                 account_can_post=True, account_onboarded=True)
+    draft_id = _photo_read_card(db, conv)
+
+    out = eng.prompt_chat_turn(db, conv, "Tata signa 5521 tipper 2025 model price 33 lakh Gorakhpur")
+    pl = _payload(conv)
+    assert conv.draft_id == draft_id and pl["model"] == "5521"
+    for part in ("📋", "5521 ✏️", "Side ladders present", "Rang: red"):
+        assert part in out, part
+    assert "Post to" not in out
