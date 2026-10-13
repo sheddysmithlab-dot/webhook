@@ -254,7 +254,10 @@ _VEHICLE_PROMPT = (
     "Swaraj, Sonalika, Force, SML Isuzu...). model = the series or number on the badge (e.g. Signa "
     "2825.K, Prima 3530, LPT 1613, 1109, Ecomet 1615, Pro 2049, 3DX). Ignore phone camera / app "
     "watermarks (e.g. 'Shot on ...', POVA, Redmi, vivo, OPPO, realme, Samsung, timestamps) and "
-    "dealer phone numbers — never use them as brand, model or place.\n"
+    "dealer phone numbers — never use them as brand, model or place. "
+    "A tall van-shaped minibus with a flat sloping nose (often yellow school van) is a Force Traveller "
+    "(category Bus). If no maker logo or badge is readable, leave brand and model out instead of "
+    "guessing from the body shape.\n"
     "Reply with ONLY one JSON object, omitting keys you cannot read: "
     '"image_type" (vehicle_photo, rc_document, app_screenshot, insurance, other), '
     '"category" (one of Truck, Dumper, Tipper, Crane, Poclain, Loader, Backhoe Loader, JCB, '
@@ -649,9 +652,16 @@ def image_report(
     reads = _card_reads(db, conv, media_ids)
     if not reads:
         return ""
+    from .tools import _payload
+
     labels = _labels(lang)
     merged, details = _merge_reads(reads)
     fields = listing_fields(merged)
+    # What the seller typed beats a guess from the photo (vision mixes up look-alike bodies).
+    typed = _payload(conv)
+    for k in ("category", "brand", "model", "year"):
+        if typed.get(k) not in (None, "", [], {}):
+            fields[k] = typed[k]
     place = ", ".join(x for x in (fields.get("city"), fields.get("state")) if x)
     rows = [
         ("category", fields.get("category")), ("brand", fields.get("brand")),
