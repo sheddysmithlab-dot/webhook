@@ -220,43 +220,11 @@ def test_update_on_open_card_shows_full_card_with_photo_details(db, monkeypatch)
     assert _payload(conv)["summary_json"]["year"] == 2020
 
 
-class _FakeRedis:
-    def __init__(self):
-        self.kv, self.lists = {}, {}
-
-    def get(self, k):
-        return self.kv.get(k)
-
-    def set(self, k, v, ex=None):
-        self.kv[k] = v
-
-    def delete(self, *keys):
-        for k in keys:
-            self.kv.pop(k, None)
-            self.lists.pop(k, None)
-
-    def lpush(self, k, v):
-        self.lists.setdefault(k, []).insert(0, v)
-
-    def ltrim(self, k, a, b):
-        self.lists[k] = self.lists.get(k, [])[a:b + 1]
-
-    def expire(self, k, ttl):
-        pass
-
-    def pipeline(self):
-        return self
-
-    def execute(self):
-        pass
-
-
-def test_card_ledger_restores_lost_fields_and_keeps_versions(db, monkeypatch):
+def test_card_ledger_restores_lost_fields_and_keeps_versions(db, monkeypatch, fake_redis):
     from app.ai import card_ledger
     from app.ai.tools import _payload, _write_payload
 
-    fake = _FakeRedis()
-    monkeypatch.setattr(card_ledger, "get_redis", lambda: fake)
+    fake = fake_redis
     conv = _office_card(db, monkeypatch, "919000777009", brand="Tata", model="1418", category="Truck",
                         year=2020, city="Pune", expected_price=1500000)
     assert card_ledger.sync(conv) == []
@@ -279,12 +247,10 @@ def test_card_ledger_restores_lost_fields_and_keeps_versions(db, monkeypatch):
     assert len(fake.lists[next(iter(fake.lists))]) == 3
 
 
-def test_card_ledger_skips_junk_places_and_buy_intent(db, monkeypatch):
+def test_card_ledger_skips_junk_places_and_buy_intent(db, monkeypatch, fake_redis):
     from app.ai import card_ledger
     from app.ai.tools import _payload, _write_payload
 
-    fake = _FakeRedis()
-    monkeypatch.setattr(card_ledger, "get_redis", lambda: fake)
     conv = _office_card(db, monkeypatch, "919000777010", brand="Eicher", category="Bus", city="haan")
     card_ledger.sync(conv)
     assert "city" not in card_ledger.load(conv)["fields"]

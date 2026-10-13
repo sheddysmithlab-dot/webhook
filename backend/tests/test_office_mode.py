@@ -1036,6 +1036,37 @@ def _office_prompt_conv(db, monkeypatch):
     return eng, conv
 
 
+def test_office_card_update_shows_full_card_with_post_to(db, client, monkeypatch, fake_redis):
+    eng, conv = _office_prompt_conv(db, monkeypatch)
+    eng.prompt_chat_turn(db, conv, "Brand name अशोक लेलैंड 5525 टेलर 18 चक्का")
+    pl = _payload(conv)
+    assert (pl["brand"], pl["model"], pl["category"]) == ("Ashok Leyland", "5525", "Truck")
+    assert pl["awaiting_confirm"] and not pl.get("year")
+
+    out = eng.prompt_chat_turn(db, conv, "2020 model")
+    for part in ("📋", "CARD-", ": Ashok Leyland", ": 5525", ": 2020 ✏️"):
+        assert part in out, part
+    out = om.decorate_office_reply(db, conv, out)
+    assert "Post to: ramesh.kumar, 9876543210" in out
+    assert "2020" not in eng.prompt_chat_turn(db, conv, "Skip")
+
+
+def test_office_customer_change_never_restores_previous_card(db, client, monkeypatch, fake_redis):
+    from app.ai import card_ledger
+
+    eng, conv = _office_prompt_conv(db, monkeypatch)
+    eng.prompt_chat_turn(db, conv, "Tata 1418 truck 2019")
+    old = conv.draft_id
+    assert old and card_ledger.load(conv)["fields"]["model"] == "1418"
+
+    client.customers["9123456789"] = {**CUSTOMER, "user_id": "88", "name": "suresh", "phone": "9123456789"}
+    assert "Pichle customer" in om.handle_office_turn(db, conv, "customer 9123456789")
+    eng.prompt_chat_turn(db, conv, "Eicher bus")
+    pl = _payload(conv)
+    assert conv.draft_id != old
+    assert pl["brand"] == "Eicher" and pl.get("model") != "1418" and pl.get("year") != 2019
+
+
 def test_bus_is_a_category():
     from app.ai.engine import extract_turn
     from app.infradealer.payloads import map_post_ad_category
