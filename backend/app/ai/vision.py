@@ -458,6 +458,8 @@ def fill_listing_from_burst(
         if data:
             read_ids.append(row.id)
         filled.update({k: v for k, v in _apply_read(conv, row, data).items() if k not in filled})
+    # SessionLocal has autoflush off: the report query must see these reads.
+    db.flush()
     return filled, read_ids
 
 

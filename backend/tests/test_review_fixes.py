@@ -331,6 +331,29 @@ def test_photos_after_idle_start_a_new_card_and_get_read(db, monkeypatch):
     assert "Force" in out and "BR28GB299" not in out
 
 
+def test_burst_report_sees_reads_without_autoflush(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.ai import vision
+    from app.database import Base
+    from app.models import AiMedia
+
+    eng = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(eng)
+    db = sessionmaker(bind=eng, autoflush=False)()
+    conv = AiConversation(mobile="919000777014", conversation_id="CONV_9000777014", state="NEW")
+    db.add(conv)
+    db.flush()
+    row = AiMedia(conversation_id=conv.id, kind="image", local_path="/x/a.jpg")
+    db.add(row)
+    db.flush()
+    monkeypatch.setattr(vision, "resolve_media_config", lambda db_: {})
+    monkeypatch.setattr(vision, "extract_text_from_image", lambda *a, **k: json.dumps({"brand": "Force", "colour": "Yellow"}))
+    _, ids = vision.fill_listing_from_burst(db, conv, row)
+    assert "Rang: Yellow" in vision.image_report(db, conv, "hinglish", media_ids=ids)
+
+
 def test_detail_request_reads_this_cards_photos_only(db, monkeypatch):
     from app.ai import runner, vision
     from app.models import AiMedia
