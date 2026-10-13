@@ -262,6 +262,117 @@ def test_card_ledger_skips_junk_places_and_buy_intent(db, monkeypatch, fake_redi
     assert card_ledger.load(conv) == {}
 
 
+_BUS_DUMP = "BRAND name Force traveler\ncategory bus\n2018 model\nDiscription 18 seter  school passing\nAll paper complete"
+
+
+def test_fast_correct_keeps_lines_and_bus_dump_is_read():
+    from app.ai.corrector import _fast_correct
+
+    fixed = _fast_correct(_BUS_DUMP)
+    assert fixed.count("\n") == 4 and "Discription 18 seter school passing" in fixed
+    out = extract_fields([fixed])
+    assert (out["brand"], out["model"], out["category"], out["year"]) == ("Force", "Traveller", "Bus", 2018)
+    assert out["description"] == "18 seter school passing, All paper complete"
+    assert extract_fields(["BRAND name Force traveler"])["brand"] == "Force"
+    assert not extract_fields(["brand new hai gaadi"]).get("brand")
+
+
+def test_roman_text_after_hindi_switches_to_hinglish():
+    from app.ai.i18n import pick_language
+
+    assert pick_language("Image check kr ke detail nikalo", "hi") == "hinglish"
+    assert pick_language("2018", "hi") == "hi"
+    assert pick_language("फोटो पढ़ो", "hinglish") == "hi"
+
+
+def _idle_office_conv(db, mobile):
+    from datetime import datetime, timedelta, timezone
+
+    from app.ai.tools import _payload, _write_payload
+    from app.models import AiMedia
+
+    conv = AiConversation(mobile=mobile, conversation_id=f"CONV_{mobile}", state="SELL_DATA_COLLECTION")
+    db.add(conv)
+    db.flush()
+    old = AiListingDraft(conversation_id=conv.id, mobile=mobile[-10:], status="COLLECTING", card_id="CARD-127")
+    db.add(old)
+    db.flush()
+    conv.draft_id = old.id
+    for i in range(5):
+        db.add(AiMedia(conversation_id=conv.id, draft_id=old.id, kind="image", local_path=f"/x/{i}.jpg",
+                       meta_media_id=f"old{i}"))
+    db.add(AiMedia(conversation_id=conv.id, draft_id=old.id, kind="image", extract_kind="vehicle_fields",
+                   extracted_text=json.dumps({"brand": "ASHOK LEYLAND", "registration_number": "BR28GB299"})))
+    pl = _payload(conv)
+    pl.update({"intent": "SELL", "brand": "Ashok Leyland", "model": "5525", "active_card_id": "CARD-127",
+               "last_user_message_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()})
+    _write_payload(conv, pl)
+    db.commit()
+    return conv, old
+
+
+def test_photos_after_idle_start_a_new_card_and_get_read(db, monkeypatch):
+    from app.ai import runner, vision
+    from app.models import AiMedia
+
+    conv, old = _idle_office_conv(db, "919000777011")
+    monkeypatch.setattr(runner, "download_whatsapp_media", lambda meta, mid, d, name: (f"/x/{mid}.jpg", "image/jpeg"))
+    monkeypatch.setattr(runner, "_newer_inbound_exists", lambda *a: False)
+    monkeypatch.setattr("app.ai.media_config.vision_enabled", lambda db_: True)
+    monkeypatch.setattr(vision, "resolve_media_config", lambda db_: {})
+    monkeypatch.setattr(vision, "extract_text_from_image", lambda *a, **k: json.dumps(
+        {"category": "Bus", "brand": "Force", "model": "Traveller", "colour": "Yellow"}))
+    monkeypatch.setattr(runner, "_ai_respond", lambda *a, **k: "Photo mil gaya.")
+    monkeypatch.setattr("app.ai.polish.polish_reply", lambda db, u, d, l: (d, "off"))
+    out = runner.process_inbound(db, mobile="919000777011", text="[photo]", wamid="wa-new-1",
+                                 media={"id": "new1", "kind": "image", "mime": "image/jpeg"}, send=False)
+    row = db.query(AiMedia).filter(AiMedia.meta_media_id == "new1").one()
+    assert row.draft_id != old.id and row.extract_kind == "vehicle_fields"
+    assert "Force" in out and "BR28GB299" not in out
+
+
+def test_detail_request_reads_this_cards_photos_only(db, monkeypatch):
+    from app.ai import runner, vision
+    from app.models import AiMedia
+
+    conv, old = _idle_office_conv(db, "919000777012")
+    new = AiListingDraft(conversation_id=conv.id, mobile="9000777012", status="COLLECTING", card_id="CARD-128")
+    db.add(new)
+    db.flush()
+    conv.draft_id = new.id
+    db.add(AiMedia(conversation_id=conv.id, draft_id=new.id, kind="image", local_path="/x/bus.jpg"))
+    from app.ai.tools import _payload, _write_payload
+
+    pl = _payload(conv)
+    pl.update({"brand": "Force", "model": None, "active_card_id": "CARD-128",
+               "last_user_message_at": pl["last_user_message_at"].replace("2026", "2999")})
+    _write_payload(conv, pl)
+    db.commit()
+    monkeypatch.setattr("app.ai.media_config.vision_enabled", lambda db_: True)
+    monkeypatch.setattr(vision, "resolve_media_config", lambda db_: {})
+    monkeypatch.setattr(vision, "extract_text_from_image", lambda *a, **k: json.dumps(
+        {"category": "Bus", "brand": "Force", "model": "Traveller", "colour": "Yellow"}))
+    monkeypatch.setattr(runner, "_ai_respond", lambda *a, **k: "ok")
+    monkeypatch.setattr("app.ai.polish.polish_reply", lambda db, u, d, l: (d, "off"))
+    out = runner.process_inbound(db, mobile="919000777012", text="Image check kr ke detail nikalo", send=False)
+    assert "Brand: Force" in out and "Rang: Yellow" in out
+    assert "Ashok" not in out and "BR28GB299" not in out
+
+
+def test_listing_delete_request_is_logged_for_admin(db, monkeypatch):
+    from app.ai import data_push
+    from app.models import AiEvent
+
+    conv = AiConversation(mobile="919000777013", conversation_id="CONV_9000777013", state="DONE")
+    db.add(conv)
+    db.flush()
+    monkeypatch.setattr(data_push, "get_submission_status", lambda db_, conv_: {"status": "LIVE", "listing_id": "203"})
+    out = data_push.handle_post_listing_query(db, conv, "Ye posting delete kr do ismein data missing hai", "hinglish")
+    assert "admin team" in out
+    ev = db.query(AiEvent).filter(AiEvent.event_type == "listing_delete_request").one()
+    assert '"203"' in ev.detail
+
+
 def test_inbound_lock_commits_before_release(db, monkeypatch):
     from contextlib import contextmanager
 

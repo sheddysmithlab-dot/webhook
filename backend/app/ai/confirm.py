@@ -169,6 +169,7 @@ def summary_text(payload_or_snap: dict, lang: str = "hinglish", card_id: str = "
         ("Budget", "budget"),
         ("State", "state"),
         ("City", "city"),
+        ("Details", "description"),
     ):
         if key == "city" and str(snap.get("city") or "").strip().lower() == str(snap.get("state") or "").strip().lower():
             continue

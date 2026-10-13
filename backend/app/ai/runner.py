@@ -297,6 +297,12 @@ def process_inbound(
         # Do not store full message body in logs/events beyond truncate — already capped
         db.add(AiEvent(wamid=wamid or "", mobile=mobile, event_type="inbound", detail=(text or "")[:200]))
 
+        # Idle reset before attaching: else photos of a new vehicle (and burst photos that never
+        # get an AI turn) land on yesterday's card — which may already be full.
+        if is_media:
+            from .session_memory import reset_if_idle
+
+            reset_if_idle(db, conv)
         # Media always attaches to draft/card pipeline (legacy ai_simple_chat removed).
         media_note = attach_media(db, conv, wamid, media)
         read_ids: list[int] = []
@@ -356,6 +362,10 @@ def process_inbound(
                         .order_by(AiMedia.id.desc())
                         .first()
                     ) if wamid else None
+                    if vis_row is None or not vis_row.local_path:
+                        from .vision import newest_unread_image
+
+                        vis_row = newest_unread_image(db, conv) or vis_row
                     from .session_memory import reset_if_idle
                     from .tools import _payload as _pl
                     from .tools import _write_payload as _wpl
@@ -410,9 +420,12 @@ def process_inbound(
             voice_unheard = bool(
                 media and media.get("kind") == "audio" and (text or "").strip() == "[voice note]"
             )
-            from .vision import image_report, wants_image_details
+            from .vision import image_report, read_card_images, wants_image_details
 
-            detail_report = image_report(db, conv, lang) if not office_reply and wants_image_details(text) else ""
+            detail_report = ""
+            if not office_reply and wants_image_details(text):
+                read_card_images(db, conv)
+                detail_report = image_report(db, conv, lang) or t(lang, "photo_not_read")
             force_polish = False
 
             # Step 1: Correct typos

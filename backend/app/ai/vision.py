@@ -394,8 +394,43 @@ def fill_listing_from_photo(
     return _apply_read(conv, media_row, read_image(db, conv, media_row))
 
 
+def _unread_images(db: Session, conv: AiConversation, draft_id):
+    return db.query(AiMedia).filter(
+        AiMedia.conversation_id == conv.id,
+        AiMedia.draft_id == draft_id,
+        AiMedia.kind == "image",
+        AiMedia.extract_kind == "",
+        AiMedia.local_path != "",
+    )
+
+
+def newest_unread_image(db: Session, conv: AiConversation) -> AiMedia | None:
+    """Latest not-yet-read photo of the open card (the turn's own photo may have been rejected)."""
+    if not conv.draft_id:
+        return None
+    return _unread_images(db, conv, conv.draft_id).order_by(AiMedia.id.desc()).first()
+
+
+def read_card_images(db: Session, conv: AiConversation) -> list[int]:
+    """"Photo padh ke detail do": read this card's unread photos now. Returns ids read."""
+    from .media_config import vision_enabled
+    from .tools import _payload
+
+    if not vision_enabled(db) or (_payload(conv).get("intent") or "").upper() == "BUY":
+        return []
+    row = newest_unread_image(db, conv)
+    if row is None:
+        return []
+    try:
+        return fill_listing_from_burst(db, conv, row, window_seconds=None)[1]
+    except Exception:
+        log.exception("vision.read_card_images failed")
+        return []
+
+
 def fill_listing_from_burst(
     db: Session, conv: AiConversation, media_row: AiMedia, is_document: bool = False,
+    window_seconds: int | None = BURST_WINDOW_SECONDS,
 ) -> tuple[dict, list[int]]:
     """Read this image plus the unread photos sent with it (in parallel). Returns (filled, ids read)."""
     from concurrent.futures import ThreadPoolExecutor
@@ -403,22 +438,10 @@ def fill_listing_from_burst(
     from types import SimpleNamespace
 
     rows = [media_row]
-    since = datetime.utcnow() - timedelta(seconds=BURST_WINDOW_SECONDS)
-    rows += (
-        db.query(AiMedia)
-        .filter(
-            AiMedia.conversation_id == conv.id,
-            AiMedia.id != media_row.id,
-            AiMedia.draft_id == media_row.draft_id,
-            AiMedia.kind == "image",
-            AiMedia.extract_kind == "",
-            AiMedia.local_path != "",
-            AiMedia.created_at >= since,
-        )
-        .order_by(AiMedia.id.desc())
-        .limit(MAX_VISION_READS_PER_CARD - 1)
-        .all()
-    )
+    q = _unread_images(db, conv, media_row.draft_id).filter(AiMedia.id != media_row.id)
+    if window_seconds:
+        q = q.filter(AiMedia.created_at >= datetime.utcnow() - timedelta(seconds=window_seconds))
+    rows += q.order_by(AiMedia.id.desc()).limit(MAX_VISION_READS_PER_CARD - 1).all()
     rows = [r for i, r in enumerate(rows) if _reserve_read(conv, is_document and i == 0)]
     if not rows:
         return {}, []
@@ -502,7 +525,7 @@ _REPORT_LABELS = {
         "national_permit_valid_upto": "National permit till", "colour": "Rang", "body_type": "Body",
         "tyres": "Tyre", "axles": "Axle", "cabin": "Cabin", "condition": "Haalat",
         "card_title": "📋 *Listing details*", "updated": "update hua", "km": "KM", "hours": "Hours",
-        "price": "Price",
+        "price": "Price", "description": "Details",
     },
     "hi": {
         "title": "📷 *फोटो से मिली जानकारी*", "seen": "*फोटो में दिखा:*",
@@ -515,7 +538,7 @@ _REPORT_LABELS = {
         "national_permit_valid_upto": "नेशनल परमिट तक", "colour": "रंग", "body_type": "बॉडी",
         "tyres": "टायर", "axles": "एक्सल", "cabin": "केबिन", "condition": "हालत",
         "card_title": "📋 *लिस्टिंग डिटेल*", "updated": "अपडेट हुआ", "km": "KM", "hours": "घंटे",
-        "price": "कीमत",
+        "price": "कीमत", "description": "विवरण",
     },
     "en": {
         "title": "📷 *Details read from the photo*", "seen": "*Seen in the photo:*",
@@ -528,7 +551,7 @@ _REPORT_LABELS = {
         "national_permit_valid_upto": "National permit till", "colour": "Colour", "body_type": "Body",
         "tyres": "Tyres", "axles": "Axles", "cabin": "Cabin", "condition": "Condition",
         "card_title": "📋 *Listing details*", "updated": "updated", "km": "KM", "hours": "Hours",
-        "price": "Price",
+        "price": "Price", "description": "Details",
     },
 }
 
@@ -555,6 +578,9 @@ def _card_reads(db: Session, conv: AiConversation, media_ids: list[int] | None =
     if media_ids is not None:
         rows = q.filter(AiMedia.id.in_(media_ids or [-1])).order_by(AiMedia.id.desc()).all()
     else:
+        if conv.draft_id:
+            # Only this card's photos — an older card's reads are another vehicle.
+            q = q.filter(AiMedia.draft_id == conv.draft_id)
         latest = q.order_by(AiMedia.id.desc()).first()
         if latest is None:
             return []
@@ -675,7 +701,7 @@ def card_details(
         ("category", pick("category")), ("brand", pick("brand")), ("model", pick("model")),
         ("year", pick("year")), ("fuel", pick("fuel")), ("place", place),
         ("km", payload.get("running_km")), ("hours", payload.get("operating_hours")),
-        ("price", payload.get("expected_price")),
+        ("price", payload.get("expected_price")), ("description", _clean(payload.get("description"))[:200]),
     ]
     rows += [
         (k, _clean(docs.get(k) or merged.get(k))[:60]) for k in DOC_FACT_KEYS if k != "registering_authority"

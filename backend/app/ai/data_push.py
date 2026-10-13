@@ -1109,8 +1109,19 @@ def handle_post_listing_query(db: Session, conv: AiConversation, text: str, lang
         if st in {"", "DRAFT", "NEW"}:
             return t(lang, "account_info_listings_none")
         return t(lang, "status_ask_human", status=_human_listing_status(st))
-    if re.search(r"(delete|hata|mita).{0,24}(listing|post|ad)|(listing|post).{0,24}(delete|hata)", low):
-        return t(lang, "handoff")  # listing delete is admin/human — never silent wipe
+    if re.search(r"(delete|hata|mita|remove).{0,24}(listing|post|ad)|(listing|post).{0,24}(delete|hata|remove)", low):
+        # No delete API: admin removes it. Logged with the listing so the team can act.
+        from .tools import _payload
+
+        payload = _payload(conv)
+        db.add(AiEvent(
+            wamid=conv.last_wamid or "", mobile=conv.mobile, event_type="listing_delete_request",
+            detail=json.dumps({
+                "listing_id": payload.get("infradealer_listing_id") or status.get("listing_id"),
+                "card_id": payload.get("active_card_id"), "url": link, "text": (text or "")[:200],
+            }, ensure_ascii=False)[:600],
+        ))
+        return t(lang, "listing_delete_request")
     return None
 
 

@@ -174,7 +174,11 @@ _CAR_MODELS = {
     "xuv300": ("Mahindra", "XUV300"),
     "creta": ("Hyundai", "Creta"),
     "tempo traveller": ("Force", "Tempo Traveller"),
+    "force traveller": ("Force", "Traveller"), "force traveler": ("Force", "Traveller"),
+    "force travellar": ("Force", "Traveller"), "traveller": ("Force", "Traveller"),
+    "traveler": ("Force", "Traveller"),
 }
+_CAR_MODEL_CATEGORY = {"Traveller": "Bus", "Tempo Traveller": "Bus"}
 
 
 # Truck / tipper model lines sellers type without the maker ("Signa" = Tata Signa).
@@ -216,7 +220,8 @@ def _is_truck_model(blob: str, brand, model) -> bool:
     return brand == "Tata" and str(model or "") in _TATA_TRUCK_CODES
 
 _LABEL_PATTERNS = (
-    ("brand", r"brand|make|company|ब्रांड|ब्रान्ड|कंपनी"),
+    ("brand", r"brand\s*name|brand|make|company|ब्रांड|ब्रान्ड|कंपनी"),
+    ("description", r"description|discription|descripton|descriptions|desc|विवरण|डिस्क्रिप्शन"),
     ("year", r"model\s*year|year|yom|वर्ष|ईयर|साल"),
     ("model", r"model\s*name|model|मॉडल|माडल|मोडल"),
     ("category", r"category|vehicle\s*type|कैटेगरी|श्रेणी"),
@@ -248,6 +253,22 @@ def _label_key(label: str) -> str:
     return "_stop"
 
 
+# A line that starts with a label but has no ":" — "BRAND name Force traveler", "category bus".
+_LINE_LABEL_RE = re.compile(
+    r"^[ \t*•\-]*(brand\s*name|brand|make|company|category|vehicle\s*type|description|discription|"
+    r"descripton|desc|location|city|ब्रांड|कैटेगरी|विवरण)[ \t]+(?![:=\-–])(\S.*)$",
+    re.I | re.M,
+)
+
+
+_PAPER_NOTE_RE = re.compile(
+    r"(?<![a-z])(?:all\s+)?(?:papers?|documents?|docs|kagaz|kaagaz|kagzat|permit|passing|fitness|"
+    r"insurance|bima|noc)(?![a-z]).{0,40}(?:complete|clear|ok|valid|hai|available|sahi|done|up\s*to\s*date)"
+    r"|(?:पेपर|कागज|कागजात|परमिट|फिटनेस|बीमा).{0,30}(?:पूरे|पूरा|क्लियर|है|हैं)",
+    re.I,
+)
+
+
 def _labeled_fields(text: str) -> dict:
     """"Brand: Kobelco Model: SK220XD Location: Saharanpur" → raw values per key."""
     marks = list(_LABEL_RE.finditer(text or ""))
@@ -259,7 +280,12 @@ def _labeled_fields(text: str) -> dict:
         end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
         value = text[m.end():end].split("\n")[0].strip(" ,;|.")
         if value:
-            out[key] = value[:60]
+            out[key] = value[:200 if key == "description" else 60]
+    for m in _LINE_LABEL_RE.finditer(text or ""):
+        key = _label_key(m.group(1))
+        value = m.group(2).strip(" ,;|.")
+        if key != "_stop" and key not in out and value:
+            out[key] = value[:200 if key == "description" else 60]
     return out
 
 
@@ -443,7 +469,8 @@ def normalize_units(raw: Any, *, prefer_hours: bool = False) -> dict | None:
 
 
 _COUNT_RE = re.compile(
-    r"\b\d{1,2}\s*(?:chakk?[ae]|tyres?|tayar|wheel(?:er|s)?|ton(?:ne)?s?|feet|ft|fit|kg|hp|cum|cubic)\b"
+    r"\b\d{1,2}\s*(?:chakk?[ae]|tyres?|tayar|wheel(?:er|s)?|ton(?:ne)?s?|feet|ft|fit|kg|hp|cum|cubic|"
+    r"seat(?:er|s)?|seter|setar|sitter|sit)\b"
     r"|\b\d{1,2}\s*(?:चक्का|चक्के|चक्कों|टायर|पहिया|पहिये|टन|फीट|फुट)",
     re.I,
 )
@@ -763,9 +790,24 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
         if cat:
             out["category"] = cat
     if _blank(out.get("brand")) and labeled.get("brand"):
-        out["brand"] = canonical_brand(labeled["brand"]) or brand_from_answer(labeled["brand"]) or ""
+        named = car_model(labeled["brand"])
+        if named:
+            out["brand"] = named[0]
+            if _blank(out.get("model")):
+                out["model"] = named[1]
+        else:
+            out["brand"] = canonical_brand(labeled["brand"]) or brand_from_answer(labeled["brand"]) or ""
         if not out["brand"]:
             out.pop("brand")
+    if _blank(out.get("description")):
+        notes = [labeled["description"]] if labeled.get("description") else []
+        for part in re.split(r"[\n,;|]|\s+(?:aur|and|or)\s+", "\n".join(texts)):
+            m = _PAPER_NOTE_RE.search(part)
+            note = part[m.start():].strip(" .*•-") if m else ""
+            if note and len(note) <= 80 and not any(note.lower() in n.lower() for n in notes):
+                notes.append(note)
+        if notes:
+            out["description"] = ", ".join(notes)[:300]
     if _blank(out.get("model")) and labeled.get("model"):
         model = labeled["model"].split()[0][:40]
         if _YEAR_RE.match(model):
@@ -802,7 +844,7 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
         if _blank(out.get("model")):
             out["model"] = car[1]
         if _blank(out.get("category")):
-            out["category"] = "Other"
+            out["category"] = _CAR_MODEL_CATEGORY.get(car[1], "Other")
     cv = cv_model(blob)
     if cv and _blank(out.get("brand")):
         out["brand"] = cv[0]

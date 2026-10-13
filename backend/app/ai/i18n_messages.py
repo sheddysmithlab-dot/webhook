@@ -235,6 +235,19 @@ MESSAGES = {
         "hi": "अभी {count} फोटो मिली। कम से कम 2 साफ फोटो भेजिए।",
         "en": "Got {count} photo(s). Please send at least 2 clear photos.",
     },
+    "photo_not_read": {
+        "hinglish": "Is card ki photo abhi padh nahi paya 📷 — photo dobara bhejiye, ya details likh kar bhej dijiye.",
+        "hi": "इस कार्ड की फोटो अभी पढ़ नहीं पाया 📷 — फोटो दोबारा भेजें, या डिटेल लिखकर भेज दें।",
+        "en": "Couldn't read this card's photos yet 📷 — please resend the photo, or type the details.",
+    },
+    "listing_delete_request": {
+        "hinglish": "🗑️ Listing hatane ki request admin team ko bhej di hai — jaldi hata di jayegi.\n"
+                    "Details theek karke dobara post karni ho to 'last listing change' likhiye.",
+        "hi": "🗑️ लिस्टिंग हटाने की रिक्वेस्ट एडमिन टीम को भेज दी है — जल्दी हटा दी जाएगी।\n"
+              "डिटेल ठीक करके दोबारा पोस्ट करनी हो तो 'last listing change' लिखें।",
+        "en": "🗑️ Your request to remove the listing has been sent to the admin team.\n"
+              "To fix the details and repost, type 'last listing change'.",
+    },
     "media_got": {
         "hinglish": "Photo/video mil gaya ✅ ",
         "hi": "फोटो/वीडियो मिल गया ✅ ",

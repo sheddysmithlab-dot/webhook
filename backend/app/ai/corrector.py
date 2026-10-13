@@ -83,10 +83,6 @@ _WORD_COMPLETIONS = {
     "state": "state", "rajya": "state",
 }
 
-# Words that should NOT be corrected (prices, years, numbers)
-_PRESERVE = re.compile(r"\b\d+(?:\.\d+)?\s*(?:lakh|lac|crore|cr|l|₹|rs\.?)\b", re.I)
-
-
 def _should_skip(text: str) -> bool:
     """Skip correction for short/clear messages."""
     msg = (text or "").strip()
@@ -103,33 +99,16 @@ def _should_skip(text: str) -> bool:
 
 def _fast_correct(text: str) -> str:
     """Fast Python-only correction for known typos — no LLM call needed."""
-    msg = text
-    # Preserve price/year expressions
-    preserved = []
-    for m in _PRESERVE.finditer(msg):
-        preserved.append(m.group())
-
-    words = msg.split()
-    fixed = []
-    for word in words:
+    # Word by word in place: line breaks carry "Brand: … / Category: …" structure the parser needs.
+    def fix(m: re.Match) -> str:
+        word = m.group(0)
         lower = word.lower().strip(".,!?;:")
-        punct = word[len(word.rstrip(".,!?;:") ):]
-        stripped = word.rstrip(".,!?;:")
+        for table in (_BRAND_FIXES, _CATEGORY_FIXES, _WORD_COMPLETIONS):
+            if lower in table:
+                return table[lower]
+        return word
 
-        # Brand fixes
-        if lower in _BRAND_FIXES:
-            fixed.append(_BRAND_FIXES[lower])
-            continue
-        # Category fixes
-        if lower in _CATEGORY_FIXES:
-            fixed.append(_CATEGORY_FIXES[lower])
-            continue
-        # Word completions
-        if lower in _WORD_COMPLETIONS:
-            fixed.append(_WORD_COMPLETIONS[lower])
-            continue
-        fixed.append(stripped)
-    return " ".join(fixed)
+    return re.sub(r"[ \t]{2,}", " ", re.sub(r"\S+", fix, text or "")).strip()
 
 
 def _llm_correct(text: str, lang: str, cfg: dict) -> str:

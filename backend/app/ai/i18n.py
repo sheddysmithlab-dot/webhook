@@ -135,6 +135,9 @@ def pick_language(text: str = "", previous: str = "", policy: str = "auto") -> s
             if re.search(r"\b(the|please|what|how|yes|no)\b", text, re.I) and not _DEVANAGARI.search(text):
                 if previous in ("hi", "mr") and re.search(r"\b(the|please|what)\b", text, re.I):
                     return "en"
+            # Typing in Roman script ("Image check kr ke detail nikalo") → Hinglish, not sticky Hindi.
+            if previous == "hi" and not _DEVANAGARI.search(text) and len(re.findall(r"[A-Za-z]{3,}", text)) >= 3:
+                return "hinglish"
         return previous
     if text:
         for lang, pat in _SCRIPT_MAP:
