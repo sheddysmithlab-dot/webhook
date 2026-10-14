@@ -769,6 +769,23 @@ _FUELS = (
     ("Electric", r"electric|इलेक्ट्रिक"),
 )
 _PHONE_LINE_RE = re.compile(r"(?<!\d)(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}(?!\d)")
+# Mobile numbers incl. "0"/"+91" prefixes and typo'd short ones ("099507 8568"); they must never
+# become price / model / year. Bare numbers need the 5+5 mobile shape so "85000 2019" survives.
+_PHONE_NOISE_RE = re.compile(
+    r"(?<![\d.,])(?:(?:\+\s*91|\b91)[\s-]*|0)[6-9]\d{3,4}[\s-]?\d{4,5}(?![\d.,])"
+    r"|(?<![\d.,])[6-9]\d{4}[\s-]?\d{5}(?![\d.,])"
+)
+
+
+def strip_phone_numbers(text: str) -> str:
+    """Drop mobile numbers and the "Contact:" / "Mobile no." label in front of them."""
+    text = text or ""
+    if not _PHONE_NOISE_RE.search(text):
+        return text
+    text = re.sub(
+        rf"\b(?:{_CONTACT_LABEL_RE.pattern})\s*[:\-–]?\s*(?=(?:{_PHONE_NOISE_RE.pattern}))", " ", text, flags=re.I
+    )
+    return _PHONE_NOISE_RE.sub(" ", text)
 _EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F]")
 
 
@@ -851,11 +868,13 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
 
     out = dict(fields or {})
     texts = []
+    had_phone = False
     for msg in messages or []:
-        if isinstance(msg, dict):
-            texts.append(normalize_input_text(str(msg.get("text") or "")))
-        else:
-            texts.append(normalize_input_text(str(msg or "")))
+        raw = msg.get("text") if isinstance(msg, dict) else msg
+        norm = normalize_input_text(str(raw or ""))
+        stripped = strip_phone_numbers(norm)
+        had_phone = had_phone or stripped != norm
+        texts.append(stripped)
     blob = " ".join(texts).strip()
     if not blob:
         return out
@@ -1028,7 +1047,9 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
         if fuel:
             out["fuel"] = fuel
 
-    if _blank(out.get("city")) and _blank(out.get("location")) and _blank(out.get("state")):
+    # "Ramesh 99507 85689" is a name + number, not a town.
+    name_with_phone = had_phone and len(blob.split()) <= 2
+    if _blank(out.get("city")) and _blank(out.get("location")) and _blank(out.get("state")) and not name_with_phone:
         loc = normalize_location(location=re.sub(r"\b(location|loc|state)\s*[-:=]+\s*", r"\1 ", blob, flags=re.I))
         if loc.get("city"):
             out["city"] = loc["city"]

@@ -25,6 +25,8 @@ def _send_listing_button(db: Session, conv: AiConversation, lang: str) -> None:
         payload = _payload(conv)
         if payload.get("listing_review_notified"):
             return  # the "approved" message with the link already went out
+        if str(payload.get("listing_status") or "").upper() not in {"POSTED", "LIVE", "APPROVED", "PUBLISHED"}:
+            return  # pending review: the "submitted" reply covers it; never claim "live"
         from .data_push import public_listing_url
 
         listing_url = str(payload.get("listing_url") or "").strip().replace("/listing/", "/listings/")
@@ -414,7 +416,9 @@ def maybe_start_new_card(db: Session, conv: AiConversation, fields: dict | None)
             not new or not cur or new == cur or key in guessed
             for key, new, cur in (("brand", new_brand, cur_brand), ("model", new_model, cur_model))
         )
-        different = not (fixes_brand or fixes_photo) and bool(
+        # A bare number with no brand ("8568") is too weak to abandon a card with photos.
+        bare_number = not new_brand and new_model.isdigit()
+        different = not (fixes_brand or fixes_photo or bare_number) and bool(
             (new_brand and cur_brand and new_brand != cur_brand)
             or (new_model and cur_model and new_model != cur_model and (not new_brand or new_brand == cur_brand))
         )

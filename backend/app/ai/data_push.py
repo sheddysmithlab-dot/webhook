@@ -1172,6 +1172,29 @@ def mark_listing_review_notified(conv: AiConversation, *, error: str = "") -> No
     _write_payload(conv, payload)
 
 
+def draft_decision_notified(draft: Any) -> str:
+    """"POSTED"/"REJECTED" once that card's decision WhatsApp went out, else ""."""
+    if draft is None:
+        return ""
+    try:
+        meta = json.loads(getattr(draft, "inferred_json", None) or "{}")
+    except (TypeError, ValueError):
+        return ""
+    return str(meta.get("decision_notified") or "") if isinstance(meta, dict) else ""
+
+
+def _mark_draft_decision_notified(draft: Any, decision: str) -> None:
+    try:
+        meta = json.loads(draft.inferred_json or "{}")
+    except (TypeError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["decision_notified"] = decision
+    meta["decision_notified_at"] = _now_iso()
+    draft.inferred_json = json.dumps(meta, ensure_ascii=False)
+
+
 def should_retry_decision_notify(conv: AiConversation) -> bool:
     """Retry WhatsApp notify when decision exists but prior Graph send failed."""
     from .tools import _payload
@@ -1205,6 +1228,9 @@ def notify_user_admin_decision(
     remote = payload if isinstance(payload, dict) else {}
     pl = _payload(conv)
     if pl.get("listing_review_notified") and not force:
+        return {"sent": False, "skipped": True, "error": "", "text": ""}
+    decision = "POSTED" if approved else "REJECTED"
+    if not force and draft_decision_notified(draft) == decision:
         return {"sent": False, "skipped": True, "error": "", "text": ""}
 
     lid = str(
@@ -1291,6 +1317,7 @@ def notify_user_admin_decision(
                 schedule_card_cleanup(draft, minutes=10)
             except Exception:
                 log.exception("schedule_card_cleanup failed")
+            _mark_draft_decision_notified(draft, decision)
         return {"sent": bool(sent), "error": "" if sent else "send_failed", "text": text}
     except Exception as exc:
         mark_listing_review_notified(conv, error=str(exc)[:500])

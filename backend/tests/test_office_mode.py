@@ -1307,6 +1307,7 @@ def test_listing_button_uses_public_listings_url(db, client, monkeypatch):
     conv = _conv(db)
     pl = _payload(conv)
     pl["infradealer_listing_id"] = "113"
+    pl["listing_status"] = "POSTED"
     _write_payload(conv, pl)
     _send_listing_button(db, conv, "hi")
     assert sent[0][3][0]["url"] == "https://infradealer.com/listings/113"

@@ -142,7 +142,9 @@ def _drop_false_live_claims(raw: str, replacement: str) -> str:
 
 
 def _sanitize_reply(text: str, posted: bool = False, lang: str = "hinglish") -> str:
-    raw = (text or "").strip()
+    from .format_reply import strip_internal_headings
+
+    raw = strip_internal_headings((text or "").strip())
     raw = re.sub(r"(?is)otp\s*[:\-]*\s*\d{4,8}", "OTP", raw)
     raw = re.sub(r"(?i)(sk-|bearer\s+|api[_-]?key|system prompt|AUTH_|META_SYSTEM)", "[blocked]", raw)
     if not posted:

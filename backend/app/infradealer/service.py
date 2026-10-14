@@ -1199,13 +1199,23 @@ class InfraDealerIntegrationService:
             conv = self.db.get(AiConversation, req.conversation_id) if req.conversation_id else None
             if not conv:
                 continue
+            from ..ai.data_push import draft_decision_notified
             from ..ai.tools import _payload
 
+            draft = self.db.get(AiListingDraft, req.draft_id) if req.draft_id else None
+            if draft is not None:
+                decision = draft_decision_notified(draft) or (draft.status or "").upper()
+                # The payload belongs to the active card; an older decided card must not
+                # read it (after a new card / chat clear it looks un-notified → resend).
+                if decision in {"POSTED", "REJECTED"} and (
+                    draft_decision_notified(draft) or conv.draft_id != draft.id
+                ):
+                    req.business_code = f"LISTING_{decision}"
+                    continue
             pl = _payload(conv)
             if pl.get("listing_review_notified"):
                 continue
             listing_status = str(pl.get("listing_status") or "").upper()
-            draft = self.db.get(AiListingDraft, req.draft_id) if req.draft_id else None
             # Local decision already applied but WhatsApp failed — retry without remote poll
             if listing_status in {"POSTED", "REJECTED"}:
                 from ..ai.data_push import notify_user_admin_decision, should_retry_decision_notify

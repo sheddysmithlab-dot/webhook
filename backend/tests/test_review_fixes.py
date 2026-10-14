@@ -803,3 +803,106 @@ def test_yes_without_two_photos_is_not_pushed(db, monkeypatch):
     assert out == {"ok": False, "error": "photos_required", "photos": 0, "status": "SUBMISSION_BLOCKED"}
     assert _payload(conv)["awaiting_confirm"] and not _payload(conv)["customer_confirmed"]
     assert "kam se kam 2 photo" in chat_memory.submit_failure_reply("hinglish", out).lower()
+
+
+def _poll_service(db, monkeypatch, sent):
+    from app.infradealer import service as svc_mod
+
+    svc = svc_mod.get_integration_service(db)
+    monkeypatch.setattr(svc, "is_configured", lambda: True)
+    monkeypatch.setattr(svc, "is_test_mode", lambda: False)
+
+    class _Client:
+        def get_status(self, **_):
+            return {"body": {"code": "LISTING_POSTED", "listing": {"listing_id": "244", "status": "POSTED"}}}
+
+    monkeypatch.setattr(svc, "_client", lambda *a, **k: _Client())
+    monkeypatch.setattr(svc_mod, "get_integration_service", lambda _db: svc)
+    monkeypatch.setattr(svc, "_notify_customer", lambda conv, text, **k: sent.append(text) or True)
+    return svc
+
+
+def test_poll_does_not_resend_approval_after_new_card(db, monkeypatch):
+    from app.ai.tools import _payload, _write_payload
+    from app.models import InfraDealerRequest
+
+    conv = AiConversation(mobile="9000777020", conversation_id="CONV_9000777020", state="NEW")
+    db.add(conv)
+    db.flush()
+    old = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="POSTED", card_id="CARD-001")
+    new = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="COLLECTING", card_id="CARD-002")
+    db.add_all([old, new])
+    db.flush()
+    db.add(InfraDealerRequest(
+        request_id="r-244", event_type="LISTING_PUSH", status="SUCCESS", business_code="LISTING_PENDING_REVIEW",
+        conversation_id=conv.id, draft_id=old.id, mobile=conv.mobile,
+    ))
+    conv.draft_id = new.id  # "Continue" after the chat clear started a fresh card
+    pl = _payload(conv)
+    pl.update({"listing_status": "", "listing_review_notified": False})
+    _write_payload(conv, pl)
+    db.flush()
+
+    sent: list[str] = []
+    svc = _poll_service(db, monkeypatch, sent)
+    svc.poll_pending_listings()
+    assert sent == []
+    assert db.query(InfraDealerRequest).one().business_code == "LISTING_POSTED"
+
+
+def test_decision_notify_is_once_per_card(db, monkeypatch):
+    from app.ai.data_push import draft_decision_notified, notify_user_admin_decision
+    from app.ai.tools import _payload, _write_payload
+
+    conv = AiConversation(mobile="9000777021", conversation_id="CONV_9000777021", state="NEW")
+    db.add(conv)
+    db.flush()
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="PENDING_REVIEW", card_id="CARD-001")
+    db.add(draft)
+    db.flush()
+    sent: list[str] = []
+    _poll_service(db, monkeypatch, sent)
+
+    notify_user_admin_decision(db, conv, approved=True, listing_id="244", draft=draft)
+    assert len(sent) == 1 and draft_decision_notified(draft) == "POSTED"
+    pl = _payload(conv)
+    pl["listing_review_notified"] = False  # a new card reset the chat flag
+    _write_payload(conv, pl)
+    out = notify_user_admin_decision(db, conv, approved=True, listing_id="244", draft=draft)
+    assert out.get("skipped") and len(sent) == 1
+
+
+def test_pending_listing_never_gets_live_button(db, monkeypatch):
+    from app.ai import confirm
+    from app.ai.tools import _write_payload
+
+    conv = AiConversation(mobile="9000777022", conversation_id="CONV_9000777022", state="NEW")
+    db.add(conv)
+    db.flush()
+    _write_payload(conv, {"listing_status": "PENDING_REVIEW", "infradealer_listing_id": "250"})
+    monkeypatch.setattr("app.services.send_whatsapp_button", lambda *a, **k: pytest.fail("no live button"))
+    confirm._send_listing_button(db, conv, "hinglish")
+
+
+def test_llm_internal_heading_is_dropped():
+    out = _sanitize_reply("*Intent*\n• Bataiye aap karna chahte hain — vehicle bechna ya kharidna?")
+    assert out == "Bataiye aap karna chahte hain — vehicle bechna ya kharidna?"
+    keep = "*Tata 2518*\n• Price: 12 lakh\n• Year: 2019"
+    assert _sanitize_reply(keep) == keep
+
+
+def test_phone_numbers_are_not_price_or_model():
+    from app.ai.engine import extract_turn
+
+    for msg in ("099507 8568", "099507 85689", "+91 99507 85689", "Contact 099507 85689", "Ramesh 9950785689"):
+        assert extract_turn(msg) == {}, msg
+    f = extract_turn("Mahindra Blazo 2019 price 18 lakh contact 099507 85689")
+    assert (f["model"], f["expected_price"]) == ("Blazo", 1800000)
+    assert extract_turn("km 85000 2019 model")["year"] == 2019
+
+
+def test_bare_number_does_not_abandon_office_card(db, monkeypatch):
+    from app.ai.confirm import maybe_start_new_card
+
+    conv = _office_card(db, monkeypatch, "919000777023", brand="Mahindra", model="Blazo", category="Truck")
+    assert not maybe_start_new_card(db, conv, {"model": "8568", "expected_price": 99507})

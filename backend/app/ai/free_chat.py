@@ -204,7 +204,9 @@ def free_chat_reply(db: Session, conv: AiConversation, text: str, lang: str, med
 
 
 def _sanitize_free(text: str, lang: str) -> str:
-    raw = (text or "").strip()
+    from .format_reply import strip_internal_headings
+
+    raw = strip_internal_headings((text or "").strip())
     raw = re.sub(r"\s+", " ", raw)
     bad = re.compile(r"(system prompt|api[_ ]?key|secret|sql|database|otp\s*\d|password\s*:)", re.I)
     if bad.search(raw):
