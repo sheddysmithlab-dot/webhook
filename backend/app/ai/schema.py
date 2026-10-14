@@ -188,7 +188,8 @@ def normalize_vehicle_category(raw: str | None) -> str:
         return _CAT_ALIASES[text]
     for cue, label in sorted(_CAT_ALIASES.items(), key=lambda x: len(x[0]), reverse=True):
         # Plurals too: users reply with the website's labels ("Dumpers", "Excavators", "Trucks").
-        if re.search(rf"(?<![a-z0-9]){re.escape(cue)}s?(?![a-z0-9])", text):
+        # Devanagari letters bound words too: "बस्ती" (Basti district) is not "बस".
+        if re.search(rf"(?<![a-z0-9\u0900-\u097F]){re.escape(cue)}s?(?![a-z0-9\u0900-\u097F])", text):
             return label
     return ""
 

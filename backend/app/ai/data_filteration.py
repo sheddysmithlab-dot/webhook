@@ -481,7 +481,8 @@ def normalize_year(raw: Any) -> dict | None:
     if _blank(raw):
         return None
     text = str(raw).strip()
-    found = [int(x) for x in re.findall(r"\b((?:19|20)\d{2})\b", text)]
+    # "2021last nov" carries its year; "PC2000" is a model code.
+    found = [int(x) for x in re.findall(r"(?<![A-Za-z\d])((?:19|20)\d{2})(?!\d)", text)]
     if found:
         # "Tata 1918 2019": 1918 is a model number; take the first plausible vehicle year.
         year = next((y for y in found if _YEAR_MIN <= y <= _current_year()), found[0])
@@ -494,7 +495,8 @@ def normalize_year(raw: Any) -> dict | None:
         return None
     # "18 चक्का" / "10 tyre" / "25 ton" are counts, not years.
     text = _COUNT_RE.sub(" ", text)
-    m2 = re.search(r"\b(\d{2})\s*(?:model|ka|की|का)?\b", text, re.I)
+    # "11,50000" / "25.5" are amounts, not "'11" / "'25".
+    m2 = re.search(r"(?<![\d,.])\b(\d{2})(?![.,]\d)\s*(?:model|ka|की|का)?\b", text, re.I)
     if m2 and not re.search(r"(?:19|20)\d{2}", text):
         yy = int(m2.group(1))
         # Ambiguous two-digit year → prefer 20xx if plausible, else uncertain
@@ -581,7 +583,7 @@ def _looks_like_place(text: str) -> bool:
         return False
     low = raw.lower()
     if re.fullmatch(
-        r"(haan+|han+|ha+|hji|ji|yes+|yup|yeah|yep|ok+|okay|no+|nahi+|na+|hello|hi|hey|"
+        r"(haan+|han+|ha+|hji|ji|yes+|yea+h?|es|yup|yeah|yep|ok+|okay|no+|nahi+|na+|hello|hi|hey|"
         r"theek|thik|sahi|correct|done|post|submit|please|pls|thanks|thank\s*you|"
         r"skip+|skip\s*(it|kar\w*|kr\w*)|ab|abhi|aur|bhi|bhai|sir|bas|wahi|vahi|yahi|yaha|waha|wala|wali|"
         r"kuch\s*(nahi|nhi)|nothing|none|later|baad\s*(me|mein)|"
@@ -739,7 +741,9 @@ def _extract_bare_price(text: str, year: Any = None) -> int | None:
             continue
         candidates.append(val)
     if not candidates:
-        # Lone message: "2000000" or "20,00,000"
+        # Lone message: "2000000" or "20,00,000" — a long dump would read a model code as lakhs.
+        if len(text.split()) > 4:
+            return None
         cur = normalize_currency(text.strip())
         if cur and int(cur["value"]) >= 10_000:
             return int(cur["value"])
@@ -771,9 +775,10 @@ _FUELS = (
 _PHONE_LINE_RE = re.compile(r"(?<!\d)(?:\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}(?!\d)")
 # Mobile numbers incl. "0"/"+91" prefixes and typo'd short ones ("099507 8568"); they must never
 # become price / model / year. Bare numbers need the 5+5 mobile shape so "85000 2019" survives.
+# "9310292085.." / "7879882913,9755224058" are lists of numbers; "25.5" / "11,50000" are amounts.
 _PHONE_NOISE_RE = re.compile(
-    r"(?<![\d.,])(?:(?:\+\s*91|\b91)[\s-]*|0)[6-9]\d{3,4}[\s-]?\d{4,5}(?![\d.,])"
-    r"|(?<![\d.,])[6-9]\d{4}[\s-]?\d{5}(?![\d.,])"
+    r"(?<!\d)(?:(?:\+\s*91|\b91)[\s-]*|0)[6-9]\d{3,4}[\s-]?\d{4,5}(?!\d)(?![.,]\d{1,2}\b)"
+    r"|(?<!\d)[6-9]\d{4}[\s-]?\d{5}(?!\d)(?![.,]\d{1,2}\b)"
 )
 
 
@@ -992,10 +997,10 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
         price_blob = re.sub(r"लाख़?", " lakh", price_src)
         price_blob = re.sub(r"करोड़|करोड", " crore", price_blob)
         price_blob = re.sub(r"(\d)\.\s+(?=lakh|lac|crore)", r"\1 ", price_blob, flags=re.I)
-        # Prefer segments with lakh/crore/₹
+        # Prefer segments with lakh/crore/₹; digits glued to letters are model codes ("ZX220LC").
         for m in re.finditer(
-            r"(?:₹|rs\.?\s*)?\d+(?:[.,]\d+)?\s*(?:lakh|lac|lacs|l|crore|cr)\b|"
-            r"(?:₹|rs\.?\s*)\d[\d,]{3,}",
+            r"(?<![A-Za-z\d])(?:₹\s*|rs\.?\s*)?\d+(?:[.,]\d+)?\s*(?:lakhs?|lacs?|l|crores?|cr)\b|"
+            r"(?:₹\s*|rs\.?\s*)\d[\d,]{3,}",
             price_blob,
             re.I,
         ):
@@ -1037,6 +1042,10 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
                 out["running_km"] = unit["value"]
                 out["km"] = unit["value"]
             break
+    # "2200 घंटे" / "62000 km" is usage, not a model number.
+    usage = str(out.get("operating_hours") or out.get("running_km") or "")
+    if usage and str(out.get("model") or "") == usage and _blank((fields or {}).get("model")):
+        out.pop("model")
 
     if _blank(out.get("owners")):
         owners = owners_from_text(blob)
@@ -1048,7 +1057,7 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
             out["fuel"] = fuel
 
     # "Ramesh 99507 85689" is a name + number, not a town.
-    name_with_phone = had_phone and len(blob.split()) <= 2
+    name_with_phone = had_phone and (len(blob.split()) <= 2 or not re.search(r"[^\W\d_]", blob))
     if _blank(out.get("city")) and _blank(out.get("location")) and _blank(out.get("state")) and not name_with_phone:
         loc = normalize_location(location=re.sub(r"\b(location|loc|state)\s*[-:=]+\s*", r"\1 ", blob, flags=re.I))
         if loc.get("city"):

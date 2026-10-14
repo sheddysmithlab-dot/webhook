@@ -59,7 +59,7 @@ def _send_listing_button(db: Session, conv: AiConversation, lang: str) -> None:
 
 _YES = re.compile(
     r"^\s*("
-    r"haan+|han+|ha+|hji|ji|yes+|yup|yeah|yep|ok+|okay|bilkul|bilkul\s*sahi|"
+    r"haan+|han+|ha+|hji|ji|yes+|yea+h?|yup|yeah|yep|ok+|okay|bilkul|bilkul\s*sahi|"
     r"sahi\s*hai|theek\s*hai|thik\s*hai|correct|confirm|kar\s*do|kar\s*dena|"
     r"submit(\s*kar\s*do)?|done|go\s*ahead|proceed|"
     r"हाँ+|हां+|जी+|सही\s*है|ठीक\s*है|बिल्कुल|कर\s*दो"
@@ -198,6 +198,24 @@ def no_photo_note(payload: dict, lang: str = "hinglish") -> str:
     return "📷 Kam se kam 2 photo zaroori hain — Haan se pehle gaadi ki photos bhejiye."
 
 
+def no_place_note(payload: dict, lang: str = "hinglish") -> str:
+    """Buyers filter by state: ask for it on the summary (not blocking — the YES still posts)."""
+    if str(payload.get("intent") or "").upper() != "SELL":
+        return ""
+    if any(payload.get(k) not in (None, "") for k in ("state", "city", "location")):
+        return ""
+    code = (lang or "hinglish").lower()
+    if code in {"hi", "hindi"}:
+        return "📍 गाड़ी किस राज्य/शहर में है? लिख दें तो खरीदार आसानी से ढूँढ पाएँगे।"
+    if code in {"en", "english"}:
+        return "📍 Which state/city is the vehicle in? Adding it helps buyers find it."
+    return "📍 Gaadi kis state/city me hai? Likh dijiye — buyers ko dhoondhne me aasani hogi."
+
+
+def summary_notes(payload: dict, lang: str = "hinglish") -> list[str]:
+    return [n for n in (no_place_note(payload, lang), no_photo_note(payload, lang)) if n]
+
+
 def send_summary(db: Session, conv: AiConversation, lang: str = "hinglish") -> str:
     from .buyer import buyer_reply, is_buyer
 
@@ -205,8 +223,7 @@ def send_summary(db: Session, conv: AiConversation, lang: str = "hinglish") -> s
     if is_buyer(payload):
         return buyer_reply(db, conv, lang)
     text = summary_text(payload, lang=lang)
-    note = no_photo_note(payload, lang)
-    if note:
+    for note in summary_notes(payload, lang):
         text += "\n" + note
     payload["awaiting_confirm"] = True
     payload["summary_json"] = snapshot(payload)

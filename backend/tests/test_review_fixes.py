@@ -214,8 +214,9 @@ def test_update_on_open_card_shows_full_card_with_photo_details(db, monkeypatch)
     _write_payload(conv, pl)
     out = eng.prompt_chat_turn(db, conv, "Model 2020")
     for part in ("Listing details* — CARD-006", "Brand: JCB", "Model: 3DX", "Year: 2020 ✏️",
-                 "Rang: Yellow", "Tyre: 4", "Gaadi number: BR01AB1234", "Bucket in good shape", "Haan"):
+                 "Rang: Yellow", "Tyre: 4", "Gaadi number: BR01AB1234", "Haan"):
         assert part in out, part
+    assert "Bucket in good shape" not in out
     assert "Brand: JCB ✏️" not in out
     assert _payload(conv)["summary_json"]["year"] == 2020
 
@@ -906,3 +907,70 @@ def test_bare_number_does_not_abandon_office_card(db, monkeypatch):
 
     conv = _office_card(db, monkeypatch, "919000777023", brand="Mahindra", model="Blazo", category="Truck")
     assert not maybe_start_new_card(db, conv, {"model": "8568", "expected_price": 99507})
+
+
+def test_model_code_with_digits_is_not_lakh_price():
+    from app.ai.engine import extract_turn
+
+    f = extract_turn("Hitachi ZX220LC 2018 model\nPrice ₹ 36.75 Lakhs")
+    assert f["expected_price"] == 3675000
+    assert f.get("year") == 2018
+
+
+def test_basti_is_not_bus():
+    from app.ai.engine import extract_turn
+
+    f = extract_turn("टाटा 5530 बस्ती उत्तर प्रदेश")
+    assert f.get("category") != "Bus"
+
+
+def test_hindi_hours_spelling_is_hours_not_model():
+    from app.ai.engine import extract_turn
+
+    f = extract_turn("2200 घण्टे")
+    assert f.get("operating_hours") == 2200
+    assert "model" not in f
+
+
+def test_joined_phone_lists_are_dropped():
+    from app.ai.engine import extract_turn
+
+    for msg in ("9310292085..", "7879882913,9755224058", "Mob. 9310292085, 9755224058"):
+        assert extract_turn(msg) == {}, msg
+
+
+def test_yea_is_yes_not_place():
+    from app.ai.confirm import _YES
+    from app.ai.engine import extract_turn
+
+    assert _YES.search("Yea")
+    assert not _looks_like_place("Yea")
+    assert extract_turn("Yea") == {}
+
+
+def test_rupee_digits_are_not_year():
+    from app.ai.engine import extract_turn
+
+    f = extract_turn("Rate..11,50000")
+    assert f["expected_price"] == 1150000
+    assert "year" not in f
+    assert extract_turn("2021last")["year"] == 2021
+
+
+def test_model_same_as_brand_is_not_shown():
+    from app.ai.vision import listing_fields, shown_model
+
+    assert shown_model("JCB", "JCB") == ""
+    assert shown_model("Tata", "ATA") == ""
+    assert shown_model("Tata", "Signa") == "Signa"
+    assert "model" not in listing_fields({"brand": "JCB", "model": "JCB", "category": "Backhoe Loader"})
+
+
+def test_summary_asks_place_when_missing():
+    from app.ai.confirm import no_place_note, summary_notes
+
+    pl = {"intent": "SELL", "brand": "Tata", "category": "Truck", "expected_price": 1500000}
+    assert "state/city" in no_place_note(pl)
+    assert no_place_note({**pl, "state": "Bihar"}) == ""
+    assert no_place_note({**pl, "intent": "BUY"}) == ""
+    assert any("state/city" in n for n in summary_notes(pl))

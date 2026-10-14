@@ -1360,8 +1360,9 @@ def test_office_typed_details_update_photo_card_not_new_card(db, client, monkeyp
     pl = _payload(conv)
     assert conv.draft_id == draft_id
     assert (pl["brand"], pl["model"], str(pl["year"])) == ("Tata", "5521", "2025")
-    for part in ("📋", "5521 ✏️", "2025 ✏️", "Side ladders present", "BR28G3913"):
+    for part in ("📋", "5521 ✏️", "2025 ✏️"):
         assert part in out, part
+    assert "Side ladders present" not in out
     assert "Post to" in om.decorate_office_reply(db, conv, out)
 
 
@@ -1394,8 +1395,9 @@ def test_user_typed_details_update_photo_card_with_full_card(db, client, monkeyp
     out = eng.prompt_chat_turn(db, conv, "Tata signa 5521 tipper 2025 model price 33 lakh Gorakhpur")
     pl = _payload(conv)
     assert conv.draft_id == draft_id and pl["model"] == "5521"
-    for part in ("📋", "5521 ✏️", "Side ladders present", "Rang: red"):
+    for part in ("📋", "5521 ✏️", "Rang: red"):
         assert part in out, part
+    assert "Side ladders present" not in out
     assert "Post to" not in out
 
 

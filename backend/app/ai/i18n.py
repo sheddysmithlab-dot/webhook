@@ -27,6 +27,8 @@ def normalize_input_text(text: str) -> str:
     text = _INVISIBLE.sub("", text)
     if text.isascii():
         return text
+    # "घण्टे" (half-ण spelling) reads like "घंटे" everywhere downstream.
+    text = text.replace("घण्ट", "घंट")
     return "".join(
         str(unicodedata.decimal(ch)) if not ch.isascii() and ch.isdecimal() else ch for ch in text
     )

@@ -896,15 +896,20 @@ def _usage_gap(payload: dict) -> str | None:
 
 
 def _full_card(db, conv: AiConversation, lang: str, changed: set) -> str:
-    """Updated card with the photo details kept, changed fields marked, then the Haan prompt."""
+    """Updated card with changed fields marked (photo observations are not repeated), then the Haan prompt."""
     from .vision import card_details
+
+    from .confirm import no_place_note
 
     try:
         body = card_details(db, conv, lang, changed)
     except Exception:
         log.exception("card_details failed")
         return ""
-    return f"{body}\n\n{t(lang, 'confirm_ask')}" if body else ""
+    if not body:
+        return ""
+    place = no_place_note(_payload(conv), lang)
+    return f"{body}\n\n" + (f"{place}\n" if place else "") + t(lang, "confirm_ask")
 
 
 def media_only_msg(msg: str, media_note: str) -> bool:

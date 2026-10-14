@@ -365,7 +365,7 @@ def listing_fields(data: dict) -> dict:
         brand, model = series[0], model or series[1]
     if brand:
         out["brand"] = canonical_brand(brand) or extract_fields([brand]).get("brand") or brand.title()[:40]
-    if model:
+    if model and shown_model(out.get("brand") or brand, model):
         out["model"] = model[:40]
     reg_year = _year_in(data.get("registration_date"))
     year = _year_in(data.get("manufacturing_year") or data.get("year")) or reg_year
@@ -780,7 +780,8 @@ def image_report(
     place = ", ".join(x for x in (fields.get("city"), fields.get("state")) if x)
     rows = [
         ("category", fields.get("category")), ("brand", fields.get("brand")),
-        ("model", fields.get("model")), ("year", fields.get("year")), ("fuel", fields.get("fuel")),
+        ("model", shown_model(fields.get("brand"), fields.get("model"))), ("year", fields.get("year")),
+        ("fuel", fields.get("fuel")),
         ("place", place),
     ]
     rows += [(k, _clean(merged.get(k))[:60]) for k in DOC_FACT_KEYS if k != "registering_authority"]
@@ -851,7 +852,7 @@ def card_details(
 
     place = ", ".join(str(x) for x in dict.fromkeys(x for x in (pick("city"), pick("state")) if x))
     rows = [
-        ("category", pick("category")), ("brand", pick("brand")), ("model", pick("model")),
+        ("category", pick("category")), ("brand", pick("brand")), ("model", shown_model(pick("brand"), pick("model"))),
         ("year", pick("year")), ("fuel", pick("fuel")), ("place", place),
         ("km", payload.get("running_km")), ("hours", payload.get("operating_hours")),
         ("price", payload.get("expected_price")), ("description", _clean(payload.get("description"))[:200]),
@@ -865,4 +866,15 @@ def card_details(
     title = labels["card_title"] + (f" — {card}" if card else "")
     marks = {"place" if k in {"city", "state", "location"} else
              {"running_km": "km", "operating_hours": "hours", "expected_price": "price"}.get(k, k) for k in updated}
-    return _report_text(title, rows, details, labels, marks)
+    # An edit confirmation shows the fields; the photo observations went out with the photo report.
+    return _report_text(title, rows, [] if updated else details, labels, marks)
+
+
+def shown_model(brand, model) -> str:
+    """Model worth showing: not the brand again ("JCB JCB") nor a cut-off read of it ("ATA" for TATA)."""
+    m, b = _clean(model), _clean(brand)
+    if not m:
+        return ""
+    if b and m.lower() in b.lower():
+        return ""
+    return m

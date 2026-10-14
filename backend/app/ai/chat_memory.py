@@ -696,6 +696,11 @@ def build_confirmation_summary(
     loc = nd.get("city") or nd.get("state") or payload.get("city") or payload.get("state")
     if loc:
         lines.append(t(lang, "summary_location", value=loc))
+    else:
+        from .confirm import no_place_note
+
+        if no_place_note(payload, lang):
+            lines.append(no_place_note(payload, lang))
     price = nd.get("price") or nd.get("expected_price") or payload.get("expected_price")
     if price:
         lines.append(t(lang, "summary_price", value=price))
