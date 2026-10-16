@@ -231,8 +231,10 @@ def test_regular_user_cannot_open_other_account_by_pasting_number(db, client):
     regular = _conv(db, mobile="9893313715", account_type="token")
     for msg in ("+91 98272 11177", "9827211177", "98272 11177"):
         out = handle_same_number_account_policy(db, regular, msg, "hinglish")
-        assert out and "Office / Postdesk" in out, msg
-        assert "9827211177" in out or "98272" in out
+        assert out and "access nahi kar sakte" in out, msg
+        assert "usi WhatsApp number se" in out
+        assert "Office / Postdesk" not in out
+        assert "wallet" not in out.lower()
 
     # Listing contact phone is OK — not an account switch.
     assert handle_same_number_account_policy(

@@ -230,21 +230,21 @@ def wants_other_number_account(text: str, chat_mobile: str = "") -> bool:
 
 def reply_other_number_blocked(lang: str, chat_mobile: str, other: str = "") -> str:
     """Hard policy: one WhatsApp chat = only that number's InfraDealer account."""
-    from .account_filter import normalize_phone
-
-    this_num = normalize_phone(chat_mobile) or "is WhatsApp number"
-    bullets = [
-        f"Yeh chat sirf {bold(this_num)} ke liye hai",
-        "Dusre number ka account dekhna / select / us par listing post karna *sirf Office / Postdesk* number se allowed hai",
-        "Is chat se kisi aur WhatsApp number ka wallet, tokens ya account status *nahi* dikhaya jaata",
-        "OTP / account hamesha *isi WhatsApp number* pe hi banega",
-    ]
-    if other:
-        bullets.append(f"Aapne diya number {bold(other)} — yahan allow nahi")
-    bullets.append(
-        "Dusre number ka account chahiye to usi number se WhatsApp pe InfraDealer ko message kijiye"
+    code = (lang or "hinglish").lower()
+    if code in {"hi", "hindi"}:
+        return (
+            "आप दूसरे WhatsApp नंबर वाले अकाउंट को यहाँ से एक्सेस नहीं कर सकते।\n"
+            "उसे इस्तेमाल करने के लिए उसी WhatsApp नंबर से InfraDealer को मैसेज करें।"
+        )
+    if code in {"en", "english"}:
+        return (
+            "You cannot access another WhatsApp number's account from this chat.\n"
+            "To use that account, message InfraDealer from that WhatsApp number."
+        )
+    return (
+        "Aap dusre WhatsApp number wale account ko yahan se access nahi kar sakte.\n"
+        "Use access karne ke liye usi WhatsApp number se InfraDealer ko message kijiye."
     )
-    return fmt_section("Rule — Same WhatsApp number only", bullets)
 
 
 def reply_account_already_here(lang: str, chat_mobile: str) -> str:
