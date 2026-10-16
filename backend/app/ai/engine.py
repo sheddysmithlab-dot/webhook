@@ -908,8 +908,13 @@ def _full_card(db, conv: AiConversation, lang: str, changed: set) -> str:
         return ""
     if not body:
         return ""
-    place = no_place_note(_payload(conv), lang)
-    return f"{body}\n\n" + (f"{place}\n" if place else "") + t(lang, "confirm_ask")
+    pl = _payload(conv)
+    head = ""
+    if pl.pop("announce_new_card", None):
+        _write_payload(conv, pl)
+        head = t(lang, "vehicle_new_from_photos") + "\n\n"
+    place = no_place_note(pl, lang)
+    return head + f"{body}\n\n" + (f"{place}\n" if place else "") + t(lang, "confirm_ask")
 
 
 def media_only_msg(msg: str, media_note: str) -> bool:

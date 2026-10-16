@@ -940,12 +940,16 @@ def test_joined_phone_lists_are_dropped():
 
 
 def test_yea_is_yes_not_place():
-    from app.ai.confirm import _YES
+    from app.ai.confirm import _YES, is_yes
     from app.ai.engine import extract_turn
 
     assert _YES.search("Yea")
     assert not _looks_like_place("Yea")
     assert extract_turn("Yea") == {}
+    for msg in ("yesyes", "Yes Yes", "haanhaan", "haan haan"):
+        assert is_yes(msg), msg
+        assert not _looks_like_place(msg), msg
+        assert extract_turn(msg) == {}, msg
 
 
 def test_rupee_digits_are_not_year():

@@ -583,12 +583,12 @@ def _looks_like_place(text: str) -> bool:
         return False
     low = raw.lower()
     if re.fullmatch(
-        r"(haan+|han+|ha+|hji|ji|yes+|yea+h?|es|yup|yeah|yep|ok+|okay|no+|nahi+|na+|hello|hi|hey|"
-        r"theek|thik|sahi|correct|done|post|submit|please|pls|thanks|thank\s*you|"
+        r"((?:haan+|han+|ha+|hji|ji|yes+|yea+h?|es|yup|yeah|yep|ok+|okay|no+|nahi+|na+|"
+        r"hello|hi|hey|theek|thik|sahi|correct|done|post|submit|please|pls|thanks|thank\s*you|"
         r"skip+|skip\s*(it|kar\w*|kr\w*)|ab|abhi|aur|bhi|bhai|sir|bas|wahi|vahi|yahi|yaha|waha|wala|wali|"
         r"kuch\s*(nahi|nhi)|nothing|none|later|baad\s*(me|mein)|"
         r"pata\s*(nahi|nhi)|nahi\s*pata|no\s*idea|hmm+|"
-        r"हाँ+|हां+|जी+|नहीं+|ना+|ठीक|सही)",
+        r"हाँ+|हां+|जी+|नहीं+|ना+|ठीक|सही)[\s!.,]*)+",
         low,
     ):
         return False

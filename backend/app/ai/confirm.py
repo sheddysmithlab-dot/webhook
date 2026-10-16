@@ -57,13 +57,15 @@ def _send_listing_button(db: Session, conv: AiConversation, lang: str) -> None:
     except Exception:
         log.exception("listing button send failed for %s", conv.mobile)
 
-_YES = re.compile(
-    r"^\s*("
+_YES_TOKEN = (
     r"haan+|han+|ha+|hji|ji|yes+|yea+h?|yup|yeah|yep|ok+|okay|bilkul|bilkul\s*sahi|"
     r"sahi\s*hai|theek\s*hai|thik\s*hai|correct|confirm|kar\s*do|kar\s*dena|"
     r"submit(\s*kar\s*do)?|done|go\s*ahead|proceed|"
     r"हाँ+|हां+|जी+|सही\s*है|ठीक\s*है|बिल्कुल|कर\s*दो"
-    r")[\s!.]*$",
+)
+_YES = re.compile(
+    # "yes", "haan", and glued repeats like "yesyes" / "haanhaan"
+    rf"^\s*(?:(?:{_YES_TOKEN})[\s!.,]*)+$",
     re.I,
 )
 _POST_CONFIRM = re.compile(
@@ -447,4 +449,7 @@ def maybe_start_new_card(db: Session, conv: AiConversation, fields: dict | None)
         return False
     log.info("new vehicle → new card mobile=***%s", (conv.mobile or "")[-4:])
     start_new_listing(db, conv, {}, [])
+    pl = _payload(conv)
+    pl["announce_new_card"] = True
+    _write_payload(conv, pl)
     return True

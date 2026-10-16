@@ -947,6 +947,11 @@ MESSAGES = {
         "hi": "ठीक है, नई लिस्टिंग शुरू करते हैं।",
         "en": "Okay, let's start a new listing.",
     },
+    "vehicle_new_from_photos": {
+        "hinglish": "🆕 Photos / details alag gaadi ke lagte hain — naya card start kiya.",
+        "hi": "🆕 फोटो / डिटेल्स अलग गाड़ी के लगते हैं — नया कार्ड शुरू किया।",
+        "en": "🆕 Photos / details look like a different vehicle — started a new card.",
+    },
     "casual_hi": {
         "hinglish": "Namaste Sir! Kya listing karna chahte ho?",
         "hi": "नमस्ते सर! क्या लिस्टिंग करना चाहते हैं?",

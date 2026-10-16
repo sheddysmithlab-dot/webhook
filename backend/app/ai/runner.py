@@ -592,6 +592,10 @@ def process_inbound(
             elif photo_unread and reply and path in {"orchestrator", "free_chat"}:
                 reply = reply + "\n\n" + t(lang, "photo_read_busy")
                 force_polish = True
+            pl_ann = _payload(conv)
+            if reply and pl_ann.pop("announce_new_card", None):
+                _write_payload(conv, pl_ann)
+                reply = t(lang, "vehicle_new_from_photos") + "\n\n" + reply
             if path != "office_mode" and reply:
                 if LLM_WROTE_REPLY.get() and not force_polish:
                     zai = "llm"
