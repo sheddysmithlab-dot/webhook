@@ -33,8 +33,14 @@ _OTHER_NUMBER_ACCOUNT = re.compile(
     r")",
     re.I,
 )
+# "+91 98272 11177" / "98272-11177" — spaces inside the 10 digits are common on WhatsApp.
 _PHONE_CANDIDATE = re.compile(
-    r"(?:\+?91[\s\-]*)?([6-9]\d{9})\b"
+    r"(?<!\d)(?:\+?\s*91[\s\-]*|0)?([6-9](?:[\s\-]?\d){9})(?!\d)"
+)
+_ACCESS_OTHER_ACCOUNT = re.compile(
+    r"\b(?:account|akount|अकाउंट|customer|grahak|login|select|switch|access|detail\w*|"
+    r"tokens?|wallet|khata|profile|user\s*id|post\s*desk|postdesk)\b",
+    re.I,
 )
 _PASS_SKIP = re.compile(r"\b(skip|baad me|nahi|password nahi)\b", re.I)
 _HAS_ACCOUNT = re.compile(
@@ -182,20 +188,33 @@ def extract_other_mobiles(text: str, chat_mobile: str) -> list[str]:
     found: list[str] = []
     for m in _PHONE_CANDIDATE.finditer(text or ""):
         digits = normalize_phone(m.group(1))
-        if len(digits) == 10 and digits != chat and digits not in found:
+        if len(digits) == 10 and digits[0] in "6789" and digits != chat and digits not in found:
             found.append(digits)
     return found
 
 
+def _is_bare_other_mobile(text: str, chat_mobile: str) -> bool:
+    """True when the message is basically just someone else's mobile (account-switch attempt)."""
+    others = extract_other_mobiles(text, chat_mobile)
+    if not others:
+        return False
+    rest = _PHONE_CANDIDATE.sub(" ", text or "")
+    rest = re.sub(r"(?:\+?\s*91|[\s+.\-()/:|,])+", " ", rest).strip()
+    return len(rest) <= 2
+
+
 def wants_other_number_account(text: str, chat_mobile: str = "") -> bool:
-    """True when user tries to create/link account for a different WhatsApp number."""
+    """True when user tries to create/link/open account for a different WhatsApp number."""
     msg = (text or "").strip()
     if not msg:
         return False
+    if _is_bare_other_mobile(msg, chat_mobile):
+        return True
     others = extract_other_mobiles(msg, chat_mobile)
     if others and (
         wants_create_account(msg)
         or _OTHER_NUMBER_ACCOUNT.search(msg)
+        or _ACCESS_OTHER_ACCOUNT.search(msg)
         or re.search(r"\b(account|akount|register|signup|login)\b", msg, re.I)
     ):
         return True
@@ -216,13 +235,14 @@ def reply_other_number_blocked(lang: str, chat_mobile: str, other: str = "") -> 
     this_num = normalize_phone(chat_mobile) or "is WhatsApp number"
     bullets = [
         f"Yeh chat sirf {bold(this_num)} ke liye hai",
-        "Is chat se *kisi dusre WhatsApp number* ka account *nahi* banaya ja sakta",
+        "Dusre number ka account dekhna / select / us par listing post karna *sirf Office / Postdesk* number se allowed hai",
+        "Is chat se kisi aur WhatsApp number ka wallet, tokens ya account status *nahi* dikhaya jaata",
         "OTP / account hamesha *isi WhatsApp number* pe hi banega",
     ]
     if other:
         bullets.append(f"Aapne diya number {bold(other)} — yahan allow nahi")
     bullets.append(
-        f"Dusre number ka account chahiye to us number se WhatsApp pe InfraDealer ko message kijiye"
+        "Dusre number ka account chahiye to usi number se WhatsApp pe InfraDealer ko message kijiye"
     )
     return fmt_section("Rule — Same WhatsApp number only", bullets)
 
@@ -245,7 +265,11 @@ def reply_account_already_here(lang: str, chat_mobile: str) -> str:
 def handle_same_number_account_policy(
     db: Session, conv: AiConversation, text: str, lang: str
 ) -> str | None:
-    """Block cross-number account create; clarify same-number-only policy."""
+    """Block cross-number account access/create for normal users.
+
+    Office / postdesk (backend-verified) may select another customer by number.
+    A phone inside a vehicle ad ("contact 98…") is not treated as account switch.
+    """
     msg = (text or "").strip()
     if not msg:
         return None
@@ -254,18 +278,15 @@ def handle_same_number_account_policy(
 
     from .office_mode import is_office_session
 
-    if others or wants_other_number_account(msg, conv.mobile):
-        # Verified office operator posts for other customers' numbers.
-        if is_office_session(db, conv):
-            return None
+    if is_office_session(db, conv):
+        return None
+
+    if wants_other_number_account(msg, conv.mobile) or _is_bare_other_mobile(msg, conv.mobile):
         return reply_other_number_blocked(
             lang, conv.mobile, others[0] if others else ""
         )
 
     if wants_create_account(msg, payload) and payload.get("account_onboarded"):
-        # The office line creates customer accounts, never its own.
-        if is_office_session(db, conv):
-            return None
         return reply_account_already_here(lang, conv.mobile)
 
     return None

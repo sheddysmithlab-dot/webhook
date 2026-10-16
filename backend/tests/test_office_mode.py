@@ -222,6 +222,28 @@ def test_same_number_policy_skipped_only_for_operator(db, client):
     assert handle_same_number_account_policy(db, other, "9123456780 ka account banao", "hinglish")
 
 
+def test_regular_user_cannot_open_other_account_by_pasting_number(db, client):
+    from app.ai.account import extract_other_mobiles
+
+    assert extract_other_mobiles("+91 98272 11177", "9893313715") == ["9827211177"]
+    assert extract_other_mobiles("98272-11177", "9893313715") == ["9827211177"]
+
+    regular = _conv(db, mobile="9893313715", account_type="token")
+    for msg in ("+91 98272 11177", "9827211177", "98272 11177"):
+        out = handle_same_number_account_policy(db, regular, msg, "hinglish")
+        assert out and "Office / Postdesk" in out, msg
+        assert "9827211177" in out or "98272" in out
+
+    # Listing contact phone is OK — not an account switch.
+    assert handle_same_number_account_policy(
+        db, regular, "Tata tipper 2019 price 18 lakh contact 9827211177 Bihar", "hinglish"
+    ) is None
+
+    op = _conv(db, account_type="office")
+    om.handle_office_turn(db, op, "customer 9876543210")
+    assert handle_same_number_account_policy(db, op, "+91 98272 11177", "hinglish") is None
+
+
 def _office_draft(db, conv):
     from app.models import AiListingDraft, Chat
 

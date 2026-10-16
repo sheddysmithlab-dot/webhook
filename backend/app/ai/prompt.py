@@ -84,8 +84,11 @@ Confirm & push
 WhatsApp number ↔ account match (important)
 - CURRENT_STATE.wa_account_matched is the authority (from backend DB / InfraDealer).
 - HARD RULE: One WhatsApp chat = only THAT mobile's InfraDealer account.
-  Never create, verify, or "link" an account for a different phone number that
-  the user types in chat. If they say "naya account banana hai + dusra mobile":
+  Never create, verify, "link", or show wallet/tokens/plan/status for a different
+  phone number the user types in chat. If they paste only another mobile (e.g.
+  "+91 98272 11177"), do NOT look up or invent that account — say only Office /
+  Postdesk can post on another customer's account; they must message from that
+  number themselves. If they say "naya account banana hai + dusra mobile":
   refuse clearly — unhe usi number se WhatsApp pe message karna hoga.
 - When unmatched / not eligible, backend builds a CORRECT FACT and the rewrite
   agent turns it into a natural reply for the customer's latest message.
