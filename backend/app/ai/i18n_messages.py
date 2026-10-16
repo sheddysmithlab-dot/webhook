@@ -246,9 +246,9 @@ MESSAGES = {
         "en": "Couldn't read this card's photos yet 📷 — please resend the photo, or type the details.",
     },
     "photo_read_busy": {
-        "hinglish": "📷 Photo save ho gayi, par abhi padh nahi paya (server busy). 1 minute baad *photo ki detail do* likhiye — padh kar bata dunga.",
-        "hi": "📷 फोटो सेव हो गई, पर अभी पढ़ नहीं पाया (सर्वर बिज़ी)। 1 मिनट बाद *फोटो की डिटेल दो* लिखें — पढ़कर बता दूँगा।",
-        "en": "📷 Photo saved, but I couldn't read it yet (server busy). In a minute, type *photo details* and I'll read it.",
+        "hinglish": "📷 Photo save ho gayi — server thoda busy hai. Main khud padh ke detail bhej dunga, wait kariye.",
+        "hi": "📷 फोटो सेव हो गई — सर्वर थोड़ा बिज़ी है। मैं खुद पढ़कर डिटेल भेज दूँगा, प्रतीक्षा करें।",
+        "en": "📷 Photo saved — the server is busy. I'll read it and send the details myself shortly.",
     },
     "listing_delete_request": {
         "hinglish": "🗑️ Listing hatane ki request admin team ko bhej di hai — jaldi hata di jayegi.\n"

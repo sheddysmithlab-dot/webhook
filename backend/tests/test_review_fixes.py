@@ -952,6 +952,17 @@ def test_yea_is_yes_not_place():
         assert extract_turn(msg) == {}, msg
 
 
+def test_photo_busy_auto_retries_without_detail_do_prompt():
+    from app.ai.i18n import t
+    from app.ai.vision import schedule_photo_reread
+
+    busy = t("hinglish", "photo_read_busy").lower()
+    assert "detail do" not in busy
+    assert "khud padh" in busy
+    assert schedule_photo_reread(912345, "hinglish") is True
+    assert schedule_photo_reread(912345, "hinglish") is False
+
+
 def test_rupee_digits_are_not_year():
     from app.ai.engine import extract_turn
 

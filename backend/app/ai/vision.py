@@ -465,6 +465,96 @@ def read_card_images(db: Session, conv: AiConversation) -> list[int]:
         return []
 
 
+# One deferred re-read per conversation so a 6-photo burst does not spawn 6 threads.
+_photo_followups: dict[int, float] = {}
+_PHOTO_FOLLOWUP_LOCK = threading.Lock()
+_PHOTO_FOLLOWUP_DELAYS = (12.0, 28.0, 45.0)
+
+
+def schedule_photo_reread(conv_id: int, lang: str = "hinglish") -> bool:
+    """After a busy vision turn, keep retrying unread photos and WhatsApp the report — no 'detail do'."""
+    now = time.time()
+    with _PHOTO_FOLLOWUP_LOCK:
+        started = _photo_followups.get(conv_id) or 0
+        if now - started < 90:
+            return False
+        _photo_followups[conv_id] = now
+
+    def _work() -> None:
+        from ..database import SessionLocal
+        from ..services import get_or_create_settings, send_whatsapp_text, store_chat
+        from .i18n import t
+        from .office_mode import decorate_office_reply
+        from .tools import _payload, _write_payload
+
+        try:
+            for wait in _PHOTO_FOLLOWUP_DELAYS:
+                time.sleep(wait)
+                db = SessionLocal()
+                try:
+                    conv = db.get(AiConversation, conv_id)
+                    if conv is None or not conv.draft_id:
+                        return
+                    if newest_unread_image(db, conv) is None:
+                        return
+                    read_ids = read_card_images(db, conv)
+                    if not read_ids:
+                        continue
+                    report = image_report(db, conv, lang, media_ids=read_ids) or card_details(db, conv, lang)
+                    if not report:
+                        continue
+                    body = report
+                    place_note = ""
+                    try:
+                        from .confirm import no_place_note
+
+                        place_note = no_place_note(_payload(conv), lang)
+                    except Exception:
+                        pass
+                    if place_note:
+                        body = f"{body}\n\n{place_note}"
+                    body = f"{body}\n\n{t(lang, 'confirm_ask')}"
+                    body = decorate_office_reply(db, conv, body)
+                    meta = get_or_create_settings(db)
+                    result = send_whatsapp_text(meta, conv.mobile, body)
+                    store_chat(
+                        db,
+                        wamid=result.get("wamid") or f"vision.{conv.id}.{int(time.time())}",
+                        conversation_id=conv.conversation_id or f"CONV_{conv.mobile}",
+                        from_mobile=meta.phone_number_id or "infradealer",
+                        from_name="InfraDealer AI",
+                        to_mobile=conv.mobile,
+                        direction="outbound",
+                        body=body,
+                        status="sent",
+                        unread=False,
+                    )
+                    pl = _payload(conv)
+                    pl.pop("photo_reread_pending", None)
+                    _write_payload(conv, pl)
+                    db.commit()
+                    log.info(
+                        "vision.followup_sent mobile=***%s images=%d",
+                        (conv.mobile or "")[-4:],
+                        len(read_ids),
+                    )
+                    return
+                except Exception:
+                    log.exception("vision.followup attempt failed conv=%s", conv_id)
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
+                finally:
+                    db.close()
+        finally:
+            with _PHOTO_FOLLOWUP_LOCK:
+                _photo_followups.pop(conv_id, None)
+
+    threading.Thread(target=_work, name=f"photo-reread-{conv_id}", daemon=True).start()
+    return True
+
+
 def fill_listing_from_burst(
     db: Session, conv: AiConversation, media_row: AiMedia, is_document: bool = False,
     window_seconds: int | None = BURST_WINDOW_SECONDS,

@@ -443,7 +443,9 @@ def process_inbound(
                         if vis_row is None or not vis_row.local_path:
                             vis_row = newest_unread_image(db, conv) or vis_row
                     else:
-                        vis_row = recent_unread_image(db, conv)
+                        # Any later text (details / Haan / etc.) retries unread photos —
+                        # not only the short burst window — so users need not type "detail do".
+                        vis_row = newest_unread_image(db, conv) or recent_unread_image(db, conv)
                     from .session_memory import reset_if_idle
                     from .tools import _payload as _pl
                     from .tools import _write_payload as _wpl
@@ -452,9 +454,16 @@ def process_inbound(
                         reset_if_idle(db, conv)
                     # A vehicle photo or paper starts (or adds to) a listing unless the user is buying.
                     if vis_row and vis_row.local_path and (_pl(conv).get("intent") or "").upper() != "BUY":
+                        is_doc = is_document_media(vis_row, text or "")
                         filled, read_ids = fill_listing_from_burst(
-                            db, conv, vis_row, is_document=is_document_media(vis_row, text or ""),
+                            db, conv, vis_row, is_document=is_doc,
                         )
+                        # Free vision tiers often 429 on a 6-photo burst — one short wait usually clears it.
+                        if not read_ids and vision_turn and vision_cap_left(db, conv):
+                            time.sleep(6)
+                            filled, read_ids = fill_listing_from_burst(
+                                db, conv, vis_row, is_document=is_doc,
+                            )
                         _queue_photo_report(conv, read_ids)
                         if filled:
                             media_note = (media_note or "") + " photo_fields=" + ",".join(filled)
@@ -592,6 +601,15 @@ def process_inbound(
             elif photo_unread and reply and path in {"orchestrator", "free_chat"}:
                 reply = reply + "\n\n" + t(lang, "photo_read_busy")
                 force_polish = True
+                try:
+                    from .vision import schedule_photo_reread
+
+                    if schedule_photo_reread(conv.id, lang):
+                        pl_busy = _payload(conv)
+                        pl_busy["photo_reread_pending"] = True
+                        _write_payload(conv, pl_busy)
+                except Exception:
+                    log.exception("vision.schedule_photo_reread failed")
             pl_ann = _payload(conv)
             if reply and pl_ann.pop("announce_new_card", None):
                 _write_payload(conv, pl_ann)
