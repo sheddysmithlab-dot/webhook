@@ -599,17 +599,21 @@ def process_inbound(
                     force_polish = True
                     reported_ids = report_ids
             elif photo_unread and reply and path in {"orchestrator", "free_chat"}:
-                reply = reply + "\n\n" + t(lang, "photo_read_busy")
-                force_polish = True
+                pl_busy = _payload(conv)
+                draft_key = conv.draft_id
+                # One "server busy" notice per open draft — not once per photo turn.
+                if pl_busy.get("photo_busy_for_draft") != draft_key:
+                    reply = reply + "\n\n" + t(lang, "photo_read_busy")
+                    pl_busy["photo_busy_for_draft"] = draft_key
+                    force_polish = True
                 try:
                     from .vision import schedule_photo_reread
 
                     if schedule_photo_reread(conv.id, lang):
-                        pl_busy = _payload(conv)
                         pl_busy["photo_reread_pending"] = True
-                        _write_payload(conv, pl_busy)
                 except Exception:
                     log.exception("vision.schedule_photo_reread failed")
+                _write_payload(conv, pl_busy)
             pl_ann = _payload(conv)
             if reply and pl_ann.pop("announce_new_card", None):
                 _write_payload(conv, pl_ann)

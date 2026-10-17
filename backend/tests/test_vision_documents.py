@@ -263,3 +263,46 @@ def test_photo_read_once_and_card_cap_counts_only_real_reads(db, tmp_path, monke
     db.flush()
     vision.fill_listing_from_photo(db, conv, late)
     assert len(calls) == 1 and not vision.vision_cap_left(db, conv)
+
+
+def test_junk_registration_number_is_dropped():
+    assert vision.looks_like_registration_number("BR06GG8841")
+    assert vision.looks_like_registration_number("BR 28 G 3913")
+    assert not vision.looks_like_registration_number("14 chki passing 2021 (4220)")
+    assert not vision.looks_like_registration_number("14 chki passing 2021")
+    facts = vision.document_facts({
+        "registration_number": "14 chki passing 2021 (4220)",
+        "vehicle_class": "Goods Carrier",
+        "fuel": "DIESEL",
+    })
+    assert "registration_number" not in facts
+    assert facts["vehicle_class"] == "Goods Carrier"
+
+
+def test_new_card_clears_vehicle_docs_and_fuel(db):
+    from app.ai.confirm import start_new_listing
+    from app.models import AiListingDraft
+
+    conv = AiConversation(mobile="9000000099", conversation_id="CONV_9000000099", state="NEW", payload_json="{}")
+    db.add(conv)
+    db.flush()
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="COLLECTING", intent="SELL")
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    _write_payload(conv, {
+        "intent": "SELL",
+        "category": "Truck",
+        "brand": "Tata",
+        "fuel": "Diesel",
+        "vehicle_docs": {"registration_number": "BR06GG8841", "vehicle_class": "Goods Carrier"},
+        "vision_filled": {"draft": draft.id, "fields": {"fuel": "Diesel"}},
+        "photo_busy_for_draft": draft.id,
+    })
+    start_new_listing(db, conv, {"intent": "SELL"}, [])
+    pl = _payload(conv)
+    assert pl.get("fuel") in (None, "")
+    assert pl.get("vehicle_docs") in (None, {},)
+    assert pl.get("vision_filled") in (None, {},)
+    assert pl.get("photo_busy_for_draft") is None
+    assert pl.get("category") in (None, "")

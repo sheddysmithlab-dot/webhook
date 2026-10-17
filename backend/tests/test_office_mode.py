@@ -200,6 +200,25 @@ def test_confirm_reply_shows_post_to_target(db, client):
     assert out.rstrip().endswith("Confirm? YES/NO")
 
 
+def test_post_to_prefers_username_over_customer_display_name(db, client):
+    """Auto names like 'Customer 8239' must not beat username customer.8239 on Post to."""
+    client.customers["9988776655"] = {
+        "user_id": "88",
+        "username": "customer.8239",
+        "name": "Customer 8239",
+        "phone": "9988776655",
+        "status": "active",
+    }
+    conv = _conv(db)
+    om.handle_office_turn(db, conv, "customer 9988776655")
+    pl = _payload(conv)
+    pl["awaiting_confirm"] = True
+    _write_payload(conv, pl)
+    out = om.decorate_office_reply(db, conv, "Please confirm details:\nVehicle: JCB 3DX")
+    assert "Post to: customer.8239, 9988776655" in out
+    assert "Customer 8239" not in out.split("Post to:")[-1]
+
+
 def test_listing_context_carries_target_user_id(db, client):
     conv = _conv(db)
     om.handle_office_turn(db, conv, "customer 9876543210")

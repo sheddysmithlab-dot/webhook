@@ -963,6 +963,28 @@ def test_photo_busy_auto_retries_without_detail_do_prompt():
     assert schedule_photo_reread(912345, "hinglish") is False
 
 
+def test_photo_busy_notice_once_per_draft(db):
+    """Repeated unread-photo turns must not spam the same busy line for one draft."""
+    from app.ai.i18n import t
+    from app.ai.tools import _payload, _write_payload
+    from app.models import AiConversation, AiListingDraft
+
+    conv = AiConversation(mobile="9111000001", conversation_id="CONV_9111000001", state="NEW", payload_json="{}")
+    db.add(conv)
+    db.flush()
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="COLLECTING", intent="SELL")
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    _write_payload(conv, {"intent": "SELL", "photo_busy_for_draft": draft.id})
+    pl = _payload(conv)
+    assert pl["photo_busy_for_draft"] == draft.id
+    busy = t("hinglish", "photo_read_busy")
+    # Same draft already notified → runner must skip appending busy again.
+    assert pl.get("photo_busy_for_draft") == conv.draft_id
+    assert busy  # template still exists for the first unread turn only
+
+
 def test_rupee_digits_are_not_year():
     from app.ai.engine import extract_turn
 

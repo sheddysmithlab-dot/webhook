@@ -792,8 +792,10 @@ def decorate_office_reply(db: Session, conv: AiConversation, reply: str) -> str:
             return reply
         target = active_target(row)
         if target:
+            # Prefer username (customer.xxxx) so auto names like "Customer 8239" do not confuse.
+            who = target.get("username") or target.get("name") or "-"
             return (
-                f"{reply}\n\n📌 Post to: {target['name'] or '-'}, {target['phone'] or '-'}\n"
+                f"{reply}\n\n📌 Post to: {who}, {target['phone'] or '-'}\n"
                 "Confirm? YES/NO"
             )
         return f"{reply}\n\n⚠️ Customer select nahi hai.\n{_select_hint()}"

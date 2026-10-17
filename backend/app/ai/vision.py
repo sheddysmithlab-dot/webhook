@@ -385,8 +385,32 @@ def listing_fields(data: dict) -> dict:
     return out
 
 
+# Indian plate after stripping spaces/hyphens: MH12AB1234 / BR28G3913 / DL1CAB1234
+_INDIAN_PLATE = re.compile(r"^[A-Z]{2}\d{1,2}[A-Z]{0,3}\d{1,4}$", re.I)
+
+
+def looks_like_registration_number(value: str) -> bool:
+    """True only for plate-like text — drop OCR junk like '14 chki passing 2021'."""
+    raw = _clean(value)
+    if not raw or len(raw) > 20:
+        return False
+    compact = re.sub(r"[\s\-./]", "", raw).upper()
+    if not _INDIAN_PLATE.match(compact):
+        return False
+    # Must have at least one letter block + digits (not pure model year text)
+    return bool(re.search(r"[A-Z]", compact) and re.search(r"\d", compact))
+
+
 def document_facts(data: dict) -> dict:
-    return {k: _clean(data.get(k))[:60] for k in DOC_FACT_KEYS if _clean(data.get(k))}
+    out: dict = {}
+    for k in DOC_FACT_KEYS:
+        v = _clean(data.get(k))
+        if not v:
+            continue
+        if k == "registration_number" and not looks_like_registration_number(v):
+            continue
+        out[k] = v[:60]
+    return out
 
 
 def extract_vehicle_fields(db: Session, conv: AiConversation, media_row: AiMedia) -> dict:
