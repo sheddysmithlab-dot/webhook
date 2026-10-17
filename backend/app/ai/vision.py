@@ -275,12 +275,23 @@ _VEHICLE_PROMPT = (
     '"insurance_valid_upto", "fitness_valid_upto", "tax_valid_upto", "puc_valid_upto", '
     '"permit_valid_upto", "national_permit_valid_upto", '
     '"colour", "body_type" (e.g. tipper body, open body, container, trailer, bucket), '
-    '"tyres" (count of wheels/tyres visible or implied by axles), "axles", "cabin" (day cab, '
-    'sleeper, AC...), "condition" (short, e.g. good paint, rust on body, tyres worn), '
+    '"tyres" (TOTAL wheels on the whole vehicle — Indian commercial configs are usually '
+    "6/10/12/14/16/18/22 — NOT only the wheels visible in this camera angle. Infer from axle "
+    "layout: steer axle = 2 wheels, each rear/drive axle usually dual wheels = 4. If this photo "
+    "only shows one end/side and you cannot tell the full config, OMIT tyres), "
+    '"axles" (TOTAL axles on the vehicle, not only visible ones; omit if unsure), '
+    '"cabin" (day cab, sleeper, AC...), "condition" (short, e.g. good paint, rust on body, '
+    "tyres worn — do not put a wheel count in condition), "
     '"details" (list of up to 8 short English facts seen in the image that a buyer would want, '
     "e.g. 'Rear tipper body with hydraulic ram', 'Front bumper slightly dented'). "
     "Copy printed values exactly. Never guess a value you cannot see."
 )
+
+# Credible total wheel counts for Indian CV / CE ads (not "wheels in this photo").
+_COMMERCIAL_TYRES = frozenset({4, 6, 8, 10, 12, 14, 16, 18, 20, 22})
+_HEAVY_CATS = frozenset({
+    "truck", "tipper", "dumper", "trailer", "transit mixer", "tanker", "crane",
+})
 
 VISION_FILL_KEYS = ("category", "brand", "model", "year", "state", "city", "fuel")
 MAX_VISION_READS_PER_CARD = 5
@@ -858,8 +869,53 @@ def _labels(lang: str) -> dict:
     return _REPORT_LABELS.get(lang) or _REPORT_LABELS["hi" if lang == "hi" else "hinglish"]
 
 
+def _wheel_int(value) -> int:
+    m = re.search(r"\d{1,2}", str(value or ""))
+    n = int(m.group(0)) if m else 0
+    return n if 1 <= n <= 24 else 0
+
+
+def _prefer_wheel_count(key: str, old, new) -> str:
+    """Across a photo burst, prefer the fuller vehicle config — not a rear-only '2 tyres' shot."""
+    oi, ni = _wheel_int(old), _wheel_int(new)
+    if key == "tyres":
+        # Ignore tiny partial counts when a fuller commercial count exists.
+        cands = [n for n in (oi, ni) if n in _COMMERCIAL_TYRES or n >= 6]
+        if cands:
+            return str(max(cands))
+        return str(max(oi, ni)) if max(oi, ni) else _clean(old) or _clean(new)
+    # axles: higher total is usually the full vehicle (3+), not a single visible axle.
+    if max(oi, ni) >= 2:
+        return str(max(oi, ni))
+    return _clean(old) or _clean(new)
+
+
+# Typical Indian CV layouts (steer singles + dual rears) — not every axle × 2.
+_AXLE_TO_TYRES = {2: 6, 3: 10, 4: 12, 5: 14, 6: 16, 7: 18, 8: 22}
+_TYRES_TO_AXLE = {6: 2, 8: 2, 10: 3, 12: 4, 14: 5, 16: 6, 18: 7, 20: 7, 22: 8}
+
+
+def _normalize_wheel_fields(merged: dict) -> dict:
+    """Drop partial-angle tyre guesses; fill missing tyres/axles from the other when clear."""
+    cat = _clean(listing_fields(merged).get("category") or merged.get("category")).lower()
+    heavy = cat in _HEAVY_CATS or (not cat and _wheel_int(merged.get("tyres")) >= 6)
+    t, a = _wheel_int(merged.get("tyres")), _wheel_int(merged.get("axles"))
+    if heavy and 0 < t < 6:
+        # Rear/side crop showing 2–4 wheels is not the truck's total tyre count.
+        merged.pop("tyres", None)
+        t = 0
+    if heavy and a >= 2 and not t:
+        merged["tyres"] = str(_AXLE_TO_TYRES.get(a, a * 2))
+        t = _wheel_int(merged["tyres"])
+    if t in _TYRES_TO_AXLE and not a:
+        merged["axles"] = str(_TYRES_TO_AXLE[t])
+    elif t and t not in _COMMERCIAL_TYRES and t < 4:
+        merged.pop("tyres", None)
+    return merged
+
+
 def _merge_reads(reads: list[dict]) -> tuple[dict, list[str]]:
-    """Newest read wins per key; free-text details de-duplicated, private / N/A ones dropped."""
+    """Merge burst reads; tyre/axle take the fullest count, other keys keep first non-empty."""
     merged: dict = {}
     details: list[str] = []
     for data in reads:
@@ -871,9 +927,13 @@ def _merge_reads(reads: list[dict]) -> tuple[dict, list[str]]:
                         continue
                     if d and d.lower() not in {x.lower() for x in details}:
                         details.append(d)
-            elif k not in merged and _clean(v) and not _NA.match(_clean(v)) and not isinstance(v, (list, dict)):
+            elif not _clean(v) or _NA.match(_clean(v)) or isinstance(v, (list, dict)):
+                continue
+            elif k in {"tyres", "axles"} and k in merged:
+                merged[k] = _prefer_wheel_count(k, merged[k], v)
+            elif k not in merged:
                 merged[k] = v
-    return merged, details
+    return _normalize_wheel_fields(merged), details
 
 
 def _drop_misread_brand(details: list[str], merged: dict, typed_brand) -> list[str]:

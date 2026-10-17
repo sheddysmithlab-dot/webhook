@@ -280,6 +280,31 @@ def test_junk_registration_number_is_dropped():
     assert facts["vehicle_class"] == "Goods Carrier"
 
 
+def test_photo_tyre_merge_prefers_full_config_not_rear_crop():
+    """A rear-only '2 tyres' shot must not beat a side view that shows 14 wheels."""
+    merged, _ = vision._merge_reads([
+        {"category": "Truck", "brand": "Tata", "tyres": "2", "axles": "1"},
+        {"category": "Truck", "brand": "Tata", "tyres": "14", "axles": "7"},
+        {"category": "Truck", "tyres": "10", "axles": "5"},
+    ])
+    assert merged["tyres"] == "14" and merged["axles"] == "7"
+
+    partial, _ = vision._merge_reads([
+        {"category": "Truck", "brand": "Tata", "tyres": "2", "axles": "1", "body_type": "open body"},
+    ])
+    assert "tyres" not in partial  # don't publish partial-angle count as total
+
+    from_axles, _ = vision._merge_reads([
+        {"category": "Truck", "axles": "3"},
+    ])
+    assert from_axles["tyres"] == "10" and from_axles["axles"] == "3"
+
+    keep_10_3, _ = vision._merge_reads([
+        {"category": "Truck", "tyres": "10", "axles": "3"},
+    ])
+    assert keep_10_3["tyres"] == "10" and keep_10_3["axles"] == "3"
+
+
 def test_new_card_clears_vehicle_docs_and_fuel(db):
     from app.ai.confirm import start_new_listing
     from app.models import AiListingDraft
