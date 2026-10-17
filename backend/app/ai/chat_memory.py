@@ -821,6 +821,15 @@ def submit_confirmed_listing(db: Session, conv: AiConversation) -> dict:
             return result
     _set_rm_state(payload, "SUBMITTED_TO_ADMIN")
     payload["listing_status"] = payload.get("listing_status") or "PENDING_REVIEW"
+    # Stop deferred photo reports from re-sending this card's details after post.
+    payload["photo_report_pending"] = {}
+    payload.pop("photo_reread_pending", None)
+    try:
+        from .vision import cancel_photo_reread
+
+        cancel_photo_reread(conv.id)
+    except Exception:
+        pass
     if not _office_line(db, conv):
         _set_next_listing_cooldown(payload, minutes=10)
     _write_payload(conv, payload)

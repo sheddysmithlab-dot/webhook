@@ -954,13 +954,16 @@ def test_yea_is_yes_not_place():
 
 def test_photo_busy_auto_retries_without_detail_do_prompt():
     from app.ai.i18n import t
-    from app.ai.vision import schedule_photo_reread
+    from app.ai.vision import cancel_photo_reread, schedule_photo_reread
 
     busy = t("hinglish", "photo_read_busy").lower()
     assert "detail do" not in busy
     assert "khud padh" in busy
-    assert schedule_photo_reread(912345, "hinglish") is True
-    assert schedule_photo_reread(912345, "hinglish") is False
+    assert schedule_photo_reread(912345, "hinglish", draft_id=77) is True
+    assert schedule_photo_reread(912345, "hinglish", draft_id=77) is False
+    cancel_photo_reread(912345)
+    assert schedule_photo_reread(912345, "hinglish", draft_id=77) is True
+    cancel_photo_reread(912345)
 
 
 def test_photo_busy_notice_once_per_draft(db):

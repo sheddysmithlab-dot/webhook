@@ -58,11 +58,17 @@ def _pending_photo_report(db: Session, conv: AiConversation) -> list[int]:
     """Unreported photo reads of the open card from the current burst (none once it is confirmed)."""
     from datetime import timedelta
 
+    from .confirm import card_submitted
     from .vision import BURST_WINDOW_SECONDS
 
     payload = _payload(conv)
     pending = payload.get("photo_report_pending") if isinstance(payload.get("photo_report_pending"), dict) else {}
-    if pending.get("draft") != conv.draft_id or not pending.get("ids") or payload.get("customer_confirmed"):
+    if (
+        pending.get("draft") != conv.draft_id
+        or not pending.get("ids")
+        or payload.get("customer_confirmed")
+        or card_submitted(db, conv)
+    ):
         return []
     since = utcnow() - timedelta(seconds=BURST_WINDOW_SECONDS)
     rows = db.query(AiMedia.id).filter(
@@ -609,7 +615,7 @@ def process_inbound(
                 try:
                     from .vision import schedule_photo_reread
 
-                    if schedule_photo_reread(conv.id, lang):
+                    if schedule_photo_reread(conv.id, lang, draft_id=conv.draft_id):
                         pl_busy["photo_reread_pending"] = True
                 except Exception:
                     log.exception("vision.schedule_photo_reread failed")

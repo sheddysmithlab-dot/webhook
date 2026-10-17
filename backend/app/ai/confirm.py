@@ -349,6 +349,12 @@ def start_new_listing(db: Session, conv: AiConversation, fields: dict | None = N
         persist_active_card_session(db, conv)
     except Exception:
         pass
+    try:
+        from .vision import cancel_photo_reread
+
+        cancel_photo_reread(conv.id)
+    except Exception:
+        pass
     conv.draft_id = None
     for key in (
         "brand", "model", "year", "expected_price", "running_km", "operating_hours",

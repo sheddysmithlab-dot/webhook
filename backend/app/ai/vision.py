@@ -490,23 +490,37 @@ def read_card_images(db: Session, conv: AiConversation) -> list[int]:
 
 
 # One deferred re-read per conversation so a 6-photo burst does not spawn 6 threads.
-_photo_followups: dict[int, float] = {}
+# Value is (started_at, draft_id_or_0) so a post/new-card can cancel stale followups.
+_photo_followups: dict[int, tuple[float, int]] = {}
 _PHOTO_FOLLOWUP_LOCK = threading.Lock()
 _PHOTO_FOLLOWUP_DELAYS = (12.0, 28.0, 45.0)
+_SUBMITTED_STATUSES = frozenset({
+    "READY_FOR_REVIEW", "PENDING_REVIEW", "POSTED", "APPROVED", "LIVE", "PUBLISHED",
+})
 
 
-def schedule_photo_reread(conv_id: int, lang: str = "hinglish") -> bool:
+def cancel_photo_reread(conv_id: int | None) -> None:
+    """Stop a deferred photo report so it cannot fire after the listing is already posted."""
+    if not conv_id:
+        return
+    with _PHOTO_FOLLOWUP_LOCK:
+        _photo_followups.pop(int(conv_id), None)
+
+
+def schedule_photo_reread(conv_id: int, lang: str = "hinglish", draft_id: int | None = None) -> bool:
     """After a busy vision turn, keep retrying unread photos and WhatsApp the report — no 'detail do'."""
     now = time.time()
+    draft_key = int(draft_id or 0)
     with _PHOTO_FOLLOWUP_LOCK:
-        started = _photo_followups.get(conv_id) or 0
+        started, _ = _photo_followups.get(conv_id) or (0.0, 0)
         if now - started < 90:
             return False
-        _photo_followups[conv_id] = now
+        _photo_followups[conv_id] = (now, draft_key)
 
     def _work() -> None:
         from ..database import SessionLocal
         from ..services import get_or_create_settings, send_whatsapp_text, store_chat
+        from .confirm import card_submitted
         from .i18n import t
         from .office_mode import decorate_office_reply
         from .tools import _payload, _write_payload
@@ -514,10 +528,23 @@ def schedule_photo_reread(conv_id: int, lang: str = "hinglish") -> bool:
         try:
             for wait in _PHOTO_FOLLOWUP_DELAYS:
                 time.sleep(wait)
+                with _PHOTO_FOLLOWUP_LOCK:
+                    if conv_id not in _photo_followups:
+                        return  # cancelled after submit / new card
                 db = SessionLocal()
                 try:
                     conv = db.get(AiConversation, conv_id)
                     if conv is None or not conv.draft_id:
+                        return
+                    # Stale: user posted this card, or moved to another draft.
+                    if draft_key and int(conv.draft_id) != draft_key:
+                        return
+                    if card_submitted(db, conv):
+                        return
+                    pl = _payload(conv)
+                    if pl.get("customer_confirmed") or (
+                        str(pl.get("listing_status") or "").upper() in _SUBMITTED_STATUSES
+                    ):
                         return
                     if newest_unread_image(db, conv) is None:
                         return
@@ -527,6 +554,9 @@ def schedule_photo_reread(conv_id: int, lang: str = "hinglish") -> bool:
                     report = image_report(db, conv, lang, media_ids=read_ids) or card_details(db, conv, lang)
                     if not report:
                         continue
+                    # Re-check after the (slow) vision read — YES may have posted meanwhile.
+                    if card_submitted(db, conv) or _payload(conv).get("customer_confirmed"):
+                        return
                     body = report
                     place_note = ""
                     try:
