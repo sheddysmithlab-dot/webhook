@@ -239,6 +239,7 @@ def empty_payload() -> dict:
         "photo_report_pending": {},
         "photo_reread_pending": False,
         "photo_busy_for_draft": None,
+        "photo_reading_ack_for_draft": None,
         "announce_new_card": False,
         "accident_history": None,
         "negotiable": None,

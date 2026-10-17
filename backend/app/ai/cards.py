@@ -57,6 +57,7 @@ CARD_SESSION_KEYS = (
     "photo_report_pending",
     "photo_reread_pending",
     "photo_busy_for_draft",
+    "photo_reading_ack_for_draft",
     "announce_new_card",
     "media_ids",
     "photos_complete",

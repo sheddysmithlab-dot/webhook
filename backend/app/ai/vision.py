@@ -31,7 +31,7 @@ GROQ_RETRY_SECONDS = 4.0
 GROQ_MAX_RETRY_SECONDS = 8.0
 # The free glm-4.6v-flash answers "1305 overloaded" in bursts; a short wait usually gets through.
 ZAI_TRIES = 3
-ZAI_RETRY_SECONDS = 2.0
+ZAI_RETRY_SECONDS = 1.0
 _GROQ_GATE = threading.Lock()
 
 _DOC_CUES = re.compile(
@@ -284,7 +284,8 @@ _VEHICLE_PROMPT = (
 
 VISION_FILL_KEYS = ("category", "brand", "model", "year", "state", "city", "fuel")
 MAX_VISION_READS_PER_CARD = 5
-BURST_READ_WORKERS = 2
+# 3 parallel reads finish a typical burst faster; Groq stays single-flight via _GROQ_GATE.
+BURST_READ_WORKERS = 3
 # Also picks up photos whose read failed (rate limit) on the next photo turn.
 BURST_WINDOW_SECONDS = 600
 
@@ -493,7 +494,8 @@ def read_card_images(db: Session, conv: AiConversation) -> list[int]:
 # Value is (started_at, draft_id_or_0) so a post/new-card can cancel stale followups.
 _photo_followups: dict[int, tuple[float, int]] = {}
 _PHOTO_FOLLOWUP_LOCK = threading.Lock()
-_PHOTO_FOLLOWUP_DELAYS = (12.0, 28.0, 45.0)
+# Busy follow-ups: retry sooner so the customer still gets a full (accurate) report fast.
+_PHOTO_FOLLOWUP_DELAYS = (5.0, 12.0, 25.0)
 _SUBMITTED_STATUSES = frozenset({
     "READY_FOR_REVIEW", "PENDING_REVIEW", "POSTED", "APPROVED", "LIVE", "PUBLISHED",
 })
@@ -631,7 +633,7 @@ def fill_listing_from_burst(
         return {}, []
     cfg = resolve_media_config(db)
     files = [SimpleNamespace(local_path=r.local_path, mime=r.mime) for r in rows]
-    # Free vision tiers rate-limit bursts: more than two calls at once mostly come back 429.
+    # Parallel reads keep every photo in the burst — order does not drop fields.
     with ThreadPoolExecutor(max_workers=min(BURST_READ_WORKERS, len(files))) as pool:
         raws = list(pool.map(
             lambda f: extract_text_from_image(None, None, f, prompt=_VEHICLE_PROMPT, cfg=cfg), files,

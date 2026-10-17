@@ -41,9 +41,17 @@ def _numbers(text: str) -> set[str]:
     return {n.lstrip("0") or "0" for n in re.findall(r"\d+", text or "")}
 
 
+# Already-formatted vision / card templates — polishing only adds latency and can drop lines.
+_STRUCTURED_VISION = re.compile(
+    r"Photo se mili|फोटो से मिली|Listing details|लिस्टिंग डिटेल|"
+    r"Photo me dikha|\*Photo|\*फोटो|server thoda busy|padh ke detail bhej",
+    re.I,
+)
+
+
 def should_polish(draft: str) -> bool:
     msg = (draft or "").strip()
-    return bool(msg) and len(msg) <= _MAX_DRAFT and not _SECRET.search(msg)
+    return bool(msg) and len(msg) <= _MAX_DRAFT and not _SECRET.search(msg) and not _STRUCTURED_VISION.search(msg)
 
 
 def rewrite_is_safe(draft: str, rewrite: str) -> bool:

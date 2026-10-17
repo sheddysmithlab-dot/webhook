@@ -966,6 +966,40 @@ def test_photo_busy_auto_retries_without_detail_do_prompt():
     cancel_photo_reread(912345)
 
 
+def test_structured_photo_reply_skips_slow_polish():
+    """Photo/card templates already have every field — polish must not add 6–15s latency."""
+    from app.ai.polish import should_polish
+
+    assert not should_polish("📷 *Photo se mili jankari*\n• Brand: Tata\n• Tyre: 12")
+    assert not should_polish("📋 *लिस्टिंग डिटेल* — CARD-212\n• टायर: 12")
+    assert not should_polish("📷 Photo save ho gayi — server thoda busy hai. Main khud padh ke detail bhej dunga.")
+    assert should_polish("Model year kya hai Sir?")
+
+
+def test_photo_reading_ack_once_per_draft(db, monkeypatch):
+    from app.ai import runner as rn
+    from app.ai.tools import _payload, _write_payload
+    from app.models import AiConversation, AiListingDraft
+
+    sent = []
+    monkeypatch.setattr(rn, "get_or_create_settings", lambda db: type("M", (), {"phone_number_id": "1"})())
+    monkeypatch.setattr(rn, "send_whatsapp_text", lambda meta, to, body: sent.append(body) or {"wamid": "w1"})
+    monkeypatch.setattr(rn, "store_chat", lambda *a, **k: None)
+
+    conv = AiConversation(mobile="9111000099", conversation_id="CONV_9111000099", state="NEW", payload_json="{}")
+    db.add(conv)
+    db.flush()
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="COLLECTING", intent="SELL")
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    _write_payload(conv, {"intent": "SELL"})
+    rn._send_photo_reading_ack(db, conv, "hinglish", conv.mobile)
+    rn._send_photo_reading_ack(db, conv, "hinglish", conv.mobile)
+    assert len(sent) == 1 and "padh ke detail" in sent[0].lower()
+    assert _payload(conv)["photo_reading_ack_for_draft"] == draft.id
+
+
 def test_typed_chakka_count_beats_photo_tyre_guess(db, tmp_path):
     """Seller '12 चक्का' must override a photo that guessed 10 tyres / 5 axles."""
     import json as _json

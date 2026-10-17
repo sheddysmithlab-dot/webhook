@@ -41,6 +41,40 @@ def _ai_respond(db: Session, conv: AiConversation, text: str, media_note: str = 
 INBOUND_LOCK_ATTEMPTS = 4
 # A photo this long after the card's last one starts a new set, not more of the same burst.
 PHOTO_RESEND_GAP_SECONDS = 120
+# Brief wait before re-trying a rate-limited vision burst (was 6s — felt slow to the customer).
+VISION_BURST_RETRY_SECONDS = 2.0
+
+
+def _send_photo_reading_ack(db: Session, conv: AiConversation, lang: str, mobile: str) -> None:
+    """Instant WhatsApp ping so the customer is not staring at a silent chat while vision runs."""
+    from .i18n import t
+
+    pl = _payload(conv)
+    draft_key = conv.draft_id
+    # One ack per open draft — a 5-photo burst must not spam five "reading" lines.
+    if pl.get("photo_reading_ack_for_draft") == draft_key:
+        return
+    body = t(lang, "photo_reading")
+    try:
+        meta = get_or_create_settings(db)
+        result = send_whatsapp_text(meta, mobile, body)
+        store_chat(
+            db,
+            wamid=result.get("wamid") or f"vision.ack.{conv.id}.{int(utcnow().timestamp())}",
+            conversation_id=conv.conversation_id or f"CONV_{mobile}",
+            from_mobile=meta.phone_number_id or "infradealer",
+            from_name="InfraDealer AI",
+            to_mobile=mobile,
+            direction="outbound",
+            body=body,
+            status="sent",
+            unread=False,
+        )
+        pl["photo_reading_ack_for_draft"] = draft_key
+        _write_payload(conv, pl)
+        db.commit()
+    except Exception:
+        log.exception("vision.photo_reading_ack failed mobile=***%s", mobile[-4:] if mobile else "")
 
 
 def _queue_photo_report(conv: AiConversation, media_ids: list[int]) -> None:
@@ -461,12 +495,21 @@ def process_inbound(
                     # A vehicle photo or paper starts (or adds to) a listing unless the user is buying.
                     if vis_row and vis_row.local_path and (_pl(conv).get("intent") or "").upper() != "BUY":
                         is_doc = is_document_media(vis_row, text or "")
+                        # Tell the user instantly; full field extract still runs below (no data skip).
+                        if send and vision_turn:
+                            from .i18n import pick_language
+
+                            _send_photo_reading_ack(
+                                db, conv,
+                                pick_language(text, getattr(conv, "language", "") or "", "auto"),
+                                mobile,
+                            )
                         filled, read_ids = fill_listing_from_burst(
                             db, conv, vis_row, is_document=is_doc,
                         )
-                        # Free vision tiers often 429 on a 6-photo burst — one short wait usually clears it.
+                        # Free vision tiers often 429 on a burst — short retry, then deferred follow-up.
                         if not read_ids and vision_turn and vision_cap_left(db, conv):
-                            time.sleep(6)
+                            time.sleep(VISION_BURST_RETRY_SECONDS)
                             filled, read_ids = fill_listing_from_burst(
                                 db, conv, vis_row, is_document=is_doc,
                             )

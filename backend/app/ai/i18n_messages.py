@@ -250,6 +250,11 @@ MESSAGES = {
         "hi": "📷 फोटो सेव हो गई — सर्वर थोड़ा बिज़ी है। मैं खुद पढ़कर डिटेल भेज दूँगा, प्रतीक्षा करें।",
         "en": "📷 Photo saved — the server is busy. I'll read it and send the details myself shortly.",
     },
+    "photo_reading": {
+        "hinglish": "📷 Photo mil gayi — abhi padh ke detail bhejta hoon.",
+        "hi": "📷 फोटो मिल गई — अभी पढ़ के डिटेल भेजता हूँ।",
+        "en": "📷 Photo received — reading it and sending the details now.",
+    },
     "listing_delete_request": {
         "hinglish": "🗑️ Listing hatane ki request admin team ko bhej di hai — jaldi hata di jayegi.\n"
                     "Details theek karke dobara post karni ho to 'last listing change' likhiye.",
