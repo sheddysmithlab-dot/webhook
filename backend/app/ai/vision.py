@@ -915,12 +915,15 @@ def image_report(
     labels = _labels(lang)
     merged, details = _merge_reads(reads)
     fields = listing_fields(merged)
-    # What the seller typed beats a guess from the photo (vision mixes up look-alike bodies).
+    # What the seller typed beats a guess from the photo (vision mixes up look-alike bodies / tyre counts).
     typed = _payload(conv)
     details = _drop_misread_brand(details, merged, typed.get("brand"))
-    for k in ("category", "brand", "model", "year"):
+    for k in ("category", "brand", "model", "year", "fuel"):
         if typed.get(k) not in (None, "", [], {}):
             fields[k] = typed[k]
+    for k in VISUAL_KEYS:
+        if typed.get(k) not in (None, "", [], {}):
+            merged[k] = typed[k]
     place = ", ".join(x for x in (fields.get("city"), fields.get("state")) if x)
     rows = [
         ("category", fields.get("category")), ("brand", fields.get("brand")),
@@ -966,8 +969,9 @@ def public_photo_facts(db: Session, conv: AiConversation, draft_id, payload: dic
     docs = payload.get("vehicle_docs") if isinstance(payload.get("vehicle_docs"), dict) else {}
     lines = []
     for k in VISUAL_KEYS:
-        v = _clean(merged.get(k))[:60]
-        if v and not (k == "condition" and payload.get("condition")):
+        typed = payload.get(k)
+        v = _clean(typed if typed not in (None, "", [], {}) else merged.get(k))[:60]
+        if v:
             lines.append(f"{labels[k]}: {v}")
     for k in _PUBLIC_DOC_KEYS:
         v = _clean(merged.get(k))[:60]
@@ -1004,8 +1008,11 @@ def card_details(
     rows += [
         (k, _clean(docs.get(k) or merged.get(k))[:60]) for k in DOC_FACT_KEYS if k != "registering_authority"
     ]
-    rows += [(k, _clean(payload.get(k) if k == "condition" and payload.get(k) else merged.get(k))[:60])
-             for k in VISUAL_KEYS]
+    # Typed visual fields (tyres / colour / …) always beat the photo guess.
+    rows += [
+        (k, _clean(payload[k] if payload.get(k) not in (None, "", [], {}) else merged.get(k))[:60])
+        for k in VISUAL_KEYS
+    ]
     card = payload.get("active_card_id") or ""
     title = labels["card_title"] + (f" — {card}" if card else "")
     marks = {"place" if k in {"city", "state", "location"} else

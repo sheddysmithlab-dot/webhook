@@ -290,6 +290,7 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
             "running", "running_km", "operating_hours", "condition", "accident_history",
             "negotiable", "location", "state", "city", "owners", "finance_amount",
             "tyre_percent", "finance_condition", "work_issues", "fuel",
+            "tyres", "axles", "colour", "body_type", "cabin",
             "expected_price", "budget", "budget_max", "description",
         )
         conf = payload.setdefault("confidence", {})

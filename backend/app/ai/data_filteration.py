@@ -476,6 +476,25 @@ _COUNT_RE = re.compile(
     re.I,
 )
 
+# "12 चक्का" / "18 tyre" / "10 wheeler" — seller tyre count (not tyre %).
+# No trailing \b: Devanagari matras are not always \w, so \b after चक्का fails.
+_TYRE_COUNT_RE = re.compile(
+    r"(?<!\d)(\d{1,2})\s*(?:(?i:chakk[ae]|chakke|tyres?|tayar|wheels?|wheeler)|चक्का|चक्के|चक्कों|टायर|पहिया|पहिये)"
+    r"|(?:(?:(?i:chakk[ae]|chakke|tyres?|tayar|wheels?|wheeler)|चक्का|चक्के|चक्कों|टायर)\s*[:=\-]?\s*(\d{1,2}))(?!\d)",
+)
+
+
+def tyres_from_text(text: str) -> str | None:
+    """Wheel/tyre count the seller typed — e.g. '12 चक्का tyres' → '12'."""
+    m = _TYRE_COUNT_RE.search(text or "")
+    if not m:
+        return None
+    n = int(m.group(1) or m.group(2))
+    # Commercial vehicle range; ignore "1 tyre" noise / "70 tyre %" paths.
+    if 2 <= n <= 24:
+        return str(n)
+    return None
+
 
 def normalize_year(raw: Any) -> dict | None:
     if _blank(raw):
@@ -1055,6 +1074,13 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
         fuel = fuel_from_text(blob)
         if fuel:
             out["fuel"] = fuel
+    # Seller tyre count always wins over a blank field (photo may guess 10 for a 12-wheeler).
+    tyre_n = tyres_from_text(blob)
+    if tyre_n:
+        out["tyres"] = tyre_n
+        # Even tyre counts imply axles for multi-axle trucks (12 → 6).
+        if int(tyre_n) % 2 == 0 and _blank(out.get("axles")):
+            out["axles"] = str(int(tyre_n) // 2)
 
     # "Ramesh 99507 85689" is a name + number, not a town.
     name_with_phone = had_phone and (len(blob.split()) <= 2 or not re.search(r"[^\W\d_]", blob))

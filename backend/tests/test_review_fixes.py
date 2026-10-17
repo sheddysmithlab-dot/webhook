@@ -966,6 +966,49 @@ def test_photo_busy_auto_retries_without_detail_do_prompt():
     cancel_photo_reread(912345)
 
 
+def test_typed_chakka_count_beats_photo_tyre_guess(db, tmp_path):
+    """Seller '12 चक्का' must override a photo that guessed 10 tyres / 5 axles."""
+    import json as _json
+
+    from app.ai import vision
+    from app.ai.engine import extract_turn
+    from app.ai.tools import _payload, _write_payload, execute_tool
+    from app.models import AiConversation, AiListingDraft, AiMedia
+
+    assert extract_turn("टाटा\n12 चक्का tyres\nमॉडल 2016")["tyres"] == "12"
+    assert extract_turn("Tata 3118 10 tyre")["tyres"] == "10"
+    assert "tyres" not in extract_turn("tyre 70%")
+
+    conv = AiConversation(mobile="9111222333", conversation_id="CONV_9111222333", state="NEW", payload_json="{}")
+    db.add(conv)
+    db.flush()
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="COLLECTING", intent="SELL")
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    _write_payload(conv, {"intent": "SELL", "category": "Truck", "brand": "Tata"})
+    img = tmp_path / "t.jpg"
+    img.write_bytes(b"x")
+    row = AiMedia(
+        conversation_id=conv.id, draft_id=draft.id, kind="image", local_path=str(img),
+        extract_kind="vehicle_fields",
+        extracted_text=_json.dumps({"tyres": "10", "axles": "5", "brand": "Tata", "category": "Truck"}),
+    )
+    db.add(row)
+    db.flush()
+    execute_tool(db, conv, "save_vehicle_data", {
+        "source": "customer", **extract_turn("12 चक्का tyres\nमॉडल 2016\nडिमांड 8 लाख"),
+    })
+    pl = _payload(conv)
+    assert pl["tyres"] == "12" and pl.get("axles") == "6"
+    card = vision.card_details(db, conv, "hi")
+    assert "टायर: 12" in card
+    assert "टायर: 10" not in card
+    assert "एक्सल: 6" in card
+    report = vision.image_report(db, conv, "hi")
+    assert "टायर: 12" in report and "टायर: 10" not in report
+
+
 def test_photo_busy_notice_once_per_draft(db):
     """Repeated unread-photo turns must not spam the same busy line for one draft."""
     from app.ai.i18n import t
