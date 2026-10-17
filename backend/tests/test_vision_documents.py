@@ -270,6 +270,7 @@ def test_junk_registration_number_is_dropped():
     assert vision.looks_like_registration_number("BR 28 G 3913")
     assert not vision.looks_like_registration_number("14 chki passing 2021 (4220)")
     assert not vision.looks_like_registration_number("14 chki passing 2021")
+    assert not vision.looks_like_registration_number("AN 01 TT")
     facts = vision.document_facts({
         "registration_number": "14 chki passing 2021 (4220)",
         "vehicle_class": "Goods Carrier",

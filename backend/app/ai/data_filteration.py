@@ -483,6 +483,53 @@ _TYRE_COUNT_RE = re.compile(
     r"|(?:(?:(?i:chakk[ae]|chakke|tyres?|tayar|wheels?|wheeler)|चक्का|चक्के|चक्कों|टायर)\s*[:=\-]?\s*(\d{1,2}))(?!\d)",
 )
 
+# Indian plate: UP 70 FT 7380 / UP70FT7380 / MH-12-AB-1234
+_INDIAN_PLATE = re.compile(r"^[A-Z]{2}\d{1,2}[A-Z]{1,3}\d{1,4}$", re.I)
+_PLATE_SPACED = re.compile(
+    r"\b([A-Za-z]{2})\s*[-./]?\s*(\d{1,2})\s*[-./]?\s*([A-Za-z]{1,3})\s*[-./]?\s*(\d{1,4})\b",
+)
+_PLATE_COMPACT = re.compile(r"\b([A-Za-z]{2}\d{1,2}[A-Za-z]{1,3}\d{1,4})\b")
+_PLATE_CUE = re.compile(
+    r"\b(?:gadi|gaadi|vehicle|reg(?:istration)?|number\s*plate|regn?|rc)\s*"
+    r"(?:n(?:um(?:ber|ber))?|no\.?|number)?\b|"
+    r"गाड़ी\s*नंबर|गाडी\s*नंबर|नंबर\s*प्लेट|रजिस्ट्रेशन",
+    re.I,
+)
+
+
+def looks_like_registration_number(value: str) -> bool:
+    """True only for plate-like text — drop OCR junk like 'AN 01 TT' / '14 chki passing'."""
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not raw or len(raw) > 20:
+        return False
+    compact = re.sub(r"[\s\-./]", "", raw).upper()
+    # Require series letters (1–3) AND a number block — "AN01TT" has no trailing digits.
+    return bool(_INDIAN_PLATE.match(compact))
+
+
+def format_registration_number(value: str) -> str:
+    """Normalize to spaced display: UP70FT7380 → UP 70 FT 7380."""
+    compact = re.sub(r"[\s\-./]", "", str(value or "")).upper()
+    m = re.match(r"^([A-Z]{2})(\d{1,2})([A-Z]{1,3})(\d{1,4})$", compact)
+    if not m:
+        return re.sub(r"\s+", " ", str(value or "")).strip()[:20]
+    return f"{m.group(1)} {m.group(2)} {m.group(3)} {m.group(4)}"
+
+
+def registration_number_from_text(text: str) -> str | None:
+    """Seller-typed gaadi number — 'up 70 ft 7380' / 'gadi number UP70FT7380'."""
+    msg = text or ""
+    # Prefer an explicit plate cue match, else any clear spaced/compact plate in the message.
+    for rx in (_PLATE_SPACED, _PLATE_COMPACT):
+        for m in rx.finditer(msg):
+            if rx is _PLATE_SPACED:
+                cand = "".join(m.groups())
+            else:
+                cand = m.group(1)
+            if looks_like_registration_number(cand):
+                return format_registration_number(cand)
+    return None
+
 
 def tyres_from_text(text: str) -> str | None:
     """Wheel/tyre count the seller typed — e.g. '12 चक्का tyres' → '12'."""
@@ -902,6 +949,14 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
     blob = " ".join(texts).strip()
     if not blob:
         return out
+
+    # Pull gaadi number first and strip it so "UP 70 FT 7380" is not year 2070 / model 7380.
+    plate = registration_number_from_text(blob)
+    if plate:
+        out["registration_number"] = plate
+        for rx in (_PLATE_SPACED, _PLATE_COMPACT):
+            blob = rx.sub(" ", blob)
+        blob = re.sub(r"\s+", " ", blob).strip()
 
     labeled = _labeled_fields("\n".join(texts))
     if _blank(out.get("category")) and labeled.get("category"):

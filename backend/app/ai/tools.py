@@ -347,6 +347,29 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
                 conf[key] = "CONFIRMED_BY_CUSTOMER"
             elif origin == "inferred" and conf.get(key) != "CONFIRMED_BY_CUSTOMER":
                 conf[key] = "INFERRED_BY_AI"
+        # Gaadi number lives in vehicle_docs (not a top-level listing column).
+        plate = args.get("registration_number")
+        if plate not in (None, "") and origin == "customer":
+            from .data_filteration import format_registration_number, looks_like_registration_number
+
+            if looks_like_registration_number(str(plate)):
+                nice = format_registration_number(str(plate))
+                docs = payload.get("vehicle_docs") if isinstance(payload.get("vehicle_docs"), dict) else {}
+                docs = {**docs, "registration_number": nice}
+                payload["vehicle_docs"] = docs
+                payload["registration_typed"] = True
+                bucket["registration_number"] = nice
+                conf["registration_number"] = "CONFIRMED_BY_CUSTOMER"
+                # Plate tail must not stick as model (up 70 ft 7380 → model 7380).
+                tail = re.sub(r"\D", "", nice)[-4:]
+                if str(payload.get("model") or "") == tail and conf.get("model") != "CONFIRMED_BY_CUSTOMER":
+                    payload["model"] = None
+                    bucket.pop("model", None)
+                elif str(payload.get("model") or "") == tail and args.get("registration_number"):
+                    # Same turn typed plate + false model — drop model.
+                    if not args.get("model") or str(args.get("model")) == tail:
+                        payload["model"] = None
+                        bucket.pop("model", None)
         cat = normalize_vehicle_category(payload.get("category") or payload.get("type") or "")
         if cat:
             payload["category"] = cat

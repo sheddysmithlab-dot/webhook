@@ -53,6 +53,7 @@ CARD_SESSION_KEYS = (
     "body_type",
     "cabin",
     "vehicle_docs",
+    "registration_typed",
     "vision_filled",
     "photo_report_pending",
     "photo_reread_pending",

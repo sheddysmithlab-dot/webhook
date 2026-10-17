@@ -82,7 +82,9 @@ _NO = re.compile(
 )
 _MOD = re.compile(
     r"\b(price|rate|year|model|brand|location|state|city|km|hours|"
-    r"badlo|change|update|correct|kar\s*do|nahi|नहीं|लाख|lakh|lac)\b",
+    r"gadi|gaadi|reg(?:istration)?|number\s*plate|regn?|"
+    r"badlo|change|update|correct|kar\s*do|nahi|नहीं|लाख|lakh|lac|"
+    r"गाड़ी|गाडी|नंबर)\b",
     re.I,
 )
 
@@ -106,14 +108,19 @@ def is_no(text: str) -> bool:
 
 def confirmation_has_modification(text: str) -> bool:
     """True when message looks like confirm + correction (not pure yes)."""
+    from .data_filteration import _PLATE_CUE, registration_number_from_text
+
     msg = (text or "").strip()
     if not msg:
         return False
-    if is_yes(msg) and not re.search(r"\d|lakh|lac|model|year|brand|badlo|change", msg, re.I):
+    # A gaadi number alone during confirm is a correction, not a yes.
+    if registration_number_from_text(msg) or _PLATE_CUE.search(msg):
+        return True
+    if is_yes(msg) and not re.search(r"\d|lakh|lac|model|year|brand|badlo|change|gadi|gaadi|नंबर", msg, re.I):
         return False
     return bool(
         re.search(r"\b(haan|han|yes|हाँ)\b", msg, re.I)
-        and re.search(r"\b(price|rate|year|model|lakh|lac|badlo|change|कर\s*दो)\b|\d", msg, re.I)
+        and re.search(r"\b(price|rate|year|model|lakh|lac|badlo|change|gadi|gaadi|कर\s*दो)\b|\d", msg, re.I)
     )
 
 
@@ -269,11 +276,12 @@ def handle_confirmation(
             return None
 
     if confirmation_has_modification(text):
+        # Clear confirm lock so the same turn's extraction can apply gaadi number / price / etc.
         payload = _payload(conv)
         payload["awaiting_confirm"] = False
         payload["customer_confirmed"] = False
         _write_payload(conv, payload)
-        return t(lang, "unclear")
+        return None
     if is_yes(text) or _POST_CONFIRM.search(text or ""):
         result = submit_confirmed_listing(db, conv)
         if result.get("ok") is False:

@@ -235,6 +235,7 @@ def empty_payload() -> dict:
         "body_type": None,
         "cabin": None,
         "vehicle_docs": {},
+        "registration_typed": False,
         "vision_filled": {},
         "photo_report_pending": {},
         "photo_reread_pending": False,

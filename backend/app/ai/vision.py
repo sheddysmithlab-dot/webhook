@@ -386,20 +386,10 @@ def listing_fields(data: dict) -> dict:
     return out
 
 
-# Indian plate after stripping spaces/hyphens: MH12AB1234 / BR28G3913 / DL1CAB1234
-_INDIAN_PLATE = re.compile(r"^[A-Z]{2}\d{1,2}[A-Z]{0,3}\d{1,4}$", re.I)
-
-
 def looks_like_registration_number(value: str) -> bool:
-    """True only for plate-like text — drop OCR junk like '14 chki passing 2021'."""
-    raw = _clean(value)
-    if not raw or len(raw) > 20:
-        return False
-    compact = re.sub(r"[\s\-./]", "", raw).upper()
-    if not _INDIAN_PLATE.match(compact):
-        return False
-    # Must have at least one letter block + digits (not pure model year text)
-    return bool(re.search(r"[A-Z]", compact) and re.search(r"\d", compact))
+    from .data_filteration import looks_like_registration_number as _ok
+
+    return _ok(value)
 
 
 def document_facts(data: dict) -> dict:
@@ -728,6 +718,9 @@ def _apply_read(conv: AiConversation, media_row: AiMedia, data: dict) -> dict:
             payload["registration_year"] = found["registration_year"]
         if facts:
             docs = payload.get("vehicle_docs") if isinstance(payload.get("vehicle_docs"), dict) else {}
+            # Seller-typed gaadi number always beats a later photo OCR guess.
+            if payload.get("registration_typed") and docs.get("registration_number"):
+                facts = {k: v for k, v in facts.items() if k != "registration_number"}
             payload["vehicle_docs"] = {**docs, **facts}
         _write_payload(conv, payload)
     if data:
@@ -926,6 +919,9 @@ def image_report(
     for k in VISUAL_KEYS:
         if typed.get(k) not in (None, "", [], {}):
             merged[k] = typed[k]
+    docs = typed.get("vehicle_docs") if isinstance(typed.get("vehicle_docs"), dict) else {}
+    if docs.get("registration_number"):
+        merged["registration_number"] = docs["registration_number"]
     place = ", ".join(x for x in (fields.get("city"), fields.get("state")) if x)
     rows = [
         ("category", fields.get("category")), ("brand", fields.get("brand")),
@@ -935,6 +931,11 @@ def image_report(
     ]
     rows += [(k, _clean(merged.get(k))[:60]) for k in DOC_FACT_KEYS if k != "registering_authority"]
     rows += [(k, _clean(merged.get(k))[:60]) for k in VISUAL_KEYS]
+    if typed.get("registration_typed") and docs.get("registration_number"):
+        details = [
+            d for d in details
+            if not re.search(r"number\s*plate|registration\s*(?:no|number)|गाड़ी\s*नंबर", d, re.I)
+        ]
     return _report_text(labels["title"], rows, details, labels)
 
 
@@ -979,7 +980,13 @@ def public_photo_facts(db: Session, conv: AiConversation, draft_id, payload: dic
         v = _clean(merged.get(k))[:60]
         if v and not docs.get(k) and k in labels:
             lines.append(f"{labels[k]}: {v}")
-    lines += [d for d in details if not _PRIVATE_DETAIL.search(d) and not _SCENE_DETAIL.search(d)][:8]
+    typed_plate = bool(payload.get("registration_typed") and docs.get("registration_number"))
+    lines += [
+        d for d in details
+        if not _PRIVATE_DETAIL.search(d)
+        and not _SCENE_DETAIL.search(d)
+        and not (typed_plate and re.search(r"number\s*plate|registration\s*(?:no|number)|गाड़ी\s*नंबर", d, re.I))
+    ][:8]
     return lines
 
 
@@ -1015,6 +1022,12 @@ def card_details(
         (k, _clean(payload[k] if payload.get(k) not in (None, "", [], {}) else merged.get(k))[:60])
         for k in VISUAL_KEYS
     ]
+    # Drop OCR "Number plate reads …" noise once the seller typed the real plate.
+    if payload.get("registration_typed") and docs.get("registration_number"):
+        details = [
+            d for d in details
+            if not re.search(r"number\s*plate|registration\s*(?:no|number)|गाड़ी\s*नंबर", d, re.I)
+        ]
     card = payload.get("active_card_id") or ""
     title = labels["card_title"] + (f" — {card}" if card else "")
     marks = {"place" if k in {"city", "state", "location"} else

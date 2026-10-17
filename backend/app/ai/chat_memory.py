@@ -289,6 +289,14 @@ def detect_intent(text: str, payload: dict, media_note: str = "") -> str:
     if awaiting:
         if confirmation_has_modification(msg):
             return "REJECT_CORRECTION"
+        # Typed gaadi number / plate during confirm must update the card, not be ignored.
+        try:
+            from .data_filteration import _PLATE_CUE, registration_number_from_text
+
+            if registration_number_from_text(msg) or _PLATE_CUE.search(msg):
+                return "REJECT_CORRECTION"
+        except Exception:
+            pass
         # "post kr do" / "haan post" while waiting = confirm submit (same as Haan)
         if is_yes(msg) or _POST_NOW.search(msg):
             return "CONFIRM_LISTING"
@@ -465,7 +473,10 @@ def collect_message(db: Session, conv: AiConversation, text: str) -> dict:
             extracted["brand"] = m.group(1)
     if not extracted.get("model"):
         m = re.search(r"\b(\d{3,4}[A-Za-z]?|3DX|4DX|JS\d+)\b", msg)
-        if m and not normalize_year(m.group(1)):
+        plate_tail = ""
+        if extracted.get("registration_number"):
+            plate_tail = re.sub(r"\D", "", str(extracted["registration_number"]))[-4:]
+        if m and not normalize_year(m.group(1)) and m.group(1) != plate_tail:
             extracted["model"] = m.group(1)
 
     # Uncertain language → do not mark confirmed later

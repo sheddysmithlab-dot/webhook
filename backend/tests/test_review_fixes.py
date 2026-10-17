@@ -966,6 +966,47 @@ def test_photo_busy_auto_retries_without_detail_do_prompt():
     cancel_photo_reread(912345)
 
 
+def test_typed_gaadi_number_beats_photo_and_is_not_model(db):
+    """'up 70 ft 7380' must set registration — not model 7380 — and override OCR plate."""
+    from app.ai import vision
+    from app.ai.confirm import confirmation_has_modification
+    from app.ai.engine import extract_turn
+    from app.ai.tools import _payload, _write_payload, execute_tool
+    from app.models import AiConversation, AiListingDraft, AiMedia
+
+    fields = extract_turn("up 70 ft 7380 gadi number")
+    assert fields.get("registration_number") == "UP 70 FT 7380"
+    assert fields.get("model") != "7380"
+    assert confirmation_has_modification("up 70 ft 7380 gadi number")
+
+    conv = AiConversation(mobile="9111222001", conversation_id="CONV_9111222001", state="NEW", payload_json="{}")
+    db.add(conv)
+    db.flush()
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="COLLECTING", intent="SELL")
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    execute_tool(db, conv, "save_vehicle_data", {
+        "source": "customer", "brand": "Tata", "registration_number": "UP 70 FT 7380",
+    })
+    pl = _payload(conv)
+    assert pl["vehicle_docs"]["registration_number"] == "UP 70 FT 7380"
+    assert pl.get("registration_typed") is True
+    row = AiMedia(conversation_id=conv.id, draft_id=draft.id, kind="image", local_path="x.jpg")
+    db.add(row)
+    db.flush()
+    vision._apply_read(conv, row, {"registration_number": "TN12E9451", "brand": "Tata"})
+    assert _payload(conv)["vehicle_docs"]["registration_number"] == "UP 70 FT 7380"
+    _write_payload(conv, {
+        **_payload(conv),
+        "vehicle_docs": {"registration_number": "UP 70 FT 7380"},
+        "registration_typed": True,
+    })
+    card = vision.card_details(db, conv, "hi")
+    assert "UP 70 FT 7380" in card
+    assert "TN 12 E 9451" not in card and "TN12E9451" not in card
+
+
 def test_structured_photo_reply_skips_slow_polish():
     """Photo/card templates already have every field — polish must not add 6–15s latency."""
     from app.ai.polish import should_polish
