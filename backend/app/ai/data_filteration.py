@@ -58,10 +58,17 @@ def _parse_listing_price(raw: str) -> float:
         return 0.0
     if price <= 0:
         return 0.0
-    if "lakh" in low or "lac" in low or re.search(r"\b\d+(?:\.\d+)?\s*l\b", low):
-        price *= 100000
-    elif "crore" in low or re.search(r"\bcr\b", low):
-        price *= 10000000
+    # "2250000\nLocation" must NOT read the leading L of Location as the unit "l" (lakh).
+    # Bare rupee amounts (>= 1 lakh digits) are already full INR — never multiply again.
+    lakh_unit = bool(
+        re.search(r"(?:lakhs?|lacs?|लाख)\b", low)
+        or re.search(r"\b\d+(?:\.\d+)?\s+l\b(?!\w)", low)
+    )
+    crore_unit = bool(re.search(r"(?:crores?|करोड़|करोड)\b", low) or re.search(r"\bcr\b", low))
+    if lakh_unit and price < 100_000:
+        price *= 100_000
+    elif crore_unit and price < 10_000_000:
+        price *= 10_000_000
     if 1900 <= price <= 2035:
         return 0.0
     return price
@@ -824,7 +831,8 @@ def normalize_location(city: Any = None, state: Any = None, location: Any = None
 _SELL_PRICE_LABEL = re.compile(
     r"(?:selling\s*price|sale\s*price|asking\s*price|offer\s*price|ex[- ]?showroom|"
     r"demand|डिमांड|कीमत|किंमत|किमत|price|rate|rs\.?)\s*[:=\-–]?\s*"
-    r"((?:₹\s*|rs\.?\s*)?[\d,.]+(?:\s*(?:lakhs?|lacs?|l|crores?|cr|लाख|करोड़|करोड))?)",
+    # Bare "l" only as its own token ("20 l") — never the L in "Location".
+    r"((?:₹\s*|rs\.?\s*)?[\d,.]+(?:\s*(?:lakhs?|lacs?|crores?|cr|लाख|करोड़|करोड)|\s+l\b)?)",
     re.I,
 )
 
@@ -1172,7 +1180,8 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
             price_blob = re.sub(r"(\d)\.\s+(?=lakh|lac|crore)", r"\1 ", price_blob, flags=re.I)
             # Prefer segments with lakh/crore/₹; digits glued to letters are model codes ("ZX220LC").
             for m in re.finditer(
-                r"(?<![A-Za-z\d])(?:₹\s*|rs\.?\s*)?\d+(?:[.,]\d+)?\s*(?:lakhs?|lacs?|l|crores?|cr)\b|"
+                r"(?<![A-Za-z\d])(?:₹\s*|rs\.?\s*)?\d+(?:[.,]\d+)?\s*(?:lakhs?|lacs?|crores?|cr)\b|"
+                r"(?<![A-Za-z\d])(?:₹\s*|rs\.?\s*)?\d+(?:[.,]\d+)?\s+l\b|"
                 r"(?:₹\s*|rs\.?\s*)\d[\d,]{3,}",
                 price_blob,
                 re.I,

@@ -508,6 +508,11 @@ MESSAGES = {
         "hi": "लिस्टिंग सबमिट नहीं हो सकी। कृपया फिर से कन्फर्म करें।",
         "en": "Listing could not be submitted. Please confirm again.",
     },
+    "price_resubmit": {
+        "hinglish": "Price galat padha gaya. Sahi demand (jaise 22.5 lakh ya 2250000) likh kar phir *Haan* bhejiye.",
+        "hi": "कीमत गलत पढ़ी गई। सही डिमांड (जैसे 22.5 लाख या 2250000) लिखकर फिर *हाँ* भेजिए।",
+        "en": "Price was read incorrectly. Send the correct demand (e.g. 22.5 lakh or 2250000) and then type *Yes*.",
+    },
     "account_blocked": {
         "hinglish": "Aapka number blocked hai. Kripya support se sampark karein — listing abhi possible nahi.",
         "hi": "आपका नंबर ब्लॉक है। कृपया सपोर्ट से संपर्क करें — लिस्टिंग अभी संभव नहीं।",

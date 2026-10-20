@@ -285,13 +285,20 @@ def handle_confirmation(
     if is_yes(text) or _POST_CONFIRM.search(text or ""):
         result = submit_confirmed_listing(db, conv)
         if result.get("ok") is False:
-            if result.get("error") == "photos_required":
-                from .chat_memory import submit_failure_reply
+            from .chat_memory import submit_failure_reply
 
+            if result.get("error") in {"photos_required", "token_insufficient"} or result.get("status") in {
+                "RETRY", "DELIVERY_FAILED", "FAILED", "SUBMISSION_BLOCKED",
+            }:
                 return submit_failure_reply(lang, result)
-            if result.get("error") == "token_insufficient":
-                buy = result.get("buy_link") or "https://infradealer.com/wallet"
-                return t(lang, "tokens_buy", link=buy)
+            errs = list(result.get("validation_errors") or []) + list(result.get("conflicts") or [])
+            if any("PRICE" in str((e or {}).get("code") or "").upper() for e in errs if isinstance(e, dict)):
+                return submit_failure_reply(lang, {**result, "reason_code": "PRICE_OUTLIER"})
+            if result.get("error") == "listing_not_ready":
+                # Inflated/outlier price often lands here with empty missing_fields.
+                if any("PRICE" in str((e or {}).get("code") or "").upper() for e in (result.get("validation_errors") or []) if isinstance(e, dict)):
+                    return submit_failure_reply(lang, {**result, "reason_code": "PRICE_OUTLIER"})
+                return submit_failure_reply(lang, result)
             missing = [m.get("field") if isinstance(m, dict) else m for m in (result.get("missing_fields") or [])]
             if missing and missing[0]:
                 # "Confirm again" would just loop — ask for the field that blocked the submit.
@@ -303,7 +310,7 @@ def handle_confirmation(
                     key = "more_detail"
                 conv.error_message = f"ask:{key}"
                 return _with_ack(lang, key, _payload(conv))
-            return t(lang, "submit_blocked")
+            return submit_failure_reply(lang, result)
         _send_listing_button(db, conv, lang)
         return t(lang, "submitted")
     if is_no(text):

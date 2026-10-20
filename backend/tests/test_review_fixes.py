@@ -1051,6 +1051,19 @@ def test_selling_price_beats_tax_amount():
     assert out.get("price") == 2050000
 
 
+def test_demand_rupees_not_multiplied_by_location_l():
+    """'Price डिमांड 2250000\\nLocation …' must stay ₹22.5L, not × lakh via Location's L."""
+    from app.ai.data_filteration import extract_fields
+
+    msg = (
+        "गाड़ी मालिक\n78703 48322\nटाटा 22 चक्का\nटिप ट्रेलर 5523\nमॉडल 2020\n"
+        "Price डिमांड 2250000\nLocation  साहिबगंज झारखंड"
+    )
+    out = extract_fields([msg])
+    assert out.get("expected_price") == 2_250_000
+    assert out.get("price") == 2_250_000
+
+
 def test_twelve_chakka_tata_is_tipper_not_backhoe():
     from app.ai.data_filteration import extract_fields
 

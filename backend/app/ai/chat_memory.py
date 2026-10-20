@@ -754,10 +754,17 @@ MIN_LISTING_PHOTOS = 2
 def submit_failure_reply(lang: str, result: dict) -> str:
     """What to tell the user when a YES did not reach the website (never "submitted")."""
     err = str(result.get("error") or "")
+    reason = str(result.get("reason_code") or "").upper()
+    detail = result.get("detail") if isinstance(result.get("detail"), dict) else {}
     if err == "photos_required":
         return t(lang, "photos_required", have=int(result.get("photos") or 0), need=MIN_LISTING_PHOTOS)
     if err == "token_insufficient":
         return t(lang, "tokens_buy", link=result.get("buy_link") or "https://infradealer.com/wallet")
+    if reason in {"PRICE_OUTLIER", "INVALID_PRICE"} or "PRICE" in reason:
+        return t(lang, "price_resubmit")
+    conflicts = detail.get("conflicts") or []
+    if any("PRICE" in str((c or {}).get("code") or "").upper() for c in conflicts if isinstance(c, dict)):
+        return t(lang, "price_resubmit")
     if result.get("status") in {"RETRY", "DELIVERY_FAILED", "FAILED"}:
         return t(lang, "submit_retry")
     return t(lang, "submit_blocked")
@@ -806,6 +813,9 @@ def submit_confirmed_listing(db: Session, conv: AiConversation) -> dict:
         if result.get("error") == "listing_not_ready" or result.get("status") in {
             "SUBMISSION_BLOCKED", "STALE_CONFIRMATION",
         }:
+            # Keep the card open for another Haan — do not send the user to "link missing".
+            payload["awaiting_confirm"] = True
+            payload["customer_confirmed"] = False
             _set_rm_state(payload, "WAITING_FOR_MISSING_DATA")
             _write_payload(conv, payload)
             return result
