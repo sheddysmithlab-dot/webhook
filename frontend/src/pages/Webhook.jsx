@@ -292,6 +292,7 @@ export default function Webhook() {
     const el = threadRef.current;
     if (!el) return;
     if (force || stickToBottomRef.current) {
+      // Instant jump — smooth scroll made chat text look like it was jiggling on poll.
       el.scrollTop = el.scrollHeight;
     }
   }

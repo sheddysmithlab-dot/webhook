@@ -59,7 +59,7 @@
   height:60px;background:var(--wa-head);display:flex;align-items:center;justify-content:space-between;
   padding:0 16px;border-bottom:1px solid var(--wa-border);
 }
-.wa-list-head h1{font-size:22px;font-weight:700;letter-spacing:-.2px}
+.wa-list-head h1{font-size:22px;font-weight:700;letter-spacing:0}
 .wa-search{padding:8px 12px 4px}
 .wa-search input{
   width:100%;border:0;background:var(--wa-head);border-radius:8px;padding:8px 12px 8px 36px;
@@ -116,21 +116,25 @@
 .wa-mini.danger{background:#fde7e9;color:#b42318}
 .wa-thread{flex:1;overflow:auto;padding:18px 8%;position:relative;z-index:1;display:flex;flex-direction:column;gap:3px}
 .wa-day{
-  align-self:center;background:rgba(255,255,255,.9);color:#54656f;font-size:12.5px;padding:5px 12px;border-radius:8px;
+  align-self:center;background:rgba(255,255,255,.9);color:#54656f;font-size:12px;padding:5px 12px;border-radius:8px;
   box-shadow:var(--wa-shadow);margin:8px 0;
 }
 .wa-bub{
-  max-width:65%;padding:6px 9px 4px;border-radius:8px;font-size:14.2px;line-height:19px;position:relative;
-  box-shadow:0 1px 0.5px rgba(11,20,26,.13);word-wrap:break-word;white-space:pre-wrap;
+  /* Integer px only — fractional font/shadow causes Windows ClearType text shimmer ("hilna"). */
+  max-width:65%;padding:6px 9px 4px;border-radius:8px;font-size:14px;line-height:20px;position:relative;
+  box-shadow:0 1px 1px rgba(11,20,26,.12);word-wrap:break-word;white-space:pre-wrap;
+  -webkit-font-smoothing:antialiased;text-rendering:geometricPrecision;
+  transform:translateZ(0);backface-visibility:hidden;
 }
 .wa-msg-del{
   width:20px;height:20px;border:0;border-radius:50%;background:rgba(17,27,33,.08);
-  color:#54656f;cursor:pointer;font-size:14px;line-height:1;display:none;align-items:center;justify-content:center;
+  color:#54656f;cursor:pointer;font-size:14px;line-height:1;display:inline-flex;align-items:center;justify-content:center;
+  opacity:0;pointer-events:none;transition:opacity .12s ease;
 }
 .wa-msg-actions{
-  position:absolute;top:6px;right:6px;display:flex;gap:4px;
+  position:absolute;top:6px;right:6px;display:flex;gap:4px;z-index:2;
 }
-.wa-bub:hover .wa-msg-del{display:inline-flex}
+.wa-bub:hover .wa-msg-del{opacity:1;pointer-events:auto}
 .wa-bub.out .wa-msg-del{background:rgba(17,27,33,.12)}
 .wa-bub.in{align-self:flex-start;background:#fff;border-top-left-radius:0}
 .wa-bub.out{align-self:flex-end;background:var(--wa-sent);border-top-right-radius:0}
@@ -140,7 +144,7 @@
   object-fit:cover;background:#ece5dd;
 }
 .wa-file{color:#027eb5;text-decoration:none;font-weight:500}
-.wa-ticks{color:#53bdeb;font-size:14px;line-height:1;letter-spacing:-1px}
+.wa-ticks{color:#53bdeb;font-size:14px;line-height:1;letter-spacing:0}
 .wa-composer{
   background:var(--wa-head);padding:8px 12px 10px;display:flex;align-items:flex-end;gap:8px;position:relative;z-index:1;
 }
@@ -184,6 +188,8 @@
 .wa-unlock{height:100vh;display:flex;align-items:center;justify-content:center;background:#111b21;color:#fff}
 .wa-check{accent-color:var(--wa-green);width:auto !important}
 body.wa-mode,body.wa-mode #root{height:100%;overflow:hidden;background:#d1d7db}
+/* Don't inherit global smooth scrolling — poll/scrollTop made the thread look like it was shaking. */
+html:has(body.wa-mode),body.wa-mode,.wa-thread{scroll-behavior:auto !important}
 .dash-shell.flush body.wa-mode,
 .dash-shell.flush{background:#d1d7db}
 .dash-main.flush .wa-app{height:100%;width:100%;max-width:none}
