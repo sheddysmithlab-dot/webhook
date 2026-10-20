@@ -275,6 +275,7 @@ _VEHICLE_PROMPT = (
     '"insurance_valid_upto", "fitness_valid_upto", "tax_valid_upto", "puc_valid_upto", '
     '"permit_valid_upto", "national_permit_valid_upto", '
     '"colour", "body_type" (e.g. tipper body, open body, container, trailer, bucket), '
+    '"hour_meter" (dashboard HMR / operating hours if clearly readable, else omit), '
     '"tyres" (TOTAL wheels on the whole vehicle — Indian commercial configs are usually '
     "6/10/12/14/16/18/22 — NOT only the wheels visible in this camera angle. Infer from axle "
     "layout: steer axle = 2 wheels, each rear/drive axle usually dual wheels = 4. If this photo "
@@ -293,7 +294,7 @@ _HEAVY_CATS = frozenset({
     "truck", "tipper", "dumper", "trailer", "transit mixer", "tanker", "crane",
 })
 
-VISION_FILL_KEYS = ("category", "brand", "model", "year", "state", "city", "fuel")
+VISION_FILL_KEYS = ("category", "brand", "model", "year", "state", "city", "fuel", "operating_hours")
 MAX_VISION_READS_PER_CARD = 5
 # 3 parallel reads finish a typical burst faster; Groq stays single-flight via _GROQ_GATE.
 BURST_READ_WORKERS = 3
@@ -394,7 +395,39 @@ def listing_fields(data: dict) -> dict:
     fuel = _FUELS.get(_clean(data.get("fuel")).lower())
     if fuel:
         out["fuel"] = fuel
+    hours = _hours_from_vision(data)
+    if hours:
+        out["operating_hours"] = hours
     return out
+
+
+_HOUR_DETAIL_RE = re.compile(
+    r"(?:hour\s*meter|hmr|odometer|operating\s*hours?|hours?)\s*(?:displays?|shows?|reading|is|:|=)?\s*"
+    r"(\d{3,7}(?:\.\d+)?)",
+    re.I,
+)
+
+
+def _hours_from_vision(data: dict) -> int | None:
+    raw = data.get("hour_meter") or data.get("operating_hours") or data.get("hours")
+    if raw not in (None, ""):
+        try:
+            val = int(float(re.sub(r"[^\d.]", "", str(raw)) or 0))
+            if 50 <= val <= 200_000:
+                return val
+        except (TypeError, ValueError):
+            pass
+    for item in data.get("details") or []:
+        m = _HOUR_DETAIL_RE.search(str(item or ""))
+        if not m:
+            continue
+        try:
+            val = int(float(m.group(1)))
+        except ValueError:
+            continue
+        if 50 <= val <= 200_000:
+            return val
+    return None
 
 
 def looks_like_registration_number(value: str) -> bool:
@@ -709,6 +742,9 @@ def _apply_read(conv: AiConversation, media_row: AiMedia, data: dict) -> dict:
 
     payload = _payload(conv)
     missing = [k for k in VISION_FILL_KEYS if payload.get(k) in (None, "", [], {})]
+    # Seller-typed year always beats a later photo OCR guess (HMR / plate year bleed).
+    if payload.get("year_typed"):
+        missing = [k for k in missing if k != "year"]
     found = listing_fields(data)
     facts = document_facts(data)
     filled = {k: v for k, v in found.items() if k in missing}

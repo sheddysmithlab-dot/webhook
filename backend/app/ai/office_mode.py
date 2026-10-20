@@ -768,6 +768,21 @@ def _office_post_result(payload: dict, who: str) -> str:
     )
 
 
+def _post_to_label(target: dict) -> str:
+    """Username / phone for Post to — never a bare generic 'customer'."""
+    username = str(target.get("username") or "").strip()
+    name = str(target.get("name") or "").strip()
+    phone = str(target.get("phone") or "").strip()
+    generic = {"", "-", "customer", "user", "grahak"}
+    if username and username.lower() not in generic:
+        return username
+    if name and name.lower() not in generic and not re.fullmatch(r"customer\s*\d*", name, re.I):
+        return name
+    if phone:
+        return phone
+    return username or name or phone or "-"
+
+
 def decorate_office_reply(db: Session, conv: AiConversation, reply: str) -> str:
     """Show which customer account a listing will post to at the confirm step."""
     if not reply:
@@ -778,7 +793,7 @@ def decorate_office_reply(db: Session, conv: AiConversation, reply: str) -> str:
             # Office listings go live immediately — never say "team will review".
             # Office listings are approved on creation; a failed push never reaches this text.
             target = active_target(operator) or {}
-            who = target.get("name") or target.get("phone") or "customer"
+            who = _post_to_label(target)
             reply = _office_post_result(_payload(conv), who)
     except Exception:
         log.exception("office_mode: cooldown strip failed")
@@ -792,8 +807,7 @@ def decorate_office_reply(db: Session, conv: AiConversation, reply: str) -> str:
             return reply
         target = active_target(row)
         if target:
-            # Prefer username (customer.xxxx) so auto names like "Customer 8239" do not confuse.
-            who = target.get("username") or target.get("name") or "-"
+            who = _post_to_label(target)
             return (
                 f"{reply}\n\n📌 Post to: {who}, {target['phone'] or '-'}\n"
                 "Confirm? YES/NO"

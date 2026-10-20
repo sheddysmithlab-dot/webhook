@@ -1041,6 +1041,77 @@ def test_photo_reading_ack_once_per_draft(db, monkeypatch):
     assert _payload(conv)["photo_reading_ack_for_draft"] == draft.id
 
 
+def test_selling_price_beats_tax_amount():
+    from app.ai.data_filteration import extract_fields
+
+    out = extract_fields([
+        "Tax: ₹18,084\nSelling Price: ₹ 20,50,000/-\nCGST 9042",
+    ])
+    assert out.get("expected_price") == 2050000
+    assert out.get("price") == 2050000
+
+
+def test_twelve_chakka_tata_is_tipper_not_backhoe():
+    from app.ai.data_filteration import extract_fields
+
+    out = extract_fields([
+        "12 चक्का टाटा गाड़ी है बीएस 4 गाड़ी है मॉडल 2020 है एमपी पासिंग गाड़ी है डिमांड 25 लाख है",
+    ])
+    assert out.get("category") == "Tipper"
+    assert out.get("brand") == "Tata"
+    assert out.get("tyres") == "12"
+    assert out.get("year") == 2020
+    assert out.get("expected_price") == 2500000
+
+
+def test_model_year_beats_height_and_meter_reading():
+    from app.ai.data_filteration import extract_fields
+
+    out = extract_fields(["Height 2000\nModel 2026"])
+    assert out.get("year") == 2026
+    out2 = extract_fields(["26 model\n2000 meter"])
+    assert out2.get("year") == 2026
+    assert out2.get("operating_hours") == 2000
+
+
+def test_bilaspur_cg_from_parking_yard():
+    from app.ai.data_filteration import extract_fields
+
+    out = extract_fields([
+        "Parking Yard: LANJEWAR BROTHERS YARD PLOT NO 42B, TIFRA BILASPUR CG",
+    ])
+    assert out.get("city") == "Bilaspur"
+    assert out.get("state") == "Chhattisgarh"
+
+
+def test_typed_year_blocks_photo_year_overwrite(db, tmp_path):
+    import json as _json
+
+    from app.ai import vision
+    from app.ai.tools import _payload, _write_payload, execute_tool
+    from app.models import AiConversation, AiListingDraft, AiMedia
+
+    conv = AiConversation(mobile="9111222444", conversation_id="CONV_9111222444", state="NEW", payload_json="{}")
+    db.add(conv)
+    db.flush()
+    draft = AiListingDraft(conversation_id=conv.id, mobile=conv.mobile, status="COLLECTING", intent="SELL")
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    execute_tool(db, conv, "save_vehicle_data", {
+        "source": "customer", "brand": "Tata", "year": 2024, "category": "Tipper",
+    })
+    assert _payload(conv).get("year_typed") is True
+    img = tmp_path / "y.jpg"
+    img.write_bytes(b"x")
+    row = AiMedia(conversation_id=conv.id, draft_id=draft.id, kind="image", local_path=str(img))
+    db.add(row)
+    db.flush()
+    filled = vision._apply_read(conv, row, {"manufacturing_year": "2012", "brand": "Tata"})
+    assert "year" not in filled
+    assert _payload(conv).get("year") == 2024
+
+
 def test_typed_chakka_count_beats_photo_tyre_guess(db, tmp_path):
     """Seller '12 चक्का' must override a photo that guessed 10 tyres / 5 axles."""
     import json as _json

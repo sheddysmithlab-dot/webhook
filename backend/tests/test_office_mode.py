@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -217,6 +218,24 @@ def test_post_to_prefers_username_over_customer_display_name(db, client):
     out = om.decorate_office_reply(db, conv, "Please confirm details:\nVehicle: JCB 3DX")
     assert "Post to: customer.8239, 9988776655" in out
     assert "Customer 8239" not in out.split("Post to:")[-1]
+
+
+def test_post_to_never_shows_bare_customer_label(db, client):
+    client.customers["9111222333"] = {
+        "user_id": "91",
+        "username": "customer",
+        "name": "customer",
+        "phone": "9111222333",
+        "status": "active",
+    }
+    conv = _conv(db)
+    om.handle_office_turn(db, conv, "customer 9111222333")
+    pl = _payload(conv)
+    pl["awaiting_confirm"] = True
+    _write_payload(conv, pl)
+    out = om.decorate_office_reply(db, conv, "Please confirm details:\nVehicle: Tata Signa")
+    assert "Post to: 9111222333, 9111222333" in out
+    assert not re.search(r"Post to:\s*customer\s*,", out, re.I)
 
 
 def test_listing_context_carries_target_user_id(db, client):

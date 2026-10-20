@@ -225,7 +225,7 @@ _LABEL_PATTERNS = (
     ("year", r"model\s*year|year|yom|वर्ष|ईयर|साल"),
     ("model", r"model\s*name|model|मॉडल|माडल|मोडल|मॉडेल|मोडेल"),
     ("category", r"category|vehicle\s*type|कैटेगरी|श्रेणी"),
-    ("location", r"location|city|place|address|लोकेशन|शहर|जगह|पता|पत्ता|ठिकाण|स्थान"),
+    ("location", r"location|city|place|address|parking\s*yard|yard|लोकेशन|शहर|जगह|पता|पत्ता|ठिकाण|स्थान"),
     ("_stop", r"price|कीमत|किंमत|किमत|demand|डिमांड|rate|condition|photos?|km|running|hours?|owner|ओनर|"
               r"contact|संपर्क|state|राज्य|किलोमीटर|टायर्स|टायर"),
 )
@@ -332,6 +332,10 @@ _CITY_STATE = {
     "kolkata": ("Kolkata", "West Bengal"),
     "lucknow": ("Lucknow", "Uttar Pradesh"),
     "kanpur": ("Kanpur", "Uttar Pradesh"),
+    "bilaspur": ("Bilaspur", "Chhattisgarh"),
+    "raipur": ("Raipur", "Chhattisgarh"),
+    "durg": ("Durg", "Chhattisgarh"),
+    "bhilai": ("Bhilai", "Chhattisgarh"),
 }
 
 HOUR_CATEGORIES = {
@@ -543,12 +547,50 @@ def tyres_from_text(text: str) -> str | None:
     return None
 
 
+_YEAR_NOISE_RE = re.compile(
+    r"(?:height|ht|hmr|hour\s*meter|meter\s*reading|odometer|hours?|hrs?|घंटे?|मीटर)"
+    r"\s*[:=\-–]?\s*(?:19|20)\d{2}"
+    r"|(?:19|20)\d{2}\s*(?:mm|cm|meter|metres?|meters?|hrs?|hours?|घंटे?)",
+    re.I,
+)
+
+
 def normalize_year(raw: Any) -> dict | None:
     if _blank(raw):
         return None
     text = str(raw).strip()
+    # Prefer an explicit model-year cue over a bare 4-digit (Height 2000 / HMR 6099).
+    # "Height 2000 Model 2026" must take 2026 (model-first), not "2000 Model".
+    model_year = None
+    for m in re.finditer(
+        r"(?:model|mdl|मॉडल|मोडल)\s*[:=\-–]?\s*((?:19|20)\d{2}|\d{2})"
+        r"|((?:19|20)\d{2}|\d{2})\s*(?:model|mdl|m\b|मॉडल|मोडल)",
+        text,
+        re.I,
+    ):
+        token = m.group(1) or m.group(2)
+        model_first = bool(m.group(1))
+        if not model_first:
+            pre = text[max(0, m.start() - 28):m.start()]
+            if re.search(r"(?:height|ht|hmr|hours?|hrs?|meter|metre)\s*[:=\-–]?\s*$", pre, re.I):
+                continue
+        if len(token) == 2:
+            yy = int(token)
+            year = 2000 + yy if yy <= (_current_year() % 100) + 1 else 1900 + yy
+        else:
+            year = int(token)
+        if not (_YEAR_MIN <= year <= _current_year() + 1):
+            continue
+        model_year = year
+        if model_first:
+            break
+    if model_year is not None:
+        status = "INVALID" if model_year > _current_year() else "NORMALIZED"
+        return {"value": model_year, "status": status, "original": text}
+    # Drop height / hour-meter digits so they are not taken as the vehicle year.
+    cleaned = _YEAR_NOISE_RE.sub(" ", text)
     # "2021last nov" carries its year; "PC2000" is a model code.
-    found = [int(x) for x in re.findall(r"(?<![A-Za-z\d])((?:19|20)\d{2})(?!\d)", text)]
+    found = [int(x) for x in re.findall(r"(?<![A-Za-z\d])((?:19|20)\d{2})(?!\d)", cleaned)]
     if found:
         # "Tata 1918 2019": 1918 is a model number; take the first plausible vehicle year.
         year = next((y for y in found if _YEAR_MIN <= y <= _current_year()), found[0])
@@ -611,6 +653,9 @@ _STATE_ALIASES = {
     "west bengal": "West Bengal",
     "bihar": "Bihar",
     "chhattisgarh": "Chhattisgarh",
+    "cg": "Chhattisgarh",
+    "c.g.": "Chhattisgarh",
+    "c.g": "Chhattisgarh",
     "haryana": "Haryana",
     "punjab": "Punjab",
     "pb": "Punjab",
@@ -718,10 +763,12 @@ def _match_state_name(text: str) -> str | None:
     for cue, label in sorted(_STATE_ALIASES.items(), key=lambda x: len(x[0]), reverse=True):
         # Bare "up"/"mp"/"mh" only as whole token — still risky in "price up";
         # require short place-like text for abbreviations.
-        if cue in {"up", "mp", "mh", "rj", "gj", "pb"}:
+        if cue in {"up", "mp", "mh", "rj", "gj", "pb", "cg"}:
             if not re.fullmatch(rf"{re.escape(cue)}", low) and not re.search(
                 rf"(?:state|location|city|rajya|in)\s+{re.escape(cue)}\b"
-                rf"|\b{re.escape(cue)}\s+(?:state|me|mein|ki|ka|ke|se)\b",
+                rf"|\b{re.escape(cue)}\s+(?:state|me|mein|ki|ka|ke|se)\b"
+                # Trailing state code on an address: "TIFRA BILASPUR CG"
+                rf"|(?:^|[\s,/-]){re.escape(cue)}\s*$",
                 low,
             ):
                 continue
@@ -772,6 +819,33 @@ def normalize_location(city: Any = None, state: Any = None, location: Any = None
         if trimmed and trimmed != result["city"] and _looks_like_place(trimmed):
             result["city"] = result["location"] = trimmed
     return result
+
+
+_SELL_PRICE_LABEL = re.compile(
+    r"(?:selling\s*price|sale\s*price|asking\s*price|offer\s*price|ex[- ]?showroom|"
+    r"demand|डिमांड|कीमत|किंमत|किमत|price|rate|rs\.?)\s*[:=\-–]?\s*"
+    r"((?:₹\s*|rs\.?\s*)?[\d,.]+(?:\s*(?:lakhs?|lacs?|l|crores?|cr|लाख|करोड़|करोड))?)",
+    re.I,
+)
+
+
+def _selling_price_from_text(text: str) -> int | None:
+    """Prefer explicitly labeled selling / demand price over tax / GST amounts."""
+    best = None
+    for m in _SELL_PRICE_LABEL.finditer(text or ""):
+        ctx = (text or "")[max(0, m.start() - 18):m.start()].lower()
+        if re.search(r"(?:igst|cgst|sgst|gst|tax|vat|tds|cess)\b", ctx):
+            continue
+        cur = normalize_currency(m.group(1))
+        if not cur:
+            continue
+        val = int(cur["value"])
+        if val < 10_000:
+            continue
+        # Keep the largest labeled selling amount (multi-line ads sometimes repeat).
+        if best is None or val > best:
+            best = val
+    return best
 
 
 def _extract_bare_price(text: str, year: Any = None) -> int | None:
@@ -1005,6 +1079,14 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
             out["location"] = loc["city"]
         if loc.get("state") and _blank(out.get("state")):
             out["state"] = loc["state"]
+    # Free-text / parking-yard addresses: "… TIFRA BILASPUR CG"
+    if _blank(out.get("city")) and _blank(out.get("state")):
+        loc = normalize_location(location="\n".join(texts))
+        if loc.get("city"):
+            out["city"] = loc["city"]
+            out["location"] = loc.get("location") or loc["city"]
+        if loc.get("state"):
+            out["state"] = loc["state"]
 
     if _blank(out.get("category")):
         cat = resolve_category(blob)
@@ -1065,36 +1147,57 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
     hmr = _HMR_RE.search(blob)
     if hmr and _blank(out.get("operating_hours")) and _blank(out.get("running_km")) and _blank(out.get("km")):
         out["operating_hours"] = int(hmr.group(1).replace(",", ""))
+    # "2000 meter" / "6099.7 hours" on excavators is HMR, not a year or height field.
+    if _blank(out.get("operating_hours")) and _blank(out.get("running_km")) and _blank(out.get("km")):
+        meter = re.search(
+            r"(?<!\d)(\d{3,5}(?:\.\d+)?)\s*(?:meters?|metres?|meter\s*reading|hrs?|hours?|घंटे?)\b",
+            blob,
+            re.I,
+        )
+        if meter and not re.search(r"\b(?:height|ht|mm|cm)\b", blob, re.I):
+            try:
+                out["operating_hours"] = int(round(float(meter.group(1))))
+            except ValueError:
+                pass
     price_src = blob.replace(hmr.group(0), " ") if hmr else blob
 
     if _blank(out.get("expected_price")) and _blank(out.get("price")):
-        price_blob = re.sub(r"लाख़?", " lakh", price_src)
-        price_blob = re.sub(r"करोड़|करोड", " crore", price_blob)
-        price_blob = re.sub(r"(\d)\.\s+(?=lakh|lac|crore)", r"\1 ", price_blob, flags=re.I)
-        # Prefer segments with lakh/crore/₹; digits glued to letters are model codes ("ZX220LC").
-        for m in re.finditer(
-            r"(?<![A-Za-z\d])(?:₹\s*|rs\.?\s*)?\d+(?:[.,]\d+)?\s*(?:lakhs?|lacs?|l|crores?|cr)\b|"
-            r"(?:₹\s*|rs\.?\s*)\d[\d,]{3,}",
-            price_blob,
-            re.I,
-        ):
-            if re.match(r"\s*(?:km|kms|kilomet|hours?|hrs?\b|घंटे)", price_blob[m.end():], re.I):
-                continue
-            cur = normalize_currency(m.group(0))
-            if cur:
-                out["expected_price"] = cur["value"]
-                out["price"] = cur["value"]
-                break
-        # Bare rupee amounts: multiline dumps like "Tata\n2567\n2021\n2000000"
-        # or a lone "2000000" when asking for price (no ₹/lakh marker).
-        usage_only = re.search(r"\d\s*(?:lakh|lac|हजार|k)?\s*(?:kms?|hours?|hrs?|घंटे)\b", blob, re.I) and not re.search(
-            r"price|rate|demand|kimat|keemat|कीमत|₹|\brs\b", blob, re.I
-        )
-        if _blank(out.get("expected_price")) and _blank(out.get("price")) and not usage_only:
-            bare = _extract_bare_price(price_src, year=out.get("year"))
-            if bare:
-                out["expected_price"] = bare
-                out["price"] = bare
+        sell = _selling_price_from_text(price_src)
+        if sell:
+            out["expected_price"] = sell
+            out["price"] = sell
+        else:
+            price_blob = re.sub(r"लाख़?", " lakh", price_src)
+            price_blob = re.sub(r"करोड़|करोड", " crore", price_blob)
+            price_blob = re.sub(r"(\d)\.\s+(?=lakh|lac|crore)", r"\1 ", price_blob, flags=re.I)
+            # Prefer segments with lakh/crore/₹; digits glued to letters are model codes ("ZX220LC").
+            for m in re.finditer(
+                r"(?<![A-Za-z\d])(?:₹\s*|rs\.?\s*)?\d+(?:[.,]\d+)?\s*(?:lakhs?|lacs?|l|crores?|cr)\b|"
+                r"(?:₹\s*|rs\.?\s*)\d[\d,]{3,}",
+                price_blob,
+                re.I,
+            ):
+                if re.match(r"\s*(?:km|kms|kilomet|hours?|hrs?\b|घंटे)", price_blob[m.end():], re.I):
+                    continue
+                # Skip GST / tax snippets so ₹18,084 does not beat Selling Price ₹20,50,000.
+                ctx = price_blob[max(0, m.start() - 24):m.start()].lower()
+                if re.search(r"(?:igst|cgst|sgst|gst|tax|vat|tds|cess)\b", ctx):
+                    continue
+                cur = normalize_currency(m.group(0))
+                if cur:
+                    out["expected_price"] = cur["value"]
+                    out["price"] = cur["value"]
+                    break
+            # Bare rupee amounts: multiline dumps like "Tata\n2567\n2021\n2000000"
+            # or a lone "2000000" when asking for price (no ₹/lakh marker).
+            usage_only = re.search(r"\d\s*(?:lakh|lac|हजार|k)?\s*(?:kms?|hours?|hrs?|घंटे)\b", blob, re.I) and not re.search(
+                r"price|rate|demand|kimat|keemat|कीमत|₹|\brs\b", blob, re.I
+            )
+            if _blank(out.get("expected_price")) and _blank(out.get("price")) and not usage_only:
+                bare = _extract_bare_price(price_src, year=out.get("year"))
+                if bare:
+                    out["expected_price"] = bare
+                    out["price"] = bare
 
     if _blank(out.get("running_km")) and _blank(out.get("operating_hours")) and _blank(out.get("km")):
         km = _KM_LABEL_RE.search(blob)
@@ -1131,6 +1234,19 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
             out["fuel"] = fuel
     # Seller tyre count always wins over a blank field (photo may guess 10 for a 12-wheeler).
     tyre_n = tyres_from_text(blob)
+    if tyre_n and _blank(out.get("category")):
+        try:
+            n = int(tyre_n)
+        except (TypeError, ValueError):
+            n = 0
+        brand_l = str(out.get("brand") or "").lower()
+        truckish = brand_l in {
+            "tata", "ashok leyland", "eicher", "bharatbenz", "mahindra", "volvo", "scania", "man",
+        } or bool(cv_model(blob))
+        heavy = not re.search(r"excavator|jcb|backhoe|poclain|\bloader\b|crane", blob, re.I)
+        if n >= 10 and truckish and heavy:
+            tipperish = bool(re.search(r"tipper|टिपर|dumper|डम्पर", blob, re.I)) or n >= 12
+            out["category"] = "Tipper" if tipperish else "Truck"
     if tyre_n:
         out["tyres"] = tyre_n
         # Even tyre counts imply axles for multi-axle trucks (12 → 6).

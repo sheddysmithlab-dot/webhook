@@ -345,6 +345,8 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
                 payload[key] = clean
             if origin == "customer":
                 conf[key] = "CONFIRMED_BY_CUSTOMER"
+                if key == "year":
+                    payload["year_typed"] = True
             elif origin == "inferred" and conf.get(key) != "CONFIRMED_BY_CUSTOMER":
                 conf[key] = "INFERRED_BY_AI"
         # Gaadi number lives in vehicle_docs (not a top-level listing column).
