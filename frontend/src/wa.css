@@ -114,17 +114,17 @@
 }
 .wa-mini.warn{background:#fff2d8;color:#8a5d00}
 .wa-mini.danger{background:#fde7e9;color:#b42318}
-.wa-thread{flex:1;overflow:auto;padding:18px 8%;position:relative;z-index:1;display:flex;flex-direction:column;gap:3px}
+/* Fixed px padding — % width made bubble edges sit on subpixels and text looked like it was shaking. */
+.wa-thread{flex:1;overflow:auto;padding:18px 48px;position:relative;z-index:1;display:flex;flex-direction:column;gap:3px;scroll-behavior:auto}
 .wa-day{
   align-self:center;background:rgba(255,255,255,.9);color:#54656f;font-size:12px;padding:5px 12px;border-radius:8px;
   box-shadow:var(--wa-shadow);margin:8px 0;
 }
 .wa-bub{
-  /* Integer px only — fractional font/shadow causes Windows ClearType text shimmer ("hilna"). */
+  /* No transform/GPU layer — on Windows Chrome that fights ClearType and makes glyphs shimmer. */
   max-width:65%;padding:6px 9px 4px;border-radius:8px;font-size:14px;line-height:20px;position:relative;
   box-shadow:0 1px 1px rgba(11,20,26,.12);word-wrap:break-word;white-space:pre-wrap;
-  -webkit-font-smoothing:antialiased;text-rendering:geometricPrecision;
-  transform:translateZ(0);backface-visibility:hidden;
+  -webkit-font-smoothing:auto;text-rendering:auto;transform:none;
 }
 .wa-msg-del{
   width:20px;height:20px;border:0;border-radius:50%;background:rgba(17,27,33,.08);

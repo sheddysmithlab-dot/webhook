@@ -291,9 +291,11 @@ export default function Webhook() {
   function scrollThread(force = false) {
     const el = threadRef.current;
     if (!el) return;
-    if (force || stickToBottomRef.current) {
-      // Instant jump — smooth scroll made chat text look like it was jiggling on poll.
-      el.scrollTop = el.scrollHeight;
+    if (!(force || stickToBottomRef.current)) return;
+    // Only move when we actually need to — rewriting scrollTop every poll made text jitter.
+    const top = el.scrollHeight - el.clientHeight;
+    if (force || Math.abs(el.scrollTop - top) > 2) {
+      el.scrollTop = top;
     }
   }
 
