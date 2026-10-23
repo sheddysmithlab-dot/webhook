@@ -305,6 +305,78 @@ def test_photo_tyre_merge_prefers_full_config_not_rear_crop():
     assert keep_10_3["tyres"] == "10" and keep_10_3["axles"] == "3"
 
 
+def test_reconcile_excavator_overrides_tractor_swaraj():
+    """Vision often returns Tractor/Swaraj while details describe a Hyundai Robex excavator."""
+    raw = {
+        "category": "Tractor",
+        "brand": "Swaraj",
+        "model": "Powertrac 445",
+        "colour": "Yellow and grey",
+        "body_type": "Hydraulic excavator with bucket",
+        "condition": "Mud on tracks and bucket, some wear on bucket teeth",
+        "details": [
+            "Robex 215L model badge visible on the side",
+            "SMART technology sticker present",
+            "Crawler tracks visible",
+            "Red H logo on the body panel",
+        ],
+    }
+    fixed = vision.reconcile_vision_identity(raw)
+    assert fixed["category"] == "Excavator"
+    assert fixed["brand"] == "Hyundai"
+    assert "215" in fixed["model"] and "Powertrac" not in fixed["model"]
+    fields = vision.listing_fields(raw)
+    assert fields["category"] == "Excavator"
+    assert fields["brand"] == "Hyundai"
+    assert "215" in fields["model"]
+
+
+def test_agri_misread_overwritten_by_later_excavator_photo(db, tmp_path, monkeypatch):
+    """First photo locks Swaraj tractor; a later excavator read must correct the card."""
+    wrong = {
+        "image_type": "vehicle_photo",
+        "category": "Tractor",
+        "brand": "Swaraj",
+        "model": "Powertrac 445",
+        "body_type": "Tractor",
+        "details": ["Yellow machine in field"],
+    }
+    conv, row, _ = _setup(db, tmp_path, monkeypatch, wrong, intent="SELL")
+    vision.fill_listing_from_photo(db, conv, row)
+    pl = _payload(conv)
+    assert pl.get("brand") == "Swaraj"
+    assert pl.get("category") == "Tractor"
+
+    right = {
+        "image_type": "vehicle_photo",
+        "category": "Tractor",
+        "brand": "Swaraj",
+        "model": "Powertrac 445",
+        "body_type": "Hydraulic excavator with bucket",
+        "details": [
+            "Robex 215L model badge visible on the side",
+            "Crawler tracks covered in mud",
+        ],
+    }
+    img2 = tmp_path / "exc.jpg"
+    img2.write_bytes(b"y")
+    row2 = AiMedia(conversation_id=conv.id, kind="image", local_path=str(img2), mime="image/jpeg")
+    db.add(row2)
+    db.flush()
+
+    def fake2(db_, conv_, media_row, prompt="", cfg=None):
+        return "```json\n" + json.dumps(right) + "\n```"
+
+    monkeypatch.setattr(vision, "extract_text_from_image", fake2)
+    filled = vision.fill_listing_from_photo(db, conv, row2)
+    assert filled.get("category") == "Excavator"
+    assert filled.get("brand") == "Hyundai"
+    pl2 = _payload(conv)
+    assert pl2["category"] == "Excavator"
+    assert pl2["brand"] == "Hyundai"
+    assert "Powertrac" not in (pl2.get("model") or "")
+
+
 def test_new_card_clears_vehicle_docs_and_fuel(db):
     from app.ai.confirm import start_new_listing
     from app.models import AiListingDraft
