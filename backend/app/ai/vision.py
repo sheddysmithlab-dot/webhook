@@ -439,6 +439,8 @@ def reconcile_vision_identity(data: dict) -> dict:
                         out["model"] = token[:40]
             elif agri_brand:
                 out.pop("model", None)
+        elif re.search(r"\brobex\b", blob, re.I) and re.match(r"^\d", model) and "robex" not in model_l:
+            out["model"] = f"Robex {model}"[:40]
         body = _clean(out.get("body_type"))
         if not body or _TRACTOR_CUE.search(body):
             out["body_type"] = "Hydraulic excavator with bucket"
