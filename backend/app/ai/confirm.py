@@ -172,6 +172,17 @@ def summary_text(payload_or_snap: dict, lang: str = "hinglish", card_id: str = "
     vehicle = snap.get("vehicle") or listing_title(snap)
     if vehicle:
         lines.append(f"Vehicle: {vehicle}")
+    # Thin titles like bare "JCB" — still show brand/model/category when present.
+    brand = str(snap.get("brand") or "").strip()
+    model = str(snap.get("model") or "").strip()
+    category = str(snap.get("category") or snap.get("type") or "").strip()
+    title_l = vehicle.lower()
+    if brand and brand.lower() not in title_l:
+        lines.append(f"Brand: {brand}")
+    if model and model.lower() not in title_l:
+        lines.append(f"Model: {model}")
+    if category and category.lower() not in title_l:
+        lines.append(f"Category: {category}")
     for label, key in (
         ("Year", "year"),
         ("KM", "running_km"),
@@ -180,6 +191,8 @@ def summary_text(payload_or_snap: dict, lang: str = "hinglish", card_id: str = "
         ("Budget", "budget"),
         ("State", "state"),
         ("City", "city"),
+        ("Colour", "colour"),
+        ("Body", "body_type"),
         ("Details", "description"),
     ):
         if key == "city" and str(snap.get("city") or "").strip().lower() == str(snap.get("state") or "").strip().lower():
@@ -235,6 +248,7 @@ def send_summary(db: Session, conv: AiConversation, lang: str = "hinglish") -> s
     for note in summary_notes(payload, lang):
         text += "\n" + note
     payload["awaiting_confirm"] = True
+    payload["confirm_rejected"] = False
     payload["summary_json"] = snapshot(payload)
     _write_payload(conv, payload)
     return text
@@ -316,8 +330,13 @@ def handle_confirmation(
     if is_no(text):
         payload = _payload(conv)
         payload["awaiting_confirm"] = False
+        payload["customer_confirmed"] = False
+        # Stop the ready→confirm loop: a bare "No" must ask what to change, not re-dump the card.
+        payload["confirm_rejected"] = True
         _write_payload(conv, payload)
-        return t(lang, "unclear")
+        if conv.state == "AWAITING_CONFIRMATION":
+            conv.state = "COLLECTING"
+        return t(lang, "confirm_what_change")
     return None
 
 

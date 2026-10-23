@@ -764,7 +764,8 @@ def _office_post_result(payload: dict, who: str) -> str:
     return (
         f"✅ Listing {who} ke account par post ho gayi (live)."
         + (f"\n🔗 {link}" if link else "")
-        + "\n\nAgli listing: isi customer ki agli gaadi bhejein, ya naya customer select karein (98XXXXXXXX)."
+        + f"\n\nAgli listing: *abhi selected* customer ({who}) ki agli gaadi bhejein, "
+        "ya dusra customer select karein (98XXXXXXXX)."
     )
 
 

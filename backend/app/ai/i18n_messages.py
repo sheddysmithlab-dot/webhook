@@ -336,6 +336,11 @@ MESSAGES = {
         "hi": "क्या ये डिटेल्स सही हैं? हाँ लिखिए।",
         "en": "Are these details correct? Reply Yes.",
     },
+    "confirm_what_change": {
+        "hinglish": "Theek hai — kya badalna hai? (brand / model / year / price / location / photos) likh dijiye.",
+        "hi": "ठीक है — क्या बदलना है? (ब्रांड / मॉडल / साल / कीमत / लोकेशन / फोटो) लिख दीजिए।",
+        "en": "Okay — what should we change? (brand / model / year / price / location / photos)",
+    },
     "summary_header": {
         "hinglish": "Aapki listing ki details:",
         "hi": "आपकी लिस्टिंग की डिटेल्स:",

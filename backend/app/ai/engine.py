@@ -26,7 +26,15 @@ from .account import (
     wants_password_reset,
 )
 from .account_info import handle_account_info, wants_new_listing
-from .confirm import handle_confirmation, handle_vehicle_slot, is_no, is_yes, collection_ready, sync_posted_product
+from .confirm import (
+    confirmation_has_modification,
+    handle_confirmation,
+    handle_vehicle_slot,
+    is_no,
+    is_yes,
+    collection_ready,
+    sync_posted_product,
+)
 from .extract import extract_from_text
 from .i18n import _GREET, _WEAK, language_instruction, pick_language, t
 from .free_chat import (
@@ -791,8 +799,30 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
                 _write_payload(conv, payload)
                 return _with_ack(lang, gap, payload)
 
+    # After a bare "No", clear the reject latch once the user sends a real correction / photo.
+    if payload.get("confirm_rejected") and (
+        media_note or confirmation_has_modification(msg) or (re.search(r"\d", msg or "") and not is_no(msg))
+    ):
+        payload["confirm_rejected"] = False
+        _write_payload(conv, payload)
+
+    # Bare "No" on a confirm card: ask what to change — do not immediately re-dump the same card.
+    if (
+        payload.get("confirm_rejected")
+        and not payload.get("awaiting_confirm")
+        and not payload.get("customer_confirmed")
+        and is_no(msg)
+        and not re.search(r"\d", msg)
+    ):
+        return t(lang, "confirm_what_change")
+
     # Hard: collection ready → Python summary (do not let LLM invent confirm copy)
-    if collection_ready(payload) and not payload.get("customer_confirmed") and not payload.get("awaiting_confirm"):
+    if (
+        collection_ready(payload)
+        and not payload.get("customer_confirmed")
+        and not payload.get("awaiting_confirm")
+        and not payload.get("confirm_rejected")
+    ):
         summary = _summary_or_photo_gate(db, conv, payload, lang)
         if summary:
             return summary

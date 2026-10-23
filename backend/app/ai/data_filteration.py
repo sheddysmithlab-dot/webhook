@@ -343,6 +343,21 @@ _CITY_STATE = {
     "raipur": ("Raipur", "Chhattisgarh"),
     "durg": ("Durg", "Chhattisgarh"),
     "bhilai": ("Bhilai", "Chhattisgarh"),
+    # Common CV markets that show up in office dumps
+    "bijnor": ("Bijnor", "Uttar Pradesh"),
+    "बिजनौर": ("Bijnor", "Uttar Pradesh"),
+    "maharajganj": ("Maharajganj", "Uttar Pradesh"),
+    "महराजगंज": ("Maharajganj", "Uttar Pradesh"),
+    "महाराजगंज": ("Maharajganj", "Uttar Pradesh"),
+    "orai": ("Orai", "Uttar Pradesh"),
+    "urai": ("Orai", "Uttar Pradesh"),
+    "उरई": ("Orai", "Uttar Pradesh"),
+    "jalaun": ("Jalaun", "Uttar Pradesh"),
+    "जालौन": ("Jalaun", "Uttar Pradesh"),
+    "ayodhya": ("Ayodhya", "Uttar Pradesh"),
+    "अयोध्या": ("Ayodhya", "Uttar Pradesh"),
+    "barpeta": ("Barpeta", "Assam"),
+    "बरपेटा": ("Barpeta", "Assam"),
 }
 
 HOUR_CATEGORIES = {
@@ -562,35 +577,48 @@ _YEAR_NOISE_RE = re.compile(
 )
 
 
+def _year_from_token(token: str) -> int | None:
+    if len(token) == 2:
+        yy = int(token)
+        year = 2000 + yy if yy <= (_current_year() % 100) + 1 else 1900 + yy
+    else:
+        year = int(token)
+    if not (_YEAR_MIN <= year <= _current_year() + 1):
+        return None
+    return year
+
+
 def normalize_year(raw: Any) -> dict | None:
     if _blank(raw):
         return None
     text = str(raw).strip()
     # Prefer an explicit model-year cue over a bare 4-digit (Height 2000 / HMR 6099).
     # "Height 2000 Model 2026" must take 2026 (model-first), not "2000 Model".
+    # "Tata 2518 model 2014": never treat the "18" inside model code 2518 as year-before-model —
+    # that match would consume the word "model" and hide the real "model 2014".
     model_year = None
     for m in re.finditer(
-        r"(?:model|mdl|मॉडल|मोडल)\s*[:=\-–]?\s*((?:19|20)\d{2}|\d{2})"
-        r"|((?:19|20)\d{2}|\d{2})\s*(?:model|mdl|m\b|मॉडल|मोडल)",
+        r"(?:model|mdl|मॉडल|मोडल)\s*[:=\-–]?\s*((?:19|20)\d{2}|\d{2})",
         text,
         re.I,
     ):
-        token = m.group(1) or m.group(2)
-        model_first = bool(m.group(1))
-        if not model_first:
+        year = _year_from_token(m.group(1))
+        if year is not None:
+            model_year = year
+            break
+    if model_year is None:
+        for m in re.finditer(
+            r"(?<!\d)((?:19|20)\d{2}|\d{2})\s*(?:model|mdl|m\b|मॉडल|मोडल)",
+            text,
+            re.I,
+        ):
             pre = text[max(0, m.start() - 28):m.start()]
             if re.search(r"(?:height|ht|hmr|hours?|hrs?|meter|metre)\s*[:=\-–]?\s*$", pre, re.I):
                 continue
-        if len(token) == 2:
-            yy = int(token)
-            year = 2000 + yy if yy <= (_current_year() % 100) + 1 else 1900 + yy
-        else:
-            year = int(token)
-        if not (_YEAR_MIN <= year <= _current_year() + 1):
-            continue
-        model_year = year
-        if model_first:
-            break
+            year = _year_from_token(m.group(1))
+            if year is not None:
+                model_year = year
+                break
     if model_year is not None:
         status = "INVALID" if model_year > _current_year() else "NORMALIZED"
         return {"value": model_year, "status": status, "original": text}

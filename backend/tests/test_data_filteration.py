@@ -83,6 +83,23 @@ def test_future_year():
     print("OK future year")
 
 
+def test_model_code_does_not_steal_model_year():
+    """Tata 2518 model 2014 must keep 2014 — not the '18' inside 2518."""
+    y = normalize_year("Tata 2518 model 2014")
+    assert y and y["value"] == 2014 and y["status"] == "NORMALIZED"
+    from app.ai.data_filteration import extract_fields
+
+    ef = extract_fields([
+        "मालिक नंबर टाटा 2518 मॉडल 2014 कीमत 6 लाख लोकेशन उरई जालौन उत्तर प्रदेश"
+    ])
+    assert ef.get("year") == 2014
+    assert ef.get("brand") == "Tata"
+    assert ef.get("model") == "2518"
+    assert ef.get("city") == "Orai"
+    assert ef.get("state") == "Uttar Pradesh"
+    print("OK model-code year")
+
+
 def test_natural_price_format():
     cur = normalize_currency("23.5 lac")
     assert cur and cur["value"] == 2350000 and cur["currency"] == "INR"

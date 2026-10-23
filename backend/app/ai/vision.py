@@ -716,6 +716,19 @@ def schedule_photo_reread(conv_id: int, lang: str = "hinglish", draft_id: int | 
                     )
                     pl = _payload(conv)
                     pl.pop("photo_reread_pending", None)
+                    # confirm_ask must open the confirm lock — else "Haan"/"No" miss the card
+                    # and the engine re-asks state/hours or re-dumps the same summary.
+                    try:
+                        from .confirm import collection_ready, snapshot
+
+                        if collection_ready(pl) and not pl.get("customer_confirmed"):
+                            pl["awaiting_confirm"] = True
+                            pl["confirm_rejected"] = False
+                            pl["summary_json"] = snapshot(pl)
+                            if conv.state not in {"AWAITING_CONFIRMATION", "POSTED"}:
+                                conv.state = "AWAITING_CONFIRMATION"
+                    except Exception:
+                        log.exception("vision.followup awaiting_confirm failed")
                     _write_payload(conv, pl)
                     db.commit()
                     log.info(

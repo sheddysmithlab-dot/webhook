@@ -673,6 +673,7 @@ def build_confirmation_summary(
     payload = handle_data_filter_result(db, conv, result)
     payload["awaiting_confirm"] = True
     payload["customer_confirmed"] = False
+    payload["confirm_rejected"] = False
     _set_rm_state(payload, "WAITING_FOR_USER_CONFIRMATION")
     nd = result.normalized_data or {}
     vehicle = result.data.get("vehicle") if isinstance(result.data.get("vehicle"), str) else listing_title(payload)
@@ -1386,87 +1387,111 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                     _set_rm_state(payload, "LISTING_CREATION" if not soft else "DATA_COLLECTION")
                     _write_payload(conv, payload)
 
+                bare_reject = (
+                    intent == "REJECT_CORRECTION"
+                    and is_no(msg)
+                    and not confirmation_has_modification(msg)
+                )
                 if intent == "REJECT_CORRECTION" or confirmation_has_modification(msg):
                     payload = _payload(conv)
                     payload["awaiting_confirm"] = False
                     payload["customer_confirmed"] = False
                     payload["draft_version"] = int(payload.get("draft_version") or 1) + 1
                     _set_rm_state(payload, "DATA_COLLECTION")
-                    _write_payload(conv, payload)
-
-                # Collect from this turn
-                collect_message(db, conv, msg)
-                if media_note:
-                    payload = _payload(conv)
-                    _maybe_attach_media(payload, media_note)
-                    _mark_photos_complete(payload)
-                    _write_payload(conv, payload)
-
-                payload = _payload(conv)
-                if not payload.get("intent") and intent in {"SELL", "BUY"}:
-                    payload["intent"] = intent
-                    _write_payload(conv, payload)
-
-                # Soft: jump straight to one next question after collect when filter clean
-                if soft and (payload.get("intent") or "").upper() in {"BUY", "SELL"}:
-                    result = filter_memory(db, conv)
-                    payload = handle_data_filter_result(db, conv, result)
-                    if result.conflicts:
-                        c = result.conflicts[0]
-                        response_type = "ASK_QUESTION"
-                        reply = t(lang, "conflict_year", user=c.get("user_value"), document=c.get("document_value"))
-                    elif result.readiness == "INVALID_DATA":
-                        response_type = "ASK_QUESTION"
-                        reply = build_next_question(payload, lang) or t(lang, "unclear")
-                    elif result.readiness == "READY_FOR_USER_CONFIRMATION" or is_collection_ready(payload):
-                        response_type = "CONFIRMATION_REQUEST"
-                        reply = build_confirmation_summary(db, conv, lang, filter_result=result)
+                    if bare_reject:
+                        payload["confirm_rejected"] = True
                     else:
-                        response_type = "ASK_QUESTION"
-                        reply = build_next_question(payload, lang) or t(lang, "unclear")
-                # Coordinate with Data Filter when we have something to validate
-                elif (payload.get("intent") or "").upper() in {"BUY", "SELL"}:
-                    result = filter_memory(db, conv)
-                    payload = handle_data_filter_result(db, conv, result)
+                        payload["confirm_rejected"] = False
+                    _write_payload(conv, payload)
 
-                    if result.conflicts:
-                        c = result.conflicts[0]
-                        response_type = "ASK_QUESTION"
-                        reply = t(lang, "conflict_year", user=c.get("user_value"), document=c.get("document_value"))
-                    elif result.readiness == "INVALID_DATA":
-                        err = (result.validation_errors or [{}])[0]
-                        response_type = "ASK_QUESTION"
-                        code = err.get("code") or ""
-                        if code == "FUTURE_YEAR":
-                            reply = t(lang, "year")
-                        else:
-                            reply = build_next_question(payload, lang) or t(lang, "unclear")
-                    elif is_collection_ready(payload):
-                        photo_required = any(
-                            (m["field"] if isinstance(m, dict) else m) == "photos"
-                            for m in (result.missing_fields or [])
-                        )
-                        if photo_required and not _photos_satisfied(payload):
+                if bare_reject:
+                    response_type = "ASK_QUESTION"
+                    reply = t(lang, "confirm_what_change")
+                else:
+                    # Collect from this turn
+                    collect_message(db, conv, msg)
+                    if media_note:
+                        payload = _payload(conv)
+                        _maybe_attach_media(payload, media_note)
+                        _mark_photos_complete(payload)
+                        _write_payload(conv, payload)
+
+                    payload = _payload(conv)
+                    if payload.get("confirm_rejected") and (
+                        confirmation_has_modification(msg) or media_note or re.search(r"\d", msg or "")
+                    ):
+                        payload["confirm_rejected"] = False
+                        _write_payload(conv, payload)
+                    if not payload.get("intent") and intent in {"SELL", "BUY"}:
+                        payload["intent"] = intent
+                        _write_payload(conv, payload)
+
+                    # Soft: jump straight to one next question after collect when filter clean
+                    if soft and (payload.get("intent") or "").upper() in {"BUY", "SELL"}:
+                        result = filter_memory(db, conv)
+                        payload = handle_data_filter_result(db, conv, result)
+                        if result.conflicts:
+                            c = result.conflicts[0]
                             response_type = "ASK_QUESTION"
-                            n = _photo_count(payload)
-                            reply = t(lang, "photo_need_min", count=n) if n else t(lang, "photos")
-                        elif result.readiness in {"READY_FOR_CONFIRMATION", "DUPLICATE_WARNING"} or not photo_required:
+                            reply = t(lang, "conflict_year", user=c.get("user_value"), document=c.get("document_value"))
+                        elif result.readiness == "INVALID_DATA":
+                            response_type = "ASK_QUESTION"
+                            reply = build_next_question(payload, lang) or t(lang, "unclear")
+                        elif (
+                            (result.readiness == "READY_FOR_USER_CONFIRMATION" or is_collection_ready(payload))
+                            and not payload.get("confirm_rejected")
+                        ):
                             response_type = "CONFIRMATION_REQUEST"
                             reply = build_confirmation_summary(db, conv, lang, filter_result=result)
                         else:
                             response_type = "ASK_QUESTION"
-                            reply = build_next_question(payload, lang) or t(lang, "photos")
+                            reply = build_next_question(payload, lang) or t(lang, "unclear")
+                    # Coordinate with Data Filter when we have something to validate
+                    elif (payload.get("intent") or "").upper() in {"BUY", "SELL"}:
+                        result = filter_memory(db, conv)
+                        payload = handle_data_filter_result(db, conv, result)
+
+                        if result.conflicts:
+                            c = result.conflicts[0]
+                            response_type = "ASK_QUESTION"
+                            reply = t(lang, "conflict_year", user=c.get("user_value"), document=c.get("document_value"))
+                        elif result.readiness == "INVALID_DATA":
+                            err = (result.validation_errors or [{}])[0]
+                            response_type = "ASK_QUESTION"
+                            code = err.get("code") or ""
+                            if code == "FUTURE_YEAR":
+                                reply = t(lang, "year")
+                            else:
+                                reply = build_next_question(payload, lang) or t(lang, "unclear")
+                        elif is_collection_ready(payload) and not payload.get("confirm_rejected"):
+                            photo_required = any(
+                                (m["field"] if isinstance(m, dict) else m) == "photos"
+                                for m in (result.missing_fields or [])
+                            )
+                            if photo_required and not _photos_satisfied(payload):
+                                response_type = "ASK_QUESTION"
+                                n = _photo_count(payload)
+                                reply = t(lang, "photo_need_min", count=n) if n else t(lang, "photos")
+                            elif result.readiness in {"READY_FOR_CONFIRMATION", "DUPLICATE_WARNING"} or not photo_required:
+                                response_type = "CONFIRMATION_REQUEST"
+                                reply = build_confirmation_summary(db, conv, lang, filter_result=result)
+                            else:
+                                response_type = "ASK_QUESTION"
+                                reply = build_next_question(payload, lang) or t(lang, "photos")
+                        elif payload.get("confirm_rejected"):
+                            response_type = "ASK_QUESTION"
+                            reply = t(lang, "confirm_what_change")
+                        else:
+                            response_type = "ASK_QUESTION"
+                            reply = build_next_question(payload, lang)
+                            if not reply:
+                                if (payload.get("intent") or "").upper() == "SELL" and not _photos_satisfied(payload) and is_collection_ready(payload):
+                                    reply = t(lang, "photos")
+                                else:
+                                    reply = t(lang, "unclear")
                     else:
                         response_type = "ASK_QUESTION"
-                        reply = build_next_question(payload, lang)
-                        if not reply:
-                            if (payload.get("intent") or "").upper() == "SELL" and not _photos_satisfied(payload) and is_collection_ready(payload):
-                                reply = t(lang, "photos")
-                            else:
-                                reply = t(lang, "unclear")
-                else:
-                    response_type = "ASK_QUESTION"
-                    reply = t(lang, "intent")
+                        reply = t(lang, "intent")
 
         else:
             response_type = "ASK_QUESTION"
