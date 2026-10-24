@@ -331,6 +331,33 @@ def test_reconcile_excavator_overrides_tractor_swaraj():
     assert "215" in fields["model"]
 
 
+def test_reconcile_tractor_overrides_false_excavator():
+    """Powertrac wheeled tractor must not stay Excavator when details say tractor."""
+    raw = {
+        "category": "Excavator",
+        "brand": "Powertrac",
+        "model": "Euro 455",
+        "colour": "blue",
+        "body_type": "Hydraulic excavator with bucket",
+        "condition": "good paint, mud on tyres",
+        "details": [
+            "Blue tractor body",
+            "POWERTRAC branding on front grille and side",
+            "EURO badge on front",
+            "Model number 455 visible on side panel",
+            "Blue canopy roof installed",
+        ],
+    }
+    fixed = vision.reconcile_vision_identity(raw)
+    assert fixed["category"] == "Tractor"
+    assert fixed["brand"] == "Powertrac"
+    assert "455" in (fixed.get("model") or "")
+    assert "excavator" not in (fixed.get("body_type") or "").lower()
+    fields = vision.listing_fields(raw)
+    assert fields["category"] == "Tractor"
+    assert fields["brand"] == "Powertrac"
+
+
 def test_agri_misread_overwritten_by_later_excavator_photo(db, tmp_path, monkeypatch):
     """First photo locks Swaraj tractor; a later excavator read must correct the card."""
     wrong = {

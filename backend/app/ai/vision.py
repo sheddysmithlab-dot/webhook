@@ -266,11 +266,14 @@ _VEHICLE_PROMPT = (
     "garlands) does not show the vehicle type: leave category, brand and model out. "
     "If no maker logo or badge is readable, leave brand and model out instead of guessing from the "
     "body shape. "
-    "CRITICAL — crawler / steel tracks + boom / arm / bucket / breaker = Excavator (or Poclain), "
-    "NEVER Tractor. Tractor brands (Swaraj, Powertrac, Massey, Farmtrac, Sonalika agri) must NOT be "
-    "used for tracked excavators. Robex / R215 / 215L / SMART cab on a tracked machine = Hyundai "
-    "Excavator. Red H on yellow CE body often Hyundai or Hitachi — prefer the badge text you can read "
-    "(HYUNDAI / HITACHI / Robex). Copy model badges exactly (e.g. Robex 215L, EX200).\n"
+    "CRITICAL — match category to what is actually in the photo; category, brand, model and body_type "
+    "must agree with each other and with details. "
+    "Wheeled farm machine with large rear tyres / front grille badge (POWERTRAC, Swaraj, Massey, "
+    "Farmtrac, Sonalika, EURO series) = category Tractor — NEVER Excavator; body_type must not say "
+    "excavator/bucket arm. "
+    "Crawler / steel tracks + boom / arm / bucket / breaker = Excavator (or Poclain), NEVER Tractor. "
+    "Copy badge text exactly for brand and model (e.g. POWERTRAC EURO 455, Robex 215L). "
+    "If unsure, omit category/brand/model rather than guessing.\n"
     "Reply with ONLY one JSON object, omitting keys you cannot read: "
     '"image_type" (vehicle_photo, rc_document, app_screenshot, insurance, other), '
     '"category" (one of Truck, Dumper, Tipper, Crane, Poclain, Loader, Backhoe Loader, JCB, '
@@ -358,34 +361,34 @@ def parse_read(raw: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-# Agri tractor makers — never keep these when the photo is clearly a tracked excavator.
+# Agri tractor makers — used only to detect contradictions, never to invent listing fields.
 _AGRI_BRANDS = frozenset({
     "swaraj", "powertrac", "power trac", "massey", "massey ferguson", "farmtrac", "sonalika",
     "mahindra tractor", "escorts agri", "john deere", "new holland",
 })
+# Cue from what the model SAW in details — not from its often-wrong category/body fields
+# (avoids circular "body says excavator → force excavator" loops).
+_EXCAVATOR_DETAIL = re.compile(
+    r"\b(?:excavator|poclain|crawler\s*tracks?|steel\s*tracks?|tracked\s+undercarriage|"
+    r"undercarriage\s+with\s+(?:crawler|steel|tracks)|hydraulic\s+(?:excavator|breaker)|"
+    r"bucket\s*teeth|boom\s*(?:arm|and)|robex|r[\s\-]?215|215\s*l\b)\b",
+    re.I,
+)
+_TRACTOR_DETAIL = re.compile(
+    r"\b(?:\w+\s+)?tractor\b|\bfarm\s*tractor\b|\bpowertrac\b|\bswaraj\b|\bfarmtrac\b|"
+    r"\bmassey(?:\s*ferguson)?\b|\bsonalika\b|\bagricultural\b|\bcanopy\s*roof\b|"
+    r"\bfront\s*grille\b|\bthree[\s\-]?point\b|\beuro\s*(?:badge|50|455|60)?\b",
+    re.I,
+)
+# Broader cues (category/body) — only when details are silent.
 _EXCAVATOR_CUE = re.compile(
-    r"\b(?:excavator|poclain|crawler\s*track|steel\s*track|track(?:s|ed)?\b|undercarriage|"
+    r"\b(?:excavator|poclain|crawler\s*tracks?|steel\s*tracks?|tracked\s+undercarriage|"
     r"hydraulic\s+(?:excavator|breaker|arm|boom)|bucket\s*teeth|boom\s*arm|"
-    r"robex|r[\s\-]?215|215\s*l\b|ex[\s\-]?\d{2,3}|zx[\s\-]?\d{2,3}|pc[\s\-]?\d{2,3})\b",
+    r"robex|r[\s\-]?215|215\s*l\b)\b",
     re.I,
 )
 _TRACTOR_CUE = re.compile(
-    r"\b(?:tractor|powertrac|swaraj|farmtrac|massey|rear\s*tyres?\s*for\s*farm|agricultural)\b",
-    re.I,
-)
-_CE_BRAND_FROM_TEXT = (
-    (re.compile(r"\b(?:hyundai|robex)\b", re.I), "Hyundai"),
-    (re.compile(r"\b(?:tata\s*)?hitachi\b|\bex\s*\d{2,3}\b", re.I), "Tata Hitachi"),
-    (re.compile(r"\bkobelco\b", re.I), "Kobelco"),
-    (re.compile(r"\bsany\b", re.I), "SANY"),
-    (re.compile(r"\bkomatsu\b|\bpc\s*\d{2,3}\b", re.I), "Komatsu"),
-    (re.compile(r"\bcaterpillar\b|\bcat\s*\d{2,3}\b", re.I), "Caterpillar"),
-    (re.compile(r"\bvolvo\b", re.I), "Volvo"),
-    (re.compile(r"\bjcb\b", re.I), "JCB"),
-    (re.compile(r"\bl\s*&\s*t\b|\blarsen\b", re.I), "L&T"),
-)
-_CE_MODEL_FROM_TEXT = re.compile(
-    r"\b(?:robex\s*)?(\d{2,3}\s*L(?:C)?)\b|\b((?:EX|ZX|PC|R|JS)\s*\d{2,3}[A-Z]*)\b",
+    r"\b(?:tractor|powertrac|swaraj|farmtrac|massey|agricultural)\b",
     re.I,
 )
 
@@ -400,50 +403,93 @@ def _vision_blob(data: dict) -> str:
     return " ".join(b for b in bits if b)
 
 
+def _details_only_blob(data: dict) -> str:
+    """What the vision model reported seeing — preferred over structured category/body."""
+    bits = [_clean(data.get("condition"))]
+    for d in data.get("details") or []:
+        bits.append(_clean(d))
+    return " ".join(b for b in bits if b)
+
+
 def reconcile_vision_identity(data: dict) -> dict:
-    """Fix contradictory vision JSON: excavator details must not keep Tractor/Swaraj/Powertrac."""
+    """Resolve category/body contradictions using the AI's own photo details.
+
+    Does NOT invent brand/model/body text. Only aligns structured fields with what
+    the model already wrote under details (e.g. 'Blue tractor' vs category Excavator).
+    """
     if not isinstance(data, dict) or not data:
         return data
     out = dict(data)
-    blob = _vision_blob(out)
-    if not blob:
+    seen = _details_only_blob(out)
+    if not seen:
         return out
-    excavatorish = bool(_EXCAVATOR_CUE.search(blob))
-    tractorish = bool(_TRACTOR_CUE.search(blob))
+    exc_seen = bool(_EXCAVATOR_DETAIL.search(seen))
+    trac_seen = bool(_TRACTOR_DETAIL.search(seen))
     brand_l = _clean(out.get("brand")).lower()
     cat_l = _clean(out.get("category")).lower()
-    agri_brand = any(a in brand_l for a in _AGRI_BRANDS) or brand_l in _AGRI_BRANDS
+    agri_brand = _is_agri_brand(brand_l) if brand_l else False
+    body = _clean(out.get("body_type"))
 
-    if excavatorish and (cat_l in {"tractor", "other", ""} or agri_brand or (tractorish and excavatorish)):
-        # Structured fields lied; details / body show a tracked excavator.
-        out["category"] = "Excavator"
-        if agri_brand or not _clean(out.get("brand")):
-            for rx, name in _CE_BRAND_FROM_TEXT:
-                if rx.search(blob):
+    # Details clearly show a tractor (Powertrac / "blue tractor body") — drop Excavator label.
+    if trac_seen and not exc_seen:
+        if cat_l in {"excavator", "poclain", "other", ""} or (cat_l == "tractor" and _EXCAVATOR_CUE.search(body)):
+            out["category"] = "Tractor"
+        if body and _EXCAVATOR_CUE.search(body):
+            out.pop("body_type", None)
+        return out
+
+    # Details clearly show a tracked excavator — drop Tractor / agri-only category.
+    if exc_seen and not trac_seen:
+        if cat_l in {"tractor", "other", ""} or agri_brand:
+            out["category"] = "Excavator"
+        if body and _TRACTOR_CUE.search(body):
+            out.pop("body_type", None)
+        # Agri brand on a clear excavator photo is almost always a misread — clear it
+        # only when details name a different CE maker (never invent a brand).
+        if agri_brand:
+            for rx, name in (
+                (re.compile(r"\b(?:hyundai|robex)\b", re.I), "Hyundai"),
+                (re.compile(r"\b(?:tata\s*)?hitachi\b", re.I), "Tata Hitachi"),
+                (re.compile(r"\bkobelco\b", re.I), "Kobelco"),
+                (re.compile(r"\bsany\b", re.I), "SANY"),
+                (re.compile(r"\bkomatsu\b", re.I), "Komatsu"),
+                (re.compile(r"\bcaterpillar\b", re.I), "Caterpillar"),
+                (re.compile(r"\bvolvo\b", re.I), "Volvo"),
+                (re.compile(r"\bjcb\b", re.I), "JCB"),
+            ):
+                if rx.search(seen):
                     out["brand"] = name
                     break
             else:
-                if agri_brand:
-                    out.pop("brand", None)
-        model = _clean(out.get("model"))
-        model_l = model.lower()
-        if agri_brand or "powertrac" in model_l or "swaraj" in model_l or not model:
-            m = _CE_MODEL_FROM_TEXT.search(blob)
-            if m:
-                token = (m.group(1) or m.group(2) or "").replace(" ", "")
-                if token:
-                    # Prefer "Robex 215L" when Robex is visible.
-                    if re.search(r"\brobex\b", blob, re.I) and re.match(r"\d", token):
+                out.pop("brand", None)
+            model_l = _clean(out.get("model")).lower()
+            if "powertrac" in model_l or "swaraj" in model_l or _is_agri_brand(model_l):
+                # Keep a model token the details already named (e.g. Robex 215L / 215L).
+                m = re.search(
+                    r"\b(?:robex\s*)?(\d{2,3}\s*L(?:C)?)\b|\b((?:EX|ZX|PC|R|JS)\s*\d{2,3}[A-Z]*)\b",
+                    seen,
+                    re.I,
+                )
+                if m:
+                    token = (m.group(1) or m.group(2) or "").replace(" ", "")
+                    if token and re.search(r"\brobex\b", seen, re.I) and re.match(r"\d", token):
                         out["model"] = f"Robex {token}"[:40]
-                    else:
+                    elif token:
                         out["model"] = token[:40]
-            elif agri_brand:
-                out.pop("model", None)
-        elif re.search(r"\brobex\b", blob, re.I) and re.match(r"^\d", model) and "robex" not in model_l:
-            out["model"] = f"Robex {model}"[:40]
-        body = _clean(out.get("body_type"))
-        if not body or _TRACTOR_CUE.search(body):
-            out["body_type"] = "Hydraulic excavator with bucket"
+                else:
+                    out.pop("model", None)
+        return out
+
+    # Both tractor + excavator words in details: trust agri brand / "tractor" wording.
+    if trac_seen and exc_seen:
+        if agri_brand or re.search(r"\btractor\b", seen, re.I):
+            out["category"] = "Tractor"
+            if body and _EXCAVATOR_CUE.search(body):
+                out.pop("body_type", None)
+        else:
+            out["category"] = "Excavator"
+            if body and _TRACTOR_CUE.search(body):
+                out.pop("body_type", None)
     return out
 
 
@@ -828,9 +874,11 @@ def _main_brand(reads: list[dict], prefer=None) -> str:
         n, rich = score.get(b, (0, 0))
         score[b] = (n + 1, max(rich, sum(1 for k, v in data.items() if k != "details" and _clean(v))))
     want = _clean(prefer).lower()
-    # Don't lock onto a wrong agri brand when the burst clearly shows a tracked excavator.
-    all_blob = " ".join(_vision_blob(d) for d in reads if d)
-    if want and _is_agri_brand(want) and _EXCAVATOR_CUE.search(all_blob):
+    # Don't lock onto a wrong brand when photo details clearly show the other machine type.
+    all_seen = " ".join(_details_only_blob(d) for d in reads if d)
+    if want and _is_agri_brand(want) and _EXCAVATOR_DETAIL.search(all_seen) and not _TRACTOR_DETAIL.search(all_seen):
+        want = ""
+    if want and not _is_agri_brand(want) and _TRACTOR_DETAIL.search(all_seen) and not _EXCAVATOR_DETAIL.search(all_seen):
         want = ""
     if want in score:
         return want
@@ -854,19 +902,31 @@ def vision_cap_left(db: Session, conv: AiConversation) -> bool:
     return _reads_left(db, conv, conv.draft_id) > 0
 
 
-def _agri_vs_excavator_fix(payload: dict, found: dict) -> dict:
-    """Overwrite vision-locked Tractor/Swaraj when a later photo clearly reads as excavator CE."""
+def _identity_contradiction_fix(payload: dict, found: dict) -> dict:
+    """Overwrite a locked wrong category when a later photo read clearly disagrees.
+
+    agri tractor locked → excavator photo, or excavator locked → tractor photo.
+    Only copies fields the AI already returned — does not invent values.
+    """
     cur_cat = _clean(payload.get("category")).lower()
     cur_brand = _clean(payload.get("brand")).lower()
-    agri = cur_cat == "tractor" or _is_agri_brand(cur_brand)
     new_cat = _clean(found.get("category")).lower()
-    if not agri or new_cat not in {"excavator", "poclain"}:
-        return {}
-    out = {k: found[k] for k in ("category", "brand", "model") if found.get(k)}
-    old_model = _clean(payload.get("model")).lower()
-    if "model" not in out and (old_model and (_is_agri_brand(old_model) or "powertrac" in old_model or "swaraj" in old_model)):
-        out["model"] = ""
-    return out
+    agri = cur_cat == "tractor" or _is_agri_brand(cur_brand)
+    cur_exc = cur_cat in {"excavator", "poclain"}
+    new_exc = new_cat in {"excavator", "poclain"}
+    new_trac = new_cat == "tractor" or _is_agri_brand(found.get("brand") or "")
+    if agri and new_exc:
+        out = {k: found[k] for k in ("category", "brand", "model") if found.get(k)}
+        old_model = _clean(payload.get("model")).lower()
+        if "model" not in out and (old_model and (_is_agri_brand(old_model) or "powertrac" in old_model or "swaraj" in old_model)):
+            out["model"] = ""
+        return out
+    if cur_exc and new_trac:
+        out = {k: found[k] for k in ("category", "brand", "model") if found.get(k)}
+        if "category" not in out:
+            out["category"] = "Tractor"
+        return out
+    return {}
 
 
 def _apply_read(conv: AiConversation, media_row: AiMedia, data: dict) -> dict:
@@ -877,18 +937,34 @@ def _apply_read(conv: AiConversation, media_row: AiMedia, data: dict) -> dict:
     # Seller-typed year always beats a later photo OCR guess (HMR / plate year bleed).
     if payload.get("year_typed"):
         missing = [k for k in missing if k != "year"]
+    # Reconcile from the AI JSON itself before fill — never invent fields.
+    data = reconcile_vision_identity(data if isinstance(data, dict) else {})
     found = listing_fields(data)
     facts = document_facts(data)
     filled = {k: v for k, v in found.items() if k in missing}
-    # First photo wrongly locked agri tractor — later excavator read must correct the card.
-    identity_fix = _agri_vs_excavator_fix(payload, found)
+    # First photo locked the wrong machine type — later read must correct the card.
+    identity_fix = _identity_contradiction_fix(payload, found)
     filled.update(identity_fix)
-    if filled or facts:
+    # Reconcile may have dropped a contradictory body_type — mirror that on the card.
+    body_after = _clean(data.get("body_type")) if "body_type" in data else ""
+    clear_body = bool(_clean(payload.get("body_type"))) and not body_after and (
+        _EXCAVATOR_CUE.search(_clean(payload.get("body_type"))) or _TRACTOR_CUE.search(_clean(payload.get("body_type")))
+    )
+    if filled or facts or clear_body:
         payload = _payload(conv)
         for k, v in filled.items():
             # Identity keys may overwrite a prior vision misread; other keys stay fill-if-empty.
             if k in identity_fix or payload.get(k) in (None, "", [], {}):
                 payload[k] = v
+        # Drop a body_type that contradicts the reconciled category (do not invent a replacement).
+        body = _clean(payload.get("body_type"))
+        cat_l = _clean(payload.get("category") or found.get("category")).lower()
+        if body and (
+            (cat_l == "tractor" and _EXCAVATOR_CUE.search(body))
+            or (cat_l in {"excavator", "poclain"} and _TRACTOR_CUE.search(body))
+            or clear_body
+        ):
+            payload["body_type"] = ""
         if filled:
             guessed = payload.get("vision_filled") if isinstance(payload.get("vision_filled"), dict) else {}
             if guessed.get("draft") != conv.draft_id:
@@ -1147,12 +1223,18 @@ def image_report(
     # What the seller typed beats a guess from the photo (vision mixes up look-alike bodies / tyre counts).
     typed = _payload(conv)
     details = _drop_misread_brand(details, merged, typed.get("brand"))
-    photo_exc = _clean(fields.get("category")).lower() in {"excavator", "poclain"}
-    agri_card = _clean(typed.get("category")).lower() == "tractor" or _is_agri_brand(typed.get("brand") or "")
+    photo_cat = _clean(fields.get("category")).lower()
+    photo_exc = photo_cat in {"excavator", "poclain"}
+    photo_trac = photo_cat == "tractor" or _is_agri_brand(fields.get("brand") or "")
+    card_cat = _clean(typed.get("category")).lower()
+    agri_card = card_cat == "tractor" or _is_agri_brand(typed.get("brand") or "")
+    exc_card = card_cat in {"excavator", "poclain"}
     for k in ("category", "brand", "model", "year", "fuel"):
         if typed.get(k) not in (None, "", [], {}):
-            # Stuck agri misread on the card must not override a reconciled excavator photo read.
-            if k in ("category", "brand", "model") and agri_card and photo_exc:
+            # Stuck wrong machine type on the card must not override a reconciled photo read.
+            if k in ("category", "brand", "model") and (
+                (agri_card and photo_exc) or (exc_card and photo_trac)
+            ):
                 continue
             fields[k] = typed[k]
     for k in VISUAL_KEYS:
@@ -1241,11 +1323,17 @@ def card_details(
     details = _drop_misread_brand(details, merged, payload.get("brand"))
     seen = listing_fields(merged)
     docs = payload.get("vehicle_docs") if isinstance(payload.get("vehicle_docs"), dict) else {}
-    photo_exc = _clean(seen.get("category")).lower() in {"excavator", "poclain"}
-    agri_card = _clean(payload.get("category")).lower() == "tractor" or _is_agri_brand(payload.get("brand") or "")
+    photo_cat = _clean(seen.get("category")).lower()
+    photo_exc = photo_cat in {"excavator", "poclain"}
+    photo_trac = photo_cat == "tractor" or _is_agri_brand(seen.get("brand") or "")
+    card_cat = _clean(payload.get("category")).lower()
+    agri_card = card_cat == "tractor" or _is_agri_brand(payload.get("brand") or "")
+    exc_card = card_cat in {"excavator", "poclain"}
 
     def pick(key):
-        if key in ("category", "brand", "model") and agri_card and photo_exc and seen.get(key):
+        if key in ("category", "brand", "model") and seen.get(key) and (
+            (agri_card and photo_exc) or (exc_card and photo_trac)
+        ):
             return seen.get(key)
         v = payload.get(key)
         return v if v not in (None, "", [], {}) else seen.get(key)
