@@ -267,12 +267,16 @@ _VEHICLE_PROMPT = (
     "If no maker logo or badge is readable, leave brand and model out instead of guessing from the "
     "body shape. "
     "CRITICAL — match category to what is actually in the photo; category, brand, model and body_type "
-    "must agree with each other and with details. "
+    "must agree with each other and with details. Never invent a maker badge you cannot read. "
     "Wheeled farm machine with large rear tyres / front grille badge (POWERTRAC, Swaraj, Massey, "
     "Farmtrac, Sonalika, EURO series) = category Tractor — NEVER Excavator; body_type must not say "
     "excavator/bucket arm. "
-    "Crawler / steel tracks + boom / arm / bucket / breaker = Excavator (or Poclain), NEVER Tractor. "
-    "Copy badge text exactly for brand and model (e.g. POWERTRAC EURO 455, Robex 215L). "
+    "Road tipper / truck / trailer with rubber tyres, truck cab, tipper or container cargo body = "
+    "Tipper or Truck — NEVER Excavator / JCB / Robex / JS / JSW excavator models. "
+    "Crawler / steel tracks + boom / arm / bucket / breaker = Excavator (or Poclain), NEVER Tractor "
+    "or Tipper. "
+    "Copy badge text exactly for brand and model when readable (e.g. POWERTRAC EURO 455, Tata Signa, "
+    "Robex 215L). If the maker logo is not readable, OMIT brand and model — do not guess JCB/Tata. "
     "If unsure, omit category/brand/model rather than guessing.\n"
     "Reply with ONLY one JSON object, omitting keys you cannot read: "
     '"image_type" (vehicle_photo, rc_document, app_screenshot, insurance, other), '
@@ -380,6 +384,25 @@ _TRACTOR_DETAIL = re.compile(
     r"\bfront\s*grille\b|\bthree[\s\-]?point\b|\beuro\s*(?:badge|50|455|60)?\b",
     re.I,
 )
+# Road tipper / truck / trailer cues from details (rubber tyres + cargo body — not CE tracks).
+_TRUCK_TIPPER_DETAIL = re.compile(
+    r"\b(?:tipper\s*body|tipper\b|dumper\s*body|\btruck\b|day\s*cab|sleeper\s*cab|"
+    r"dual\s*wheels?|multi[\s\-]?axle|container\s*(?:body|trailer|doors)|"
+    r"trailer\s*(?:body|configuration)|mudflaps?|number\s*plate|license\s*plate|"
+    r"hydraulic\s*ram|open\s*body|cargo\s*body|reflective\s*(?:tape|markings)|"
+    r"three[\s\-]?axle|rear\s*tipper)\b",
+    re.I,
+)
+# CE excavator brands/models often hallucinated onto tipper photos — clear unless seen in details.
+_CE_BRANDS = frozenset({
+    "jcb", "hyundai", "komatsu", "kobelco", "sany", "caterpillar", "cat",
+    "tata hitachi", "hitachi", "volvo", "doosan", "liebherr",
+})
+_CE_EXCAVATOR_MODEL = re.compile(
+    r"\b(?:jsw\s*\d+|js\s*\d+|3dx|4dx|ex[\s\-]?\d+|zx[\s\-]?\d+|pc[\s\-]?\d+|"
+    r"robex|sy[\s\-]?\d+|r[\s\-]?\d{2,3}\s*l(?:c)?)\b",
+    re.I,
+)
 # Broader cues (category/body) — only when details are silent.
 _EXCAVATOR_CUE = re.compile(
     r"\b(?:excavator|poclain|crawler\s*tracks?|steel\s*tracks?|tracked\s+undercarriage|"
@@ -411,11 +434,32 @@ def _details_only_blob(data: dict) -> str:
     return " ".join(b for b in bits if b)
 
 
+def _brand_mentioned_in_seen(brand: str, seen: str) -> bool:
+    b = _clean(brand).lower()
+    if not b or not seen:
+        return False
+    # Require the maker word itself in details (not inventing from body shape).
+    token = b.split()[0]
+    return bool(re.search(rf"\b{re.escape(token)}\b", seen, re.I))
+
+
+def _clear_hallucinated_ce(out: dict, seen: str) -> None:
+    """Drop CE excavator brand/model when photo details never named them."""
+    brand_l = _clean(out.get("brand")).lower()
+    model = _clean(out.get("model"))
+    if brand_l in _CE_BRANDS or any(brand_l == c or c in brand_l for c in _CE_BRANDS):
+        if not _brand_mentioned_in_seen(out.get("brand") or "", seen):
+            out.pop("brand", None)
+    if model and _CE_EXCAVATOR_MODEL.search(model) and not _CE_EXCAVATOR_MODEL.search(seen):
+        out.pop("model", None)
+
+
 def reconcile_vision_identity(data: dict) -> dict:
     """Resolve category/body contradictions using the AI's own photo details.
 
     Does NOT invent brand/model/body text. Only aligns structured fields with what
-    the model already wrote under details (e.g. 'Blue tractor' vs category Excavator).
+    the model already wrote under details (e.g. 'Blue tractor' vs category Excavator,
+    or tipper body vs JCB excavator fields).
     """
     if not isinstance(data, dict) or not data:
         return data
@@ -425,10 +469,34 @@ def reconcile_vision_identity(data: dict) -> dict:
         return out
     exc_seen = bool(_EXCAVATOR_DETAIL.search(seen))
     trac_seen = bool(_TRACTOR_DETAIL.search(seen))
+    truck_seen = bool(_TRUCK_TIPPER_DETAIL.search(seen))
     brand_l = _clean(out.get("brand")).lower()
     cat_l = _clean(out.get("category")).lower()
+    model_l = _clean(out.get("model")).lower()
     agri_brand = _is_agri_brand(brand_l) if brand_l else False
+    ce_brand = brand_l in _CE_BRANDS or any(c in brand_l for c in _CE_BRANDS if len(c) > 2)
     body = _clean(out.get("body_type"))
+    vclass = _clean(out.get("vehicle_class")).lower()
+
+    # Details clearly show a road tipper/truck — drop Excavator / hallucinated JCB excavator.
+    if truck_seen and not exc_seen:
+        if cat_l in {"excavator", "poclain", "jcb", "other", ""} or (
+            cat_l in {"excavator", "poclain"} and truck_seen
+        ):
+            if re.search(r"\btipper\b", seen, re.I) or re.search(r"\btipper\b", body, re.I):
+                out["category"] = "Tipper"
+            elif re.search(r"\btrailer\b", seen, re.I) or "trailer" in vclass:
+                out["category"] = "Trailer"
+            else:
+                out["category"] = "Truck"
+        if body and _EXCAVATOR_CUE.search(body):
+            out.pop("body_type", None)
+        elif body and re.search(r"\btipper\b", seen, re.I) and "container" in body.lower():
+            # Prefer tipper wording already in details over a conflicting "container" label.
+            out["body_type"] = "tipper body"
+        _clear_hallucinated_ce(out, seen)
+        # vehicle_class Truck + excavator category already fixed above
+        return out
 
     # Details clearly show a tractor (Powertrac / "blue tractor body") — drop Excavator label.
     if trac_seen and not exc_seen:
@@ -436,13 +504,14 @@ def reconcile_vision_identity(data: dict) -> dict:
             out["category"] = "Tractor"
         if body and _EXCAVATOR_CUE.search(body):
             out.pop("body_type", None)
+        _clear_hallucinated_ce(out, seen)
         return out
 
-    # Details clearly show a tracked excavator — drop Tractor / agri-only category.
-    if exc_seen and not trac_seen:
-        if cat_l in {"tractor", "other", ""} or agri_brand:
+    # Details clearly show a tracked excavator — drop Tractor / agri-only / tipper category.
+    if exc_seen and not trac_seen and not truck_seen:
+        if cat_l in {"tractor", "tipper", "truck", "trailer", "other", ""} or agri_brand:
             out["category"] = "Excavator"
-        if body and _TRACTOR_CUE.search(body):
+        if body and (_TRACTOR_CUE.search(body) or re.search(r"\btipper\b", body, re.I)):
             out.pop("body_type", None)
         # Agri brand on a clear excavator photo is almost always a misread — clear it
         # only when details name a different CE maker (never invent a brand).
@@ -462,7 +531,6 @@ def reconcile_vision_identity(data: dict) -> dict:
                     break
             else:
                 out.pop("brand", None)
-            model_l = _clean(out.get("model")).lower()
             if "powertrac" in model_l or "swaraj" in model_l or _is_agri_brand(model_l):
                 # Keep a model token the details already named (e.g. Robex 215L / 215L).
                 m = re.search(
@@ -479,6 +547,20 @@ def reconcile_vision_identity(data: dict) -> dict:
                 else:
                     out.pop("model", None)
         return out
+
+    # Structured fields say excavator/JCB but details never did — clear the hallucination.
+    if (cat_l in {"excavator", "poclain", "jcb"} or ce_brand or _CE_EXCAVATOR_MODEL.search(model_l)) and not exc_seen:
+        if truck_seen or trac_seen or re.search(r"\b(?:truck|tipper|trailer)\b", vclass, re.I):
+            if truck_seen or re.search(r"\b(?:truck|tipper|trailer)\b", vclass, re.I):
+                out["category"] = "Tipper" if re.search(r"\btipper\b", seen + " " + body, re.I) else (
+                    "Trailer" if "trailer" in vclass or re.search(r"\btrailer\b", seen, re.I) else "Truck"
+                )
+            elif trac_seen:
+                out["category"] = "Tractor"
+            _clear_hallucinated_ce(out, seen)
+            if body and _EXCAVATOR_CUE.search(body):
+                out.pop("body_type", None)
+            return out
 
     # Both tractor + excavator words in details: trust agri brand / "tractor" wording.
     if trac_seen and exc_seen:
@@ -905,16 +987,17 @@ def vision_cap_left(db: Session, conv: AiConversation) -> bool:
 def _identity_contradiction_fix(payload: dict, found: dict) -> dict:
     """Overwrite a locked wrong category when a later photo read clearly disagrees.
 
-    agri tractor locked → excavator photo, or excavator locked → tractor photo.
-    Only copies fields the AI already returned — does not invent values.
+    Only copies / clears fields from the reconciled AI read — does not invent values.
     """
     cur_cat = _clean(payload.get("category")).lower()
     cur_brand = _clean(payload.get("brand")).lower()
     new_cat = _clean(found.get("category")).lower()
     agri = cur_cat == "tractor" or _is_agri_brand(cur_brand)
-    cur_exc = cur_cat in {"excavator", "poclain"}
+    cur_exc = cur_cat in {"excavator", "poclain", "jcb"}
+    cur_ce = cur_brand in _CE_BRANDS or any(c in cur_brand for c in _CE_BRANDS if len(c) > 2)
     new_exc = new_cat in {"excavator", "poclain"}
     new_trac = new_cat == "tractor" or _is_agri_brand(found.get("brand") or "")
+    new_truck = new_cat in {"tipper", "truck", "trailer", "dumper"}
     if agri and new_exc:
         out = {k: found[k] for k in ("category", "brand", "model") if found.get(k)}
         old_model = _clean(payload.get("model")).lower()
@@ -925,6 +1008,17 @@ def _identity_contradiction_fix(payload: dict, found: dict) -> dict:
         out = {k: found[k] for k in ("category", "brand", "model") if found.get(k)}
         if "category" not in out:
             out["category"] = "Tractor"
+        return out
+    # Locked JCB excavator / CE brand while photo read is tipper/truck.
+    if (cur_exc or cur_ce) and new_truck:
+        out = {k: found[k] for k in ("category", "brand", "model") if found.get(k)}
+        if "category" not in out and new_cat:
+            out["category"] = found["category"]
+        # Clear hallucinated CE brand/model when the new read omitted them.
+        if "brand" not in out and cur_ce:
+            out["brand"] = ""
+        if "model" not in out and _CE_EXCAVATOR_MODEL.search(_clean(payload.get("model"))):
+            out["model"] = ""
         return out
     return {}
 

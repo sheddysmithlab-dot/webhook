@@ -358,6 +358,34 @@ def test_reconcile_tractor_overrides_false_excavator():
     assert fields["brand"] == "Powertrac"
 
 
+def test_reconcile_tipper_clears_hallucinated_jcb_excavator():
+    """Blue tipper truck details must not keep JCB / JSW excavator structured fields."""
+    raw = {
+        "category": "Excavator",
+        "brand": "JCB",
+        "model": "JSW 210 W",
+        "colour": "blue",
+        "body_type": "container",
+        "vehicle_class": "Truck",
+        "condition": "used, some rust on chassis and body edges",
+        "details": [
+            "Blue tipper body with yellow stripe",
+            "Dual wheels on all axles",
+            "Rear mudflaps present",
+            "Container doors with locking bars",
+            "Day cab",
+            "Rear registration plate CG15 EG2018",
+        ],
+    }
+    fixed = vision.reconcile_vision_identity(raw)
+    assert fixed["category"] == "Tipper"
+    assert not fixed.get("brand") or fixed.get("brand") != "JCB"
+    assert "jsw" not in (fixed.get("model") or "").lower()
+    fields = vision.listing_fields(raw)
+    assert fields["category"] == "Tipper"
+    assert fields.get("brand") not in {"JCB", "jcb"}
+
+
 def test_agri_misread_overwritten_by_later_excavator_photo(db, tmp_path, monkeypatch):
     """First photo locks Swaraj tractor; a later excavator read must correct the card."""
     wrong = {
