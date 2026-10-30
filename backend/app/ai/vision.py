@@ -443,14 +443,23 @@ def _brand_mentioned_in_seen(brand: str, seen: str) -> bool:
     return bool(re.search(rf"\b{re.escape(token)}\b", seen, re.I))
 
 
-def _clear_hallucinated_ce(out: dict, seen: str) -> None:
-    """Drop CE excavator brand/model when photo details never named them."""
-    brand_l = _clean(out.get("brand")).lower()
+def _clear_ungrounded_identity(out: dict, seen: str, *, aggressive: bool = False) -> None:
+    """Drop brand/model the details never named — never invent maker badges.
+
+    aggressive=True on tipper/truck/tractor fixes: clear any brand not seen in details.
+    Otherwise only clear known CE excavator brands/models.
+    """
+    brand = _clean(out.get("brand"))
+    brand_l = brand.lower()
     model = _clean(out.get("model"))
-    if brand_l in _CE_BRANDS or any(brand_l == c or c in brand_l for c in _CE_BRANDS):
-        if not _brand_mentioned_in_seen(out.get("brand") or "", seen):
-            out.pop("brand", None)
-    if model and _CE_EXCAVATOR_MODEL.search(model) and not _CE_EXCAVATOR_MODEL.search(seen):
+    model_l = model.lower()
+    ce = brand_l in _CE_BRANDS or any(c in brand_l for c in _CE_BRANDS if len(c) > 2)
+    if brand and (aggressive or ce) and not _brand_mentioned_in_seen(brand, seen):
+        out.pop("brand", None)
+    # Category words wrongly stuffed into model (e.g. model="Truck").
+    if model_l in {"truck", "tipper", "trailer", "dumper", "excavator", "tractor", "jcb", "poclain"}:
+        out.pop("model", None)
+    elif model and _CE_EXCAVATOR_MODEL.search(model) and not _CE_EXCAVATOR_MODEL.search(seen):
         out.pop("model", None)
 
 
@@ -478,24 +487,25 @@ def reconcile_vision_identity(data: dict) -> dict:
     body = _clean(out.get("body_type"))
     vclass = _clean(out.get("vehicle_class")).lower()
 
-    # Details clearly show a road tipper/truck — drop Excavator / hallucinated JCB excavator.
+    # Details clearly show a road tipper/truck — drop Excavator / ungrounded maker guesses.
     if truck_seen and not exc_seen:
-        if cat_l in {"excavator", "poclain", "jcb", "other", ""} or (
-            cat_l in {"excavator", "poclain"} and truck_seen
-        ):
-            if re.search(r"\btipper\b", seen, re.I) or re.search(r"\btipper\b", body, re.I):
+        tipperish = bool(re.search(r"\btipper\b", seen, re.I) or re.search(r"\btipper\b", body, re.I))
+        trailerish = bool(re.search(r"\btrailer\b", seen, re.I) or "trailer" in vclass)
+        if cat_l in {"excavator", "poclain", "jcb", "other", "", "tractor"} or tipperish or trailerish:
+            if tipperish:
                 out["category"] = "Tipper"
-            elif re.search(r"\btrailer\b", seen, re.I) or "trailer" in vclass:
+            elif trailerish:
                 out["category"] = "Trailer"
-            else:
+            elif cat_l in {"excavator", "poclain", "jcb", "other", "", "tractor"}:
                 out["category"] = "Truck"
         if body and _EXCAVATOR_CUE.search(body):
             out.pop("body_type", None)
-        elif body and re.search(r"\btipper\b", seen, re.I) and "container" in body.lower():
+        elif tipperish and body and "container" in body.lower() and "tipper" not in body.lower():
             # Prefer tipper wording already in details over a conflicting "container" label.
             out["body_type"] = "tipper body"
-        _clear_hallucinated_ce(out, seen)
-        # vehicle_class Truck + excavator category already fixed above
+        elif tipperish and not body:
+            out["body_type"] = "tipper body"
+        _clear_ungrounded_identity(out, seen, aggressive=True)
         return out
 
     # Details clearly show a tractor (Powertrac / "blue tractor body") — drop Excavator label.
@@ -504,7 +514,8 @@ def reconcile_vision_identity(data: dict) -> dict:
             out["category"] = "Tractor"
         if body and _EXCAVATOR_CUE.search(body):
             out.pop("body_type", None)
-        _clear_hallucinated_ce(out, seen)
+        # Keep agri brand only if details named it (e.g. POWERTRAC in seen).
+        _clear_ungrounded_identity(out, seen, aggressive=True)
         return out
 
     # Details clearly show a tracked excavator — drop Tractor / agri-only / tipper category.
@@ -557,7 +568,7 @@ def reconcile_vision_identity(data: dict) -> dict:
                 )
             elif trac_seen:
                 out["category"] = "Tractor"
-            _clear_hallucinated_ce(out, seen)
+            _clear_ungrounded_identity(out, seen, aggressive=True)
             if body and _EXCAVATOR_CUE.search(body):
                 out.pop("body_type", None)
             return out
