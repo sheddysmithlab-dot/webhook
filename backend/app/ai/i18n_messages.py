@@ -456,6 +456,11 @@ MESSAGES = {
         "hi": "लिस्टिंग अभी लाइव नहीं हुई। एडमिन अप्रूव करते ही लिंक मिल जाएगी।",
         "en": "Listing is not live yet. Link will be available once admin approves.",
     },
+    "listing_already_live": {
+        "hinglish": "Listing pehle se live hai — link:\n{link}",
+        "hi": "लिस्टिंग पहले से लाइव है — लिंक:\n{link}",
+        "en": "Listing is already live — link:\n{link}",
+    },
     "approved": {
         "hinglish": "Aapki listing approve hokar live ho gayi hai.\n\n{link}",
         "hi": "आपकी लिस्टिंग अप्रूव होकर लाइव हो गई है।\n\n{link}",

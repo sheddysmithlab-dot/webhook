@@ -18,7 +18,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..models import AiConversation, AiEvent, User
-from .confirm import confirmation_has_modification, is_no, is_yes
+from .confirm import confirmation_has_modification, confirms_listing, is_no, is_soft_confirm, is_yes
 from .data_filteration import (
     extract_fields,
     filter_memory,
@@ -297,8 +297,8 @@ def detect_intent(text: str, payload: dict, media_note: str = "") -> str:
                 return "REJECT_CORRECTION"
         except Exception:
             pass
-        # "post kr do" / "haan post" while waiting = confirm submit (same as Haan)
-        if is_yes(msg) or _POST_NOW.search(msg):
+        # "post kr do" / "haan post" / "isme puri detail hai" while waiting = confirm submit
+        if confirms_listing(msg, awaiting=True) or _POST_NOW.search(msg):
             return "CONFIRM_LISTING"
         if is_no(msg):
             return "REJECT_CORRECTION"
@@ -742,7 +742,8 @@ def send_for_confirmation(db: Session, conv: AiConversation, lang: str = "hingli
 def interpret_confirmation(text: str, payload: dict) -> str:
     if confirmation_has_modification(text):
         return "MODIFY"
-    if is_yes(text) or _POST_NOW.search(text or ""):
+    awaiting = bool(payload.get("awaiting_confirm"))
+    if confirms_listing(text, awaiting=awaiting) or _POST_NOW.search(text or ""):
         return "CONFIRM"
     if is_no(text):
         return "REJECT"

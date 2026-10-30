@@ -99,6 +99,37 @@ def is_yes(text: str) -> bool:
     return bool(_YES.match(msg))
 
 
+# Soft confirms while a confirm card is open — not bare "ok" outside that context.
+_SOFT_CONFIRM = re.compile(
+    r"(?:isme|is\s*me|is\s*mein|इसमें|इस\s*मे)\s*(?:in\s*)?(?:puri|poori|पूर्ण|पूरी)\s*"
+    r"(?:detail|details|डिटेल|डिटेल्स)"
+    r"|(?:ye|yeh|ये)?\s*details?\s*(?:sahi|complete|puri|पूर्ण)\s*(?:hain?|hai|हैं|है)?"
+    r"|details?\s*(?:are\s*)?(?:complete|sahi|ok)"
+    r"|पूरी\s*डिटेल(?:स)?"
+    r"|sab\s*(?:detail|details)\s*(?:sahi|hai|hain|complete|aa\s*gayi|aa\s*gyi)",
+    re.I,
+)
+
+
+def is_soft_confirm(text: str) -> bool:
+    """True for 'isme puri detail hai' style replies — only use when awaiting_confirm."""
+    msg = (text or "").strip()
+    if not msg or len(msg) > 120:
+        return False
+    if re.search(r"\b(badlo|change|update|price|year|brand|model|nahi|नहीं)\b", msg, re.I):
+        return False
+    if re.search(r"\d{3,}", msg):  # prices / years / plates → likely a correction dump
+        return False
+    return bool(_SOFT_CONFIRM.search(msg))
+
+
+def confirms_listing(text: str, *, awaiting: bool = False) -> bool:
+    """Yes / post-now, plus soft 'details complete' only while a confirm card is open."""
+    if is_yes(text) or _POST_CONFIRM.search(text or ""):
+        return True
+    return bool(awaiting and is_soft_confirm(text))
+
+
 def is_no(text: str) -> bool:
     msg = (text or "").strip()
     if not msg:
@@ -296,7 +327,9 @@ def handle_confirmation(
         payload["customer_confirmed"] = False
         _write_payload(conv, payload)
         return None
-    if is_yes(text) or _POST_CONFIRM.search(text or ""):
+    payload = _payload(conv)
+    awaiting = bool(payload.get("awaiting_confirm") or conv.state == "AWAITING_CONFIRMATION")
+    if confirms_listing(text, awaiting=awaiting):
         result = submit_confirmed_listing(db, conv)
         if result.get("ok") is False:
             from .chat_memory import submit_failure_reply

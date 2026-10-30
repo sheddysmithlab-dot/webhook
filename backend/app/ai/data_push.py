@@ -1099,13 +1099,16 @@ def handle_post_listing_query(db: Session, conv: AiConversation, text: str, lang
     st = str(status.get("status") or "").upper()
 
     if re.search(r"\b(link|url)\b|listing\s*link", low):
+        # Extra Yes after submit — quieter copy (don't re-claim "just approved").
+        if link and st in {"LIVE", "POSTED", "APPROVED", "PUBLISHED"}:
+            return t(lang, "listing_already_live", link=link)
         return t(lang, "approved", link=link) if link else t(lang, "link_missing")
     # Count / "kitni listings" → account_info (human numbers), not DRAFT jargon
     if re.search(r"\b(kitni|kitti|kitne|kitna|how\s+many|available)\b", low):
         return None
     if re.search(r"(last|pichhli|previous).{0,20}(post|listing)|listing\s*status|meri\s+last\s+listing", low):
         if st == "LIVE" and link:
-            return t(lang, "approved", link=link)
+            return t(lang, "listing_already_live", link=link)
         if st in {"PENDING_REVIEW", "UNDER_REVIEW", "SUBMITTED", "ADMIN_ACKNOWLEDGED", "APPROVED", "READY_FOR_REVIEW"}:
             return t(lang, "not_live")
         if st in {"", "DRAFT", "NEW"}:
