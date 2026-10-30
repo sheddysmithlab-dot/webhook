@@ -18,7 +18,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..models import AiConversation, AiEvent, User
-from .confirm import confirmation_has_modification, confirms_listing, is_no, is_soft_confirm, is_yes
+from .confirm import confirmation_has_modification, confirms_listing, is_no, is_yes
 from .data_filteration import (
     extract_fields,
     filter_memory,
