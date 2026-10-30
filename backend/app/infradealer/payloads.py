@@ -404,6 +404,31 @@ def build_listing_payload(
     return body
 
 
+def build_listing_update_payload(
+    db,
+    conv: AiConversation,
+    draft: AiListingDraft | None,
+    payload: dict,
+    request_id: str,
+    infradealer_user_id: str = "",
+) -> dict[str, Any]:
+    """Same shape as push, but event=listing.update + listing_id for an already-live ad."""
+    body = build_listing_payload(db, conv, draft, payload, request_id, infradealer_user_id)
+    listing_id = str(
+        payload.get("infradealer_listing_id")
+        or payload.get("posted_product_id")
+        or ""
+    ).strip()
+    body["event"] = "listing.update"
+    body["listing_id"] = listing_id
+    listing = dict(body.get("listing") or {})
+    if listing_id:
+        listing["listing_id"] = listing_id
+        listing["id"] = listing_id
+    body["listing"] = listing
+    return body
+
+
 def build_account_check_payload(mobile: str, request_id: str) -> dict[str, Any]:
     return {
         "request_id": request_id,

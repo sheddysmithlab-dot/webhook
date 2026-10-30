@@ -301,6 +301,14 @@ class InfraDealerApiClient:
         body.setdefault("source", "whatsapp_ai")
         return self.request("listing.push", body, request_id=rid)
 
+    def update_listing(self, payload: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
+        rid = request_id or str(uuid.uuid4())
+        body = dict(payload)
+        body.setdefault("request_id", rid)
+        body.setdefault("event", "listing.update")
+        body.setdefault("source", "whatsapp_ai")
+        return self.request("listing.update", body, request_id=rid)
+
     def get_status(
         self,
         *,

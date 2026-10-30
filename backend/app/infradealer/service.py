@@ -34,14 +34,14 @@ from .events import (
     normalize_callback_event,
     should_retry,
 )
-from .payloads import build_listing_payload
+from .payloads import build_listing_payload, build_listing_update_payload
 
 log = logging.getLogger("infradealer.integration")
 
 _BUSINESS_OK = {
     "ACCOUNT_NOT_FOUND", "OTP_REQUIRED", "OTP_PENDING", "OTP_SENT", "PENDING_REVIEW", "ACCOUNT_REQUIRED",
     "ACCOUNT_EXISTS", "ACCOUNT_FOUND", "ACCOUNT_CREATED", "LISTING_POSTED",
-    "LISTING_PENDING_REVIEW", "LIVE", "POSTED", "PUBLISHED", "PASSWORD_UPDATED",
+    "LISTING_PENDING_REVIEW", "LISTING_UPDATED", "LIVE", "POSTED", "PUBLISHED", "PASSWORD_UPDATED",
 }
 
 _LISTING_PUSH_ACTIVE = {"PENDING", "RETRY", "DONE"}
@@ -51,6 +51,10 @@ _LISTING_PENDING_CODES = {"LISTING_PENDING_REVIEW", "PENDING_REVIEW", "PENDING"}
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def listing_update_request_id(draft_id: int, version: int) -> str:
+    return f"listing-update-{int(draft_id)}-v{max(1, int(version or 1))}"
 
 
 def listing_push_request_id(draft_id: int, *, rejected: bool = False, created_at=None) -> str:
@@ -508,6 +512,32 @@ class InfraDealerIntegrationService:
                     item.payload_json = json.dumps(saved)
                 except json.JSONDecodeError:
                     pass
+        elif et == "LISTING_UPDATE":
+            listing = body.get("listing") if isinstance(body.get("listing"), dict) else {}
+            listing_id = str(listing.get("listing_id") or listing.get("id") or body.get("listing_id") or "")
+            code = str(code or "").upper()
+            ok = bool(body.get("success") or response_class == "SUCCESS" or code == "LISTING_UPDATED")
+            conv = self.db.get(AiConversation, item.conversation_id) if item.conversation_id else None
+            if ok and conv:
+                from ..ai.data_push import listing_open_url
+                from ..ai.tools import _payload, _write_payload
+
+                pl = _payload(conv)
+                if listing_id:
+                    pl["infradealer_listing_id"] = listing_id
+                pl["listing_update_acked"] = True
+                pl["last_listing_update_at"] = _now().isoformat()
+                url = listing_open_url(listing_id or pl.get("infradealer_listing_id"), mobile=conv.mobile, payload=body)
+                if url:
+                    pl["listing_url"] = url
+                _write_payload(conv, pl)
+            elif not ok:
+                log.warning(
+                    "listing.update failed draft=%s code=%s err=%s",
+                    item.draft_id,
+                    code,
+                    str(body.get("message") or item.last_error or "")[:160],
+                )
         elif et == "LISTING_PUSH":
             from ..config import settings
             from .events import listing_public_url
@@ -662,6 +692,38 @@ class InfraDealerIntegrationService:
             return
         self.push_listing_for_draft(conv, draft, payload)
         state.pending_draft_id = None
+
+    def update_listing_for_draft(
+        self, conv: AiConversation, draft: AiListingDraft | None, payload: dict
+    ) -> InfraDealerOutbox | None:
+        """Patch an already-pushed InfraDealer listing after WhatsApp corrections."""
+        listing_id = str(payload.get("infradealer_listing_id") or payload.get("posted_product_id") or "").strip()
+        if not listing_id or not draft:
+            return None
+        version = int(payload.get("listing_update_version") or payload.get("draft_version") or 1)
+        rid = listing_update_request_id(draft.id, version)
+        existing = self.db.query(InfraDealerOutbox).filter(InfraDealerOutbox.request_id == rid).first()
+        if existing:
+            return existing
+        row = self.get_or_create_config()
+        flags = load_event_flags(row.event_flags_json)
+        if not event_enabled(flags, "LISTING_UPDATE"):
+            log.info("event LISTING_UPDATE disabled")
+            return None
+        state = self.get_or_create_account_state(conv.mobile, conversation_id=conv.id)
+        user_id = state.infradealer_user_id if state else ""
+        update_payload = build_listing_update_payload(self.db, conv, draft, payload, rid, user_id)
+        item = self.enqueue(
+            "LISTING_UPDATE",
+            update_payload,
+            conversation_id=conv.id,
+            draft_id=draft.id,
+            mobile=conv.mobile,
+            request_id=rid,
+        )
+        if state:
+            state.last_request_id = rid
+        return item
 
     def push_listing_for_draft(self, conv: AiConversation, draft: AiListingDraft, payload: dict) -> InfraDealerOutbox | None:
         rejected = self.listing_rejected(draft, payload)

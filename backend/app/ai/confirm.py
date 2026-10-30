@@ -175,6 +175,7 @@ def snapshot(db_or_payload=None, conv: AiConversation | None = None, payload: di
         "intent", "category", "type", "brand", "model", "year", "running_km",
         "operating_hours", "expected_price", "budget", "state", "city", "location",
         "fuel", "owners", "condition", "description", "active_card_id",
+        "tyres", "axles", "colour", "body_type", "cabin", "tyre_percent",
     )
     out = {k: pl.get(k) for k in keys if pl.get(k) not in (None, "", [], {})}
     out["vehicle"] = listing_title(pl)
@@ -378,11 +379,40 @@ def handle_vehicle_slot(db: Session, conv: AiConversation, text: str, lang: str 
     return None
 
 
-def sync_posted_product(db: Session, conv: AiConversation, product_id: int | None = None) -> None:
+def sync_posted_product(db: Session, conv: AiConversation, product_id: int | None = None) -> bool:
+    """Push WhatsApp field corrections to the already-live InfraDealer listing."""
     payload = _payload(conv)
     if product_id:
         payload["posted_product_id"] = product_id
+    listing_id = str(payload.get("infradealer_listing_id") or payload.get("posted_product_id") or "").strip()
+    if not listing_id:
+        _write_payload(conv, payload)
+        return False
+    payload["listing_update_version"] = int(payload.get("listing_update_version") or 0) + 1
+    payload["listing_update_acked"] = False
     _write_payload(conv, payload)
+    draft = None
+    if getattr(conv, "draft_id", None):
+        draft = db.get(AiListingDraft, conv.draft_id)
+    if draft is None:
+        from .session_memory import find_last_listing_draft
+
+        draft = find_last_listing_draft(db, conv.mobile)
+    if draft is None:
+        return False
+    try:
+        from ..infradealer.service import get_integration_service
+
+        svc = get_integration_service(db)
+        item = svc.update_listing_for_draft(conv, draft, payload)
+        if item and item.status in {"PENDING", "RETRY"}:
+            svc.process_outbox_item(item)
+            db.flush()
+        pl = _payload(conv)
+        return bool(item and (item.status == "DONE" or pl.get("listing_update_acked")))
+    except Exception:
+        log.exception("sync_posted_product failed listing_id=%s", listing_id)
+        return False
 
 
 def reset_ai_conversation(db: Session, conv: AiConversation) -> None:

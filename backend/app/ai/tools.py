@@ -422,11 +422,12 @@ def execute_tool(db: Session, conv: AiConversation, name: str, args: dict) -> di
             log.exception("data_filter on save_vehicle_data failed")
         _write_payload(conv, payload)
         draft = _draft_for(db, conv)
-        if draft.status in HUMAN_ONLY_STATUS:
-            return {"ok": True, "locked": True, "missing_fields": payload.get("missing_fields") or [], "draft_id": draft.id}
+        # Keep draft JSON fresh even after POSTED/LIVE so listing.update can rebuild description.
         draft.intent = conv.intent or draft.intent
         draft.inferred_json = json.dumps(source.get("inferred") or {}, ensure_ascii=False)
         draft.title = listing_title(payload)
+        if draft.status in HUMAN_ONLY_STATUS:
+            return {"ok": True, "locked": True, "missing_fields": payload.get("missing_fields") or [], "draft_id": draft.id}
         if draft.status not in {"READY_FOR_REVIEW", "POSTED", "CONFIRMED"}:
             draft.status = "COLLECTING"
         return {"ok": True, "missing_fields": payload.get("missing_fields") or [], "draft_id": draft.id, "readiness": (payload.get("filter_result") or {}).get("readiness")}

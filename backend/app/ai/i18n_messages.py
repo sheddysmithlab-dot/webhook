@@ -461,6 +461,16 @@ MESSAGES = {
         "hi": "लिस्टिंग पहले से लाइव है — लिंक:\n{link}",
         "en": "Listing is already live — link:\n{link}",
     },
+    "listing_details_updated_live": {
+        "hinglish": "✅ Detail website pe update ho gayi.\n{link}",
+        "hi": "✅ डिटेल वेबसाइट पर अपडेट हो गई।\n{link}",
+        "en": "✅ Details updated on the website.\n{link}",
+    },
+    "listing_details_update_failed": {
+        "hinglish": "Chat me detail save hui, lekin website update abhi fail hua. Thodi der baad dubara bhejiye.",
+        "hi": "चैट में डिटेल सेव हुई, लेकिन वेबसाइट अपडेट अभी फेल हुआ। थोड़ी देर बाद दोबारा भेजिए।",
+        "en": "Saved in chat, but the website update failed. Please try again shortly.",
+    },
     "approved": {
         "hinglish": "Aapki listing approve hokar live ho gayi hai.\n\n{link}",
         "hi": "आपकी लिस्टिंग अप्रूव होकर लाइव हो गई है।\n\n{link}",

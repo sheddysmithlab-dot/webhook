@@ -37,12 +37,17 @@ _UPDATE_LAST = re.compile(
     r"\b(listing|post|card|ad)\b.{0,40}"
     r"\b(change|update|badlo|badal\w*|galat|edit|correct|fix)\b"
     r"|"
-    r"\b(price|rate|year|model|photo|km|location)\b.{0,24}"
-    r"\b(badlo|badal\w*|change|update|sahi\s*kar)\b"
+    r"\b(edit|update|badlo|badal|sahi|correct|fix)\b.{0,24}"
+    r"\b(detail|details|tyre|tyres|tayar|price|rate|year|model|brand|photo|km|location)\b"
     r"|"
-    r"\b(update\s+(my\s+)?listing|edit\s+(my\s+)?listing|listing\s+update)\b"
+    r"\b(price|rate|year|model|photo|km|location|tyre|tyres|tayar|detail|details)\b.{0,24}"
+    r"\b(badlo|badal\w*|change|update|sahi\s*kar|edit|correct|fix)\b"
     r"|"
-    r"\b(usme|isme|us\s*me|is\s*me)\b.{0,20}\b(change|badlo|update|price|rate)\b"
+    r"\b(update\s+(my\s+)?listing|edit\s+(my\s+)?listing|listing\s+update|edit\s+kr\s*do)\b"
+    r"|"
+    r"\b(usme|isme|us\s*me|is\s*me)\b.{0,20}\b(change|badlo|update|price|rate|tyre|detail)\b"
+    r"|"
+    r"\b(update\s+nahi|nahi\s+hui|galat\s+(h|hai)|wrong\s+detail)\b"
     r")",
     re.I,
 )

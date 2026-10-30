@@ -773,6 +773,9 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
     # Phase-2/3: state first (extract + rm_state + next_ask); keep menu hints from runner
     offer_menu = bool(payload.get("offer_menu"))
     route_hint = str(payload.get("route_hint") or "")
+    from .confirm import snapshot as _listing_snap
+
+    before_snap = _listing_snap(payload)
     try:
         payload = prepare_prompt_state(db, conv, text, media_note)
         if offer_menu:
@@ -785,6 +788,35 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         payload = _payload(conv)
     if ledger_sync(conv):
         payload = _payload(conv)
+
+    # Already-live listing: field corrections must PATCH the website, not only chat memory.
+    after_snap = _listing_snap(payload)
+    changed = {
+        k for k in after_snap
+        if k not in {"vehicle", "card_id", "active_card_id"}
+        and after_snap.get(k) != before_snap.get(k)
+    }
+    live_id = str(payload.get("infradealer_listing_id") or payload.get("posted_product_id") or "").strip()
+    draft_st = (_draft_status(db, conv) or str(payload.get("listing_status") or "")).upper()
+    live_status = draft_st in {"POSTED", "LIVE", "APPROVED", "PUBLISHED", "PENDING_REVIEW"} or bool(live_id)
+    if live_id and live_status and changed:
+        ok = sync_posted_product(db, conv)
+        payload = _payload(conv)
+        from .data_push import public_listing_url
+        from .vision import card_details
+
+        link = str(payload.get("listing_url") or "").strip()
+        if not link:
+            link = public_listing_url(live_id)
+        card = ""
+        try:
+            card = card_details(db, conv, lang, updated=changed) or ""
+        except Exception:
+            log.exception("card_details after live update failed")
+        notice = t(lang, "listing_details_updated_live", link=link or live_id) if ok else t(
+            lang, "listing_details_update_failed"
+        )
+        return ((card + "\n\n") if card else "") + notice
 
     # Hard: machine categories also need usage (hours) before the summary — ask once, then skip.
     if not payload.get("customer_confirmed") and not payload.get("awaiting_confirm"):
@@ -1356,8 +1388,32 @@ def respond(db, conv: AiConversation, text: str, media_note: str = "") -> str:
             _write_payload(conv, payload)
             payload = _payload(conv)
 
-    posted = _draft_status(db, conv) == "POSTED"
-    if posted and (fields or media_note):
+    draft_status = (_draft_status(db, conv) or "").upper()
+    posted = draft_status in {"POSTED", "LIVE", "APPROVED", "PUBLISHED", "PENDING_REVIEW"}
+    if posted and fields:
+        ok = sync_posted_product(db, conv)
+        payload = _payload(conv)
+        from .data_push import public_listing_url
+        from .vision import card_details
+
+        link = str(payload.get("listing_url") or "").strip()
+        lid = str(payload.get("infradealer_listing_id") or "").strip()
+        if not link and lid:
+            link = public_listing_url(lid)
+        card = card_details(db, conv, lang, updated=set(fields.keys()))
+        if ok:
+            notice = t(lang, "listing_details_updated_live", link=link or lid or "")
+        else:
+            notice = t(lang, "listing_details_update_failed")
+        reply = _sanitize_reply(
+            (card + "\n\n" + notice).strip() if card else notice,
+            posted=True,
+            lang=lang,
+        )
+        cleaned = avoid_repeat(db, conv, lang, reply, recents)
+        return cleaned or reply
+
+    if posted and media_note:
         sync_posted_product(db, conv)
 
     if conv.state == "OTP_PENDING" or payload.get("verification_status") == "otp_pending":
