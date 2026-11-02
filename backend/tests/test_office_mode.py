@@ -566,9 +566,13 @@ def test_office_submit_reply_has_no_cooldown(db, client):
     pl.update({"listing_status": "POSTED", "infradealer_listing_id": "211"})
     _write_payload(conv, pl)
     out = om.decorate_office_reply(db, conv, t("hi", "submitted"))
-    assert "10 मिनट" not in out and "रिव्यू" not in out and "Agli listing" in out
+    assert "10 मिनट" not in out and "रिव्यू" not in out
+    assert "Aage kya karna hai" in out or "Agli listing" in out
     assert "ramesh.kumar" in out and "post ho gayi (live)" in out
     assert "https://infradealer.com/listings/211" in out
+    assert _payload(conv).get("office_button_set") == "pick"
+    assert _payload(conv).get("office_send_choice_buttons") is True
+    assert _payload(conv).get("office_last_live_listing_id") == "211"
 
     pl.update({"listing_status": "REJECTED", "rejection_reason": "photos not present"})
     _write_payload(conv, pl)
@@ -576,6 +580,45 @@ def test_office_submit_reply_has_no_cooldown(db, client):
     assert "post ho gayi" not in out and "photos not present" in out
     regular = _conv(db, mobile="9000111333", account_type="free")
     assert "10 मिनट" in om.decorate_office_reply(db, regular, t("hi", "submitted"))
+
+
+def test_office_pending_review_still_arms_interactive_pick(db, client):
+    """Bug: PENDING_REVIEW + READY_FOR_REVIEW showed plain-text options, no Select option."""
+    from app.ai.i18n import t
+
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    draft = AiListingDraft(
+        mobile=conv.mobile,
+        conversation_id=conv.id,
+        card_id="CARD-1082",
+        status="READY_FOR_REVIEW",
+        intent="SELL",
+        title="JCB 3DX",
+    )
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    pl = _payload(conv)
+    pl.update({
+        "listing_status": "PENDING_REVIEW",
+        "infradealer_listing_id": "1082",
+        "listing_url": "https://infradealer.com/listings/1082",
+        "brand": "JCB",
+        "model": "3DX",
+    })
+    _write_payload(conv, pl)
+    out = om.decorate_office_reply(db, conv, t("hi", "submitted"))
+    assert "post ho gayi (live)" in out
+    assert "Select option" in out
+    pl = _payload(conv)
+    assert pl.get("office_button_set") == "pick"
+    assert pl.get("office_send_choice_buttons") is True
+    assert pl.get("office_last_live_listing_id") == "1082"
+    ui = om.take_office_interactive_ui(conv)
+    assert ui.get("mode") == "list"
+    assert len(ui.get("rows") or []) == 3
+    assert ui.get("button_label") == "Select option"
 
 
 def test_listing_button_skipped_after_approved_message(db, client, monkeypatch):

@@ -675,6 +675,17 @@ def _listing_title_bits(payload: dict, draft=None) -> str:
     return str(payload.get("office_last_live_title") or "previous listing")[:60]
 
 
+# Office push often keeps draft=READY_FOR_REVIEW / payload=PENDING_REVIEW until the
+# approve webhook — but the tip already has a listing id (+ often a live URL).
+_CAPTURE_STATUSES = _LIVE_STATUSES | {
+    "PENDING_REVIEW",
+    "READY_FOR_REVIEW",
+    "UNDER_REVIEW",
+    "ADMIN_ACKNOWLEDGED",
+    "SUBMITTED",
+}
+
+
 def _capture_office_last_live(db: Session, conv: AiConversation) -> bool:
     """Remember the live listing so the next photo/detail can update it or start a new card."""
     payload = _payload(conv)
@@ -685,14 +696,24 @@ def _capture_office_last_live(db: Session, conv: AiConversation) -> bool:
     from ..models import AiListingDraft
 
     draft = db.get(AiListingDraft, conv.draft_id) if conv.draft_id else None
-    status = (draft.status or "").upper() if draft else str(payload.get("listing_status") or "").upper()
+    status_draft = (draft.status or "").upper() if draft else ""
+    status_pl = str(payload.get("listing_status") or "").upper()
     lid = str(payload.get("infradealer_listing_id") or payload.get("posted_product_id") or "").strip()
-    if draft is None or status not in _LIVE_STATUSES or not lid:
+    if not lid:
+        return False
+    status_ok = status_draft in _CAPTURE_STATUSES or status_pl in _CAPTURE_STATUSES
+    if not status_ok and not str(payload.get("listing_url") or "").strip():
         return False
     payload["office_last_live_listing_id"] = lid
     payload["office_last_live_url"] = str(payload.get("listing_url") or "").strip()
-    payload["office_last_live_draft_id"] = int(draft.id)
-    payload["office_last_live_card_id"] = str(draft.card_id or payload.get("active_card_id") or "")
+    if draft is not None:
+        payload["office_last_live_draft_id"] = int(draft.id)
+        payload["office_last_live_card_id"] = str(draft.card_id or payload.get("active_card_id") or "")
+    elif conv.draft_id:
+        payload["office_last_live_draft_id"] = int(conv.draft_id)
+        payload["office_last_live_card_id"] = str(payload.get("active_card_id") or "")
+    else:
+        payload["office_last_live_card_id"] = str(payload.get("active_card_id") or "")
     payload["office_last_live_title"] = _listing_title_bits(payload, draft)
     payload["office_ready_for_next"] = True
     _write_payload(conv, payload)
@@ -850,18 +871,42 @@ def _set_office_button_set(payload: dict, kind: str) -> None:
 
 
 def arm_office_next_choice(db: Session, conv: AiConversation) -> None:
-    """After a live URL: remember the listing and ask via interactive list next send."""
+    """After a live URL: remember the listing and ask via interactive list next send.
+
+    Always arms the pick UI for office operators — even when draft status is still
+    READY_FOR_REVIEW / PENDING_REVIEW (capture is best-effort).
+    """
     if _known_operator(db, conv) is None:
         return
-    if not _capture_office_last_live(db, conv):
-        return
+    captured = _capture_office_last_live(db, conv)
     payload = _payload(conv)
+    if not captured:
+        lid = str(
+            payload.get("infradealer_listing_id") or payload.get("posted_product_id") or ""
+        ).strip()
+        if lid:
+            payload["office_last_live_listing_id"] = lid
+            payload["office_last_live_url"] = str(payload.get("listing_url") or "").strip()
+            if conv.draft_id and not payload.get("office_last_live_draft_id"):
+                payload["office_last_live_draft_id"] = int(conv.draft_id)
+            if not payload.get("office_last_live_title"):
+                payload["office_last_live_title"] = _listing_title_bits(payload, None)
+        else:
+            log.warning(
+                "office_mode: arm next-choice without listing id conv=%s",
+                getattr(conv, "id", None),
+            )
     payload["awaiting_office_next_action"] = True
     payload["office_ready_for_next"] = True
     payload["office_selected_next"] = None
     payload["office_confirm_nonce"] = None
     _set_office_button_set(payload, "pick")
     _write_payload(conv, payload)
+    log.info(
+        "office_mode: armed pick UI conv=%s lid=%s",
+        getattr(conv, "id", None),
+        payload.get("office_last_live_listing_id") or "-",
+    )
 
 
 def office_choice_buttons_pending(conv: AiConversation) -> bool:

@@ -697,13 +697,17 @@ def process_inbound(
             if reply and pl_ann.pop("announce_new_card", None):
                 _write_payload(conv, pl_ann)
                 reply = t(lang, "vehicle_new_from_photos") + "\n\n" + reply
-            if path != "office_mode" and reply:
-                if LLM_WROTE_REPLY.get() and not force_polish:
-                    zai = "llm"
-                else:
-                    reply, zai = polish_reply(db, text, reply, lang)
+            if reply:
+                if path != "office_mode":
+                    if LLM_WROTE_REPLY.get() and not force_polish:
+                        zai = "llm"
+                    else:
+                        reply, zai = polish_reply(db, text, reply, lang)
+                # Always decorate — arms WhatsApp list/Confirm after a live office tip,
+                # including when path=office_mode (previously skipped → plain-text options).
                 reply = decorate_office_reply(db, conv, reply)
-                reply = with_agent_intro(db, conv, conv_id, mobile, lang, reply)
+                if path != "office_mode":
+                    reply = with_agent_intro(db, conv, conv_id, mobile, lang, reply)
 
             from .card_ledger import sync as ledger_sync
 
@@ -767,31 +771,47 @@ def process_inbound(
 
                 ui = take_office_interactive_ui(conv)
                 if ui.get("mode") == "list":
+                    # Short interactive body (full tip already has the options as text
+                    # fallback). List rows = radio-style pick; Confirm comes next.
+                    list_body = reply
+                    if len(list_body) > 900:
+                        list_body = (
+                            "Aage kya karna hai? Neeche *Select option* se choose karein, "
+                            "phir *Confirm*."
+                        )
                     try:
                         result = send_whatsapp_list(
                             meta,
                             mobile,
-                            reply,
+                            list_body,
                             ui.get("rows") or [],
                             button_label=str(ui.get("button_label") or "Select option"),
                             section_title=str(ui.get("section_title") or "Next action"),
                         )
+                        log.info("office interactive list sent mobile=***%s", mobile[-4:])
                     except Exception:
                         log.exception("office list message failed — falling back to reply buttons")
                         try:
                             result = send_whatsapp_reply_buttons(
                                 meta, mobile, reply, ui.get("fallback_buttons") or []
                             )
+                            log.info("office interactive reply-buttons sent mobile=***%s", mobile[-4:])
                         except Exception:
                             log.exception("office reply-button fallback failed — text only")
                             result = send_whatsapp_text(meta, mobile, reply)
                 elif ui.get("mode") == "buttons" and ui.get("buttons"):
                     try:
                         result = send_whatsapp_reply_buttons(meta, mobile, reply, ui["buttons"])
+                        log.info("office confirm buttons sent mobile=***%s", mobile[-4:])
                     except Exception:
                         log.exception("office confirm buttons failed — falling back to text")
                         result = send_whatsapp_text(meta, mobile, reply)
                 else:
+                    if "Aage kya karna hai" in (reply or "") or "Select option" in (reply or ""):
+                        log.warning(
+                            "office next-step tip without interactive UI mobile=***%s",
+                            mobile[-4:] if mobile else "",
+                        )
                     result = send_whatsapp_text(meta, mobile, reply)
                 store_chat(
                     db,
