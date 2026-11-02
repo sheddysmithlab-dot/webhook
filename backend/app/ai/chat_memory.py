@@ -669,8 +669,28 @@ def build_confirmation_summary(
 
     if is_buyer(_payload(conv)):
         return buyer_reply(db, conv, lang, repeat=True)
+    from .confirm import listing_already_confirmed, no_place_note, start_new_listing
+
+    # Never re-ask YES on a card that already went live / was submitted.
+    if listing_already_confirmed(db, conv):
+        start_new_listing(db, conv, {}, [])
+        return t(lang, "vehicle_new_ok") + "\n" + t(lang, "more_detail")
     result = filter_result if filter_result is not None else filter_memory(db, conv)
     payload = handle_data_filter_result(db, conv, result)
+    place_ask = no_place_note(payload, lang)
+    if place_ask and not any(payload.get(k) for k in ("state", "city", "location")):
+        payload["awaiting_confirm"] = False
+        payload["next_ask"] = "state"
+        _set_rm_state(payload, "DATA_COLLECTION")
+        _write_payload(conv, payload)
+        conv.error_message = "ask:state"
+        return "\n".join(
+            [
+                t(lang, "summary_header"),
+                listing_title(payload),
+                place_ask,
+            ]
+        )
     payload["awaiting_confirm"] = True
     payload["customer_confirmed"] = False
     payload["confirm_rejected"] = False
@@ -730,7 +750,7 @@ def build_confirmation_summary(
     if result.conflicts:
         c = result.conflicts[0]
         lines.append(t(lang, "conflict_year", user=c.get("user_value"), document=c.get("document_value")))
-    lines.append(t(lang, "confirm_prompt"))
+    lines.append(t(lang, "confirm_ask"))
     return "\n".join(lines)
 
 
@@ -944,16 +964,31 @@ def _maybe_attach_media(payload: dict, media_note: str) -> None:
         _set_rm_state(payload, "WAITING_FOR_PHOTOS")
 
 
-def _photo_count(payload: dict) -> int:
-    return len(payload.get("media_ids") or [])
+def _sync_photo_ids(payload: dict, db=None, conv=None) -> list[int]:
+    """Prefer draft+payload unique images so burst uploads are not under-counted as 1."""
+    try:
+        if db is not None and conv is not None:
+            from ..identity import unique_photo_ids
+
+            ids = unique_photo_ids(db, conv, payload)
+            if ids:
+                payload["media_ids"] = ids
+                return ids
+    except Exception:
+        pass
+    return [int(x) for x in (payload.get("media_ids") or []) if str(x).isdigit()]
 
 
-def _photos_satisfied(payload: dict, minimum: int = 2) -> bool:
-    return _photo_count(payload) >= minimum
+def _photo_count(payload: dict, db=None, conv=None) -> int:
+    return len(_sync_photo_ids(payload, db=db, conv=conv))
 
 
-def _mark_photos_complete(payload: dict, minimum: int = 2) -> bool:
-    if _photos_satisfied(payload, minimum):
+def _photos_satisfied(payload: dict, minimum: int = 2, db=None, conv=None) -> bool:
+    return _photo_count(payload, db=db, conv=conv) >= minimum
+
+
+def _mark_photos_complete(payload: dict, minimum: int = 2, db=None, conv=None) -> bool:
+    if _photos_satisfied(payload, minimum, db=db, conv=conv):
         payload["photos_complete"] = True
         return True
     return False
@@ -1280,7 +1315,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                 if opt not in skipped:
                     skipped.append(opt)
             payload["skipped_asks"] = skipped
-            payload["photos_complete"] = payload.get("photos_complete") or _photos_satisfied(payload)
+            payload["photos_complete"] = payload.get("photos_complete") or _photos_satisfied(payload, db=db, conv=conv)
             # Still harvest any price/year/brand in this same message
             collect_message(db, conv, msg)
             payload = _payload(conv)
@@ -1333,6 +1368,8 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                     pass
 
         elif intent == "CONFIRM_LISTING":
+            from .confirm import listing_already_confirmed
+
             decision = interpret_confirmation(msg, payload)
             if decision == "CONFIRM":
                 result = submit_confirmed_listing(db, conv)
@@ -1352,9 +1389,17 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                     response_type = "ERROR_MESSAGE"
                 else:
                     reply = t(lang, "submitted")
+            elif listing_already_confirmed(db, conv, payload):
+                from .data_push import handle_post_listing_query
+
+                response_type = "LISTING_SUBMITTED"
+                reply = handle_post_listing_query(db, conv, "listing link", lang) or t(lang, "continue_chat")
+            elif decision == "MODIFY":
+                response_type = "ASK_QUESTION"
+                reply = t(lang, "confirm_what_change")
             else:
                 response_type = "ASK_QUESTION"
-                reply = t(lang, "confirm_prompt")
+                reply = t(lang, "confirm_ask")
 
         elif intent in {"REJECT_CORRECTION", "PROVIDE_FIELD", "SELL", "BUY", "UPLOAD_PHOTO", "OTHER", "RESOLVE_CONFLICT"}:
             # Soft cooldown after a successful listing submit (10 minutes).
@@ -1414,7 +1459,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                     if media_note:
                         payload = _payload(conv)
                         _maybe_attach_media(payload, media_note)
-                        _mark_photos_complete(payload)
+                        _mark_photos_complete(payload, db=db, conv=conv)
                         _write_payload(conv, payload)
 
                     payload = _payload(conv)
@@ -1469,9 +1514,9 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                                 (m["field"] if isinstance(m, dict) else m) == "photos"
                                 for m in (result.missing_fields or [])
                             )
-                            if photo_required and not _photos_satisfied(payload):
+                            if photo_required and not _photos_satisfied(payload, db=db, conv=conv):
                                 response_type = "ASK_QUESTION"
-                                n = _photo_count(payload)
+                                n = _photo_count(payload, db=db, conv=conv)
                                 reply = t(lang, "photo_need_min", count=n) if n else t(lang, "photos")
                             elif result.readiness in {"READY_FOR_CONFIRMATION", "DUPLICATE_WARNING"} or not photo_required:
                                 response_type = "CONFIRMATION_REQUEST"
@@ -1486,7 +1531,7 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
                             response_type = "ASK_QUESTION"
                             reply = build_next_question(payload, lang)
                             if not reply:
-                                if (payload.get("intent") or "").upper() == "SELL" and not _photos_satisfied(payload) and is_collection_ready(payload):
+                                if (payload.get("intent") or "").upper() == "SELL" and not _photos_satisfied(payload, db=db, conv=conv) and is_collection_ready(payload):
                                     reply = t(lang, "photos")
                                 else:
                                     reply = t(lang, "unclear")

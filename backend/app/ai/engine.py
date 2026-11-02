@@ -849,11 +849,19 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
         return t(lang, "confirm_what_change")
 
     # Hard: collection ready → Python summary (do not let LLM invent confirm copy)
+    from .confirm import listing_already_confirmed
+
+    if listing_already_confirmed(db, conv, payload) and not payload.get("listing_edit_mode"):
+        if is_yes(msg) or (collection_ready(payload) and not media_note):
+            from .data_push import handle_post_listing_query
+
+            return handle_post_listing_query(db, conv, "listing link", lang) or t(lang, "continue_chat")
     if (
         collection_ready(payload)
         and not payload.get("customer_confirmed")
         and not payload.get("awaiting_confirm")
         and not payload.get("confirm_rejected")
+        and not listing_already_confirmed(db, conv, payload)
     ):
         summary = _summary_or_photo_gate(db, conv, payload, lang)
         if summary:
@@ -864,6 +872,7 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
     if (
         payload.get("awaiting_confirm")
         and not payload.get("customer_confirmed")
+        and not listing_already_confirmed(db, conv, payload)
         and "?" not in msg
         and str(payload.get("intent") or "").upper() == "SELL"
         and collection_ready(payload)
@@ -883,9 +892,7 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
 
     # A bare "Haan" with no confirm card open must not reach the model (it improvises confirm loops).
     if is_yes(msg) and str(payload.get("intent") or "").upper() == "SELL" and not payload.get("awaiting_confirm"):
-        from .confirm import card_submitted
-
-        if payload.get("customer_confirmed") or card_submitted(db, conv):
+        if listing_already_confirmed(db, conv, payload):
             from .data_push import handle_post_listing_query
 
             return handle_post_listing_query(db, conv, "listing link", lang) or t(lang, "more_detail")

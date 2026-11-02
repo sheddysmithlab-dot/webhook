@@ -232,12 +232,8 @@ def summary_text(payload_or_snap: dict, lang: str = "hinglish", card_id: str = "
         if snap.get(key):
             lines.append(f"{label}: {snap[key]}")
     body = "\n".join(lines) if lines else "Listing details"
-    code = (lang or "hinglish").lower()
-    if code in {"hi", "hindi"}:
-        return f"कृपया कन्फर्म करें:\n{body}\n\nसही हैं तो हाँ लिखें।"
-    if code in {"en", "english"}:
-        return f"Please confirm:\n{body}\n\nReply YES to confirm."
-    return f"Please confirm details:\n{body}\n\nSahi hain to Haan likhiye."
+    # One confirm CTA everywhere — matches confirm_ask / confirm_prompt i18n.
+    return f"{body}\n\n{t(lang, 'confirm_ask')}"
 
 
 def no_photo_note(payload: dict, lang: str = "hinglish") -> str:
@@ -276,8 +272,23 @@ def send_summary(db: Session, conv: AiConversation, lang: str = "hinglish") -> s
     payload = _payload(conv)
     if is_buyer(payload):
         return buyer_reply(db, conv, lang)
+    # Finished card must not re-open confirm — clear it so the next vehicle can collect.
+    if listing_already_confirmed(db, conv, payload):
+        start_new_listing(db, conv, {}, [])
+        return t(lang, "vehicle_new_ok") + "\n" + t(lang, "more_detail")
+    # Missing place: ask location first — do not open the YES lock yet.
+    place_ask = no_place_note(payload, lang)
+    if place_ask and not any(payload.get(k) for k in ("state", "city", "location")):
+        conv.error_message = "ask:state"
+        payload["next_ask"] = "state"
+        payload["awaiting_confirm"] = False
+        _write_payload(conv, payload)
+        return summary_text(payload, lang=lang) + "\n" + place_ask
     text = summary_text(payload, lang=lang)
     for note in summary_notes(payload, lang):
+        # Place already handled above; keep photo note only.
+        if note == place_ask:
+            continue
         text += "\n" + note
     payload["awaiting_confirm"] = True
     payload["confirm_rejected"] = False
@@ -504,6 +515,19 @@ def card_submitted(db: Session, conv: AiConversation) -> bool:
     return bool(draft) and (draft.status or "").upper() in _SUBMITTED
 
 
+def listing_already_confirmed(db: Session, conv: AiConversation, payload: dict | None = None) -> bool:
+    """True when this card was already YES'd / pushed — never re-open confirm for it."""
+    pl = payload if isinstance(payload, dict) else _payload(conv)
+    if pl.get("customer_confirmed"):
+        return True
+    if card_submitted(db, conv):
+        return True
+    status = str(pl.get("listing_status") or "").upper()
+    if status in _SUBMITTED and str(pl.get("infradealer_listing_id") or "").strip():
+        return True
+    return False
+
+
 def maybe_start_new_card(db: Session, conv: AiConversation, fields: dict | None) -> bool:
     """Open a fresh card when the message describes another vehicle.
 
@@ -514,12 +538,15 @@ def maybe_start_new_card(db: Session, conv: AiConversation, fields: dict | None)
     fields = fields or {}
     if not conv.draft_id or not (fields.get("brand") or fields.get("model")):
         return False
-    if sum(1 for k in _NEW_CARD_KEYS if fields.get(k)) < 2:
-        return False
     payload = _payload(conv)
     if payload.get("listing_edit_mode"):
         return False
     fresh = card_submitted(db, conv)
+    # After a live/posted card, brand alone is enough to start the next vehicle.
+    # Before submit, require 2 signals so a lone brand correction does not abandon the card.
+    need = 1 if fresh else 2
+    if sum(1 for k in _NEW_CARD_KEYS if fields.get(k)) < need:
+        return False
     if not fresh:
         cur_brand, cur_model = _norm(payload.get("brand")), _norm(payload.get("model"))
         new_brand, new_model = _norm(fields.get("brand")), _norm(fields.get("model"))
