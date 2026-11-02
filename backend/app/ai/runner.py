@@ -762,15 +762,34 @@ def process_inbound(
             t_wa0 = time.perf_counter()
             meta = get_or_create_settings(db)
             try:
-                from .office_mode import take_office_choice_buttons
-                from ..services import send_whatsapp_reply_buttons
+                from .office_mode import take_office_interactive_ui
+                from ..services import send_whatsapp_list, send_whatsapp_reply_buttons
 
-                choice_btns = take_office_choice_buttons(conv)
-                if choice_btns:
+                ui = take_office_interactive_ui(conv)
+                if ui.get("mode") == "list":
                     try:
-                        result = send_whatsapp_reply_buttons(meta, mobile, reply, choice_btns)
+                        result = send_whatsapp_list(
+                            meta,
+                            mobile,
+                            reply,
+                            ui.get("rows") or [],
+                            button_label=str(ui.get("button_label") or "Select option"),
+                            section_title=str(ui.get("section_title") or "Next action"),
+                        )
                     except Exception:
-                        log.exception("office choice buttons failed — falling back to text")
+                        log.exception("office list message failed — falling back to reply buttons")
+                        try:
+                            result = send_whatsapp_reply_buttons(
+                                meta, mobile, reply, ui.get("fallback_buttons") or []
+                            )
+                        except Exception:
+                            log.exception("office reply-button fallback failed — text only")
+                            result = send_whatsapp_text(meta, mobile, reply)
+                elif ui.get("mode") == "buttons" and ui.get("buttons"):
+                    try:
+                        result = send_whatsapp_reply_buttons(meta, mobile, reply, ui["buttons"])
+                    except Exception:
+                        log.exception("office confirm buttons failed — falling back to text")
                         result = send_whatsapp_text(meta, mobile, reply)
                 else:
                     result = send_whatsapp_text(meta, mobile, reply)

@@ -106,23 +106,48 @@ _OFFICE_LAST_KEYS = (
     "office_send_choice_buttons",
     "office_button_set",
     "office_selected_next",
+    "office_confirm_nonce",
+    "office_executed_nonce",
 )
-# WhatsApp reply-button ids + short titles (title max 20 chars).
-# Flow: pick one option → then Confirm (radio + Confirm pattern on WA).
+# WhatsApp interactive ids. Flow: list/reply pick → Confirm/Cancel buttons.
 OFFICE_BTN_NEW_SAME = "office_new_same"
 OFFICE_BTN_UPDATE = "office_update"
 OFFICE_BTN_NEW_ACCOUNT = "office_new_account"
 OFFICE_BTN_CONFIRM = "office_confirm"
-OFFICE_BTN_CHANGE = "office_change"
+OFFICE_BTN_CANCEL = "office_cancel"
+OFFICE_BTN_CHANGE = OFFICE_BTN_CANCEL  # legacy alias
+# Reply-button fallback (title max 20). Prefer list rows when sending pick UI.
 OFFICE_CHOICE_BUTTONS = (
     {"id": OFFICE_BTN_NEW_SAME, "title": "Nayi Listing"},
     {"id": OFFICE_BTN_UPDATE, "title": "Update listing"},
     {"id": OFFICE_BTN_NEW_ACCOUNT, "title": "Naya account"},
 )
+OFFICE_LIST_ROWS = (
+    {
+        "id": OFFICE_BTN_NEW_SAME,
+        "title": "Nayi Listing",
+        "description": "Same account se another listing",
+    },
+    {
+        "id": OFFICE_BTN_UPDATE,
+        "title": "Update Previous",
+        "description": "Existing listing edit/update",
+    },
+    {
+        "id": OFFICE_BTN_NEW_ACCOUNT,
+        "title": "New Account",
+        "description": "New customer + new listing",
+    },
+)
 OFFICE_CONFIRM_BUTTONS = (
     {"id": OFFICE_BTN_CONFIRM, "title": "Confirm"},
-    {"id": OFFICE_BTN_CHANGE, "title": "Change"},
+    {"id": OFFICE_BTN_CANCEL, "title": "Cancel"},
 )
+_OFFICE_CHOICE_SHORT = {
+    "NEW": "Nayi Listing",
+    "UPDATE": "Update Previous Listing",
+    "NEW_ACCOUNT": "New Account + New Listing",
+}
 _OFFICE_CHOICE_LABELS = {
     "NEW": "🟢 Nayi Listing — Same account se another listing post karni hai.",
     "UPDATE": "🟡 Update Previous Listing — Pehle se posted listing edit/update karni hai.",
@@ -130,7 +155,7 @@ _OFFICE_CHOICE_LABELS = {
 }
 _CHOICE_UPDATE = re.compile(
     r"^\s*(?:1|update|edit|badlo|badal\w*|purani|pichhli|pichli|previous|update\s*purani|"
-    r"update\s*listing|office_update)\s*[.!]*\s*$",
+    r"update\s*listing|update\s*previous|office_update)\s*[.!]*\s*$",
     re.I,
 )
 _CHOICE_NEW = re.compile(
@@ -147,10 +172,11 @@ _CHOICE_CONFIRM = re.compile(
     r"^\s*(?:confirm|haan|han|yes|ok|okay|office_confirm)\s*[.!]*\s*$",
     re.I,
 )
-_CHOICE_CHANGE = re.compile(
-    r"^\s*(?:change|badlo|change\s*option|office_change)\s*[.!]*\s*$",
+_CHOICE_CANCEL = re.compile(
+    r"^\s*(?:cancel|nahi|no|stop|rehne\s*do|office_cancel|change|badlo|office_change)\s*[.!]*\s*$",
     re.I,
 )
+_CHOICE_CHANGE = _CHOICE_CANCEL  # legacy alias
 _VEHICLE_WORD = re.compile(
     r"\b(?:jcb|tata|ashok|leyland|eicher|mahindra|tipper|tractor|excavator|trailer|trolley|"
     r"tyre|tayar|photo|pic|image|price|rate|model|year|km|hours?|hrs|bechni|bechna|bikau|"
@@ -688,6 +714,7 @@ def _clear_office_next_flags(payload: dict, *, keep_last: bool = False) -> None:
     payload["office_send_choice_buttons"] = False
     payload["office_button_set"] = None
     payload["office_selected_next"] = None
+    payload["office_confirm_nonce"] = None
     payload.pop("office_replay_text", None)
     if keep_last:
         return
@@ -773,10 +800,10 @@ def _looks_like_listing_followup(text: str, media_note: str = "") -> bool:
         or _CHOICE_NEW.match(msg)
         or _CHOICE_NEW_ACCOUNT.match(msg)
         or _CHOICE_CONFIRM.match(msg)
-        or _CHOICE_CHANGE.match(msg)
+        or _CHOICE_CANCEL.match(msg)
     ):
         return False
-    if msg.upper() in {"NEW", "UPDATE", "NEW_ACCOUNT", "CONFIRM", "CHANGE"}:
+    if msg.upper() in {"NEW", "UPDATE", "NEW_ACCOUNT", "CONFIRM", "CANCEL", "CHANGE"}:
         return False
     if _NEW_LISTING.search(msg) and not _LISTING_SIGNAL.search(msg) and not _VEHICLE_WORD.search(msg):
         return False
@@ -795,31 +822,35 @@ def _office_next_ask(payload: dict) -> str:
     link = f"\n🔗 {url}" if url else ""
     return (
         f"*Aage kya karna hai?* Ek option select karein:{link}\n\n"
-        f"1. 🟢 *Nayi Listing* — Same account se another listing post karni hai.\n"
-        f"2. 🟡 *Update Previous Listing* — Pehle se posted listing ({title}) edit/update karni hai.\n"
-        f"3. 🔵 *New Account + New Listing* — Naye customer account se listing post karni hai.\n\n"
-        "Neeche se *ek* option select karein, phir *Confirm* dabayein."
+        f"1. 🟢 *Nayi Listing* — Same account se another listing.\n"
+        f"2. 🟡 *Update Previous Listing* — Existing listing ({title}) edit/update.\n"
+        f"3. 🔵 *New Account + New Listing* — Naye customer se post.\n\n"
+        "Neeche *Select option* dabake ek choice choose karein.\n"
+        "Uske baad Confirm maanga jayega."
     )
 
 
-def _office_confirm_ask(payload: dict) -> str:
-    choice = str(payload.get("office_selected_next") or "").upper()
-    label = _OFFICE_CHOICE_LABELS.get(choice) or choice or "-"
+def _office_confirm_ask(db: Session, conv: AiConversation, payload: dict | None = None) -> str:
+    pl = payload if isinstance(payload, dict) else _payload(conv)
+    choice = str(pl.get("office_selected_next") or "").upper()
+    short = _OFFICE_CHOICE_SHORT.get(choice) or choice or "-"
+    who = _selected_who(db, conv)
     return (
-        f"Selected:\n{label}\n\n"
-        "Sahi hai? Neeche *Confirm* dabayein.\n"
-        "Galat ho to *Change* se option badlein."
+        f"You selected: *{short}*\n"
+        f"Selected Account: *{who}*\n\n"
+        "Are you sure you want to continue?\n"
+        "Neeche *Confirm* ya *Cancel* dabayein."
     )
 
 
 def _set_office_button_set(payload: dict, kind: str) -> None:
     """kind: pick | confirm"""
     payload["office_button_set"] = kind
-    payload["office_send_choice_buttons"] = True  # legacy flag — runner still checks this
+    payload["office_send_choice_buttons"] = True  # runner still checks this
 
 
 def arm_office_next_choice(db: Session, conv: AiConversation) -> None:
-    """After a live URL: remember the listing and ask via reply buttons next send."""
+    """After a live URL: remember the listing and ask via interactive list next send."""
     if _known_operator(db, conv) is None:
         return
     if not _capture_office_last_live(db, conv):
@@ -828,6 +859,7 @@ def arm_office_next_choice(db: Session, conv: AiConversation) -> None:
     payload["awaiting_office_next_action"] = True
     payload["office_ready_for_next"] = True
     payload["office_selected_next"] = None
+    payload["office_confirm_nonce"] = None
     _set_office_button_set(payload, "pick")
     _write_payload(conv, payload)
 
@@ -837,60 +869,153 @@ def office_choice_buttons_pending(conv: AiConversation) -> bool:
     return bool(pl.get("office_send_choice_buttons") or pl.get("office_button_set"))
 
 
-def take_office_choice_buttons(conv: AiConversation) -> list[dict]:
-    """Consume the one-shot flag and return WhatsApp reply-button defs (pick or confirm)."""
+def take_office_interactive_ui(conv: AiConversation) -> dict:
+    """Consume one-shot UI flag. Returns {mode: list|buttons, rows/buttons, ...}."""
     payload = _payload(conv)
     kind = str(payload.get("office_button_set") or "").strip().lower()
     if not payload.get("office_send_choice_buttons") and not kind:
-        return []
+        return {}
     payload["office_send_choice_buttons"] = False
     payload["office_button_set"] = None
     _write_payload(conv, payload)
     if kind == "confirm":
-        return [dict(b) for b in OFFICE_CONFIRM_BUTTONS]
-    return [dict(b) for b in OFFICE_CHOICE_BUTTONS]
+        return {"mode": "buttons", "buttons": [dict(b) for b in OFFICE_CONFIRM_BUTTONS]}
+    return {
+        "mode": "list",
+        "button_label": "Select option",
+        "section_title": "Next action",
+        "rows": [dict(r) for r in OFFICE_LIST_ROWS],
+        "fallback_buttons": [dict(b) for b in OFFICE_CHOICE_BUTTONS],
+    }
+
+
+def take_office_choice_buttons(conv: AiConversation) -> list[dict]:
+    """Backward-compatible: confirm buttons, or pick reply-button fallback."""
+    ui = take_office_interactive_ui(conv)
+    if not ui:
+        return []
+    if ui.get("mode") == "buttons":
+        return list(ui.get("buttons") or [])
+    return list(ui.get("fallback_buttons") or OFFICE_CHOICE_BUTTONS)
 
 
 def normalize_office_choice_text(text: str) -> str:
-    """Map WhatsApp button id/title to a stable choice token."""
+    """Map WhatsApp button/list id/title to a stable choice token."""
     msg = (text or "").strip()
     low = msg.lower()
     if low in {OFFICE_BTN_CONFIRM, "confirm"}:
         return "CONFIRM"
-    if low in {OFFICE_BTN_CHANGE, "change"}:
-        return "CHANGE"
+    if low in {OFFICE_BTN_CANCEL, OFFICE_BTN_CHANGE, "cancel", "change"}:
+        return "CANCEL"
     if low in {OFFICE_BTN_NEW_SAME, "nayi listing", "nayi listing same"}:
         return "NEW"
-    if low in {OFFICE_BTN_UPDATE, "update purani", "update listing", "update"}:
+    if low in {
+        OFFICE_BTN_UPDATE,
+        "update purani",
+        "update listing",
+        "update previous",
+        "update previous listing",
+        "update",
+    }:
         return "UPDATE"
-    if low in {OFFICE_BTN_NEW_ACCOUNT, "naya account", "new account"}:
+    if low in {OFFICE_BTN_NEW_ACCOUNT, "naya account", "new account", "new account + new listing"}:
         return "NEW_ACCOUNT"
     return msg
 
 
 def _stage_office_selection(db: Session, conv: AiConversation, choice: str) -> str:
-    """Store the radio selection; wait for Confirm before running the action."""
+    """Store the selection; wait for Confirm before running the action."""
+    import time
+
     payload = _payload(conv)
-    payload["office_selected_next"] = str(choice or "").upper()
+    key = str(choice or "").upper()
+    lid = str(payload.get("office_last_live_listing_id") or "").strip()
+    payload["office_selected_next"] = key
     payload["awaiting_office_next_action"] = True
     payload["office_ready_for_next"] = True
+    payload["office_confirm_nonce"] = f"{key}:{lid}:{int(time.time())}:{conv.id}"
     _set_office_button_set(payload, "confirm")
     _write_payload(conv, payload)
-    return _office_confirm_ask(payload)
+    return _office_confirm_ask(db, conv, payload)
+
+
+def _cancel_office_selection(db: Session, conv: AiConversation) -> str:
+    payload = _payload(conv)
+    _clear_office_next_flags(payload, keep_last=True)
+    _write_payload(conv, payload)
+    return (
+        "❌ Cancelled. Koi action nahi hui.\n"
+        "Listing waise hi live hai. Nayi photo/detail bhejoge to options phir milenge."
+    )
+
+
+def _office_selection_expired(payload: dict) -> bool:
+    return not (
+        payload.get("office_last_live_listing_id")
+        or payload.get("office_last_live_draft_id")
+    )
+
+
+def _validate_office_execute(db: Session, conv: AiConversation, choice: str) -> str | None:
+    """Return an error message if the pending action must not run."""
+    payload = _payload(conv)
+    key = str(choice or "").upper()
+    if _office_selection_expired(payload) and key in {"UPDATE", "NEW"}:
+        if key == "UPDATE":
+            return (
+                "⚠️ Session expire / listing context missing.\n"
+                "Update nahi ho sakta. Nayi listing ke liye phir se post karke options use karein."
+            )
+    if key == "UPDATE":
+        lid = str(payload.get("office_last_live_listing_id") or "").strip()
+        draft_id = payload.get("office_last_live_draft_id")
+        if not lid and draft_id in (None, ""):
+            return "⚠️ Purani listing ID nahi mili. Update cancel."
+        if draft_id not in (None, ""):
+            from ..models import AiListingDraft
+
+            draft = db.get(AiListingDraft, int(draft_id))
+            if draft is None or (draft.mobile or "") != (conv.mobile or ""):
+                return "⚠️ Listing is operator session se match nahi karti. Update cancel."
+    if key in {"NEW", "UPDATE"} and _known_operator(db, conv) is not None:
+        if not active_target(_known_operator(db, conv)):
+            return (
+                "⚠️ Customer select nahi hai.\n"
+                "Pehle customer number bhejein: customer 98XXXXXXXX"
+            )
+    return None
 
 
 def _execute_office_selection(db: Session, conv: AiConversation, choice: str, pending: str = "") -> str | None:
-    key = str(choice or "").upper()
-    if key == "NEW_ACCOUNT":
-        return _office_start_new_account(db, conv)
-    if key == "NEW":
-        return _office_start_new_after_live(db, conv, pending)
-    if key == "UPDATE":
-        return _office_resume_update_after_live(db, conv, pending)
     payload = _payload(conv)
-    _set_office_button_set(payload, "pick")
-    _write_payload(conv, payload)
-    return _office_next_ask(payload)
+    key = str(choice or "").upper()
+    nonce = str(payload.get("office_confirm_nonce") or "").strip()
+    if nonce and str(payload.get("office_executed_nonce") or "") == nonce:
+        return "✅ Ye action pehle hi complete ho chuki hai. Duplicate skip."
+
+    err = _validate_office_execute(db, conv, key)
+    if err:
+        _clear_office_next_flags(payload, keep_last=True)
+        _write_payload(conv, payload)
+        return err
+
+    if key == "NEW_ACCOUNT":
+        out = _office_start_new_account(db, conv)
+    elif key == "NEW":
+        out = _office_start_new_after_live(db, conv, pending)
+    elif key == "UPDATE":
+        out = _office_resume_update_after_live(db, conv, pending)
+    else:
+        _set_office_button_set(payload, "pick")
+        _write_payload(conv, payload)
+        return _office_next_ask(payload)
+
+    if nonce:
+        pl = _payload(conv)
+        pl["office_executed_nonce"] = nonce
+        pl["office_confirm_nonce"] = None
+        _write_payload(conv, pl)
+    return out
 
 
 def _bind_held_office_media(db: Session, conv: AiConversation) -> None:
@@ -1106,7 +1231,7 @@ def _resolve_office_next_action(db: Session, conv: AiConversation, text: str, me
     def _choice_new_account(m: str) -> bool:
         return m.upper() == "NEW_ACCOUNT" or bool(_CHOICE_NEW_ACCOUNT.match(m))
 
-    # Confirm / Change (second step of radio + Confirm UX).
+    # Confirm / Cancel (second step — clickable reply buttons).
     if msg.upper() == "CONFIRM" or _CHOICE_CONFIRM.match(msg):
         selected = str(payload.get("office_selected_next") or "").upper()
         if not selected:
@@ -1115,11 +1240,8 @@ def _resolve_office_next_action(db: Session, conv: AiConversation, text: str, me
             return "Pehle ek option select karein, phir *Confirm* dabayein.\n\n" + _office_next_ask(payload)
         return _execute_office_selection(db, conv, selected, pending)
 
-    if msg.upper() == "CHANGE" or _CHOICE_CHANGE.match(msg):
-        payload["office_selected_next"] = None
-        _set_office_button_set(payload, "pick")
-        _write_payload(conv, payload)
-        return _office_next_ask(payload)
+    if msg.upper() == "CANCEL" or _CHOICE_CANCEL.match(msg):
+        return _cancel_office_selection(db, conv)
 
     # First step: selecting an option only stages it — Confirm runs the action.
     if _choice_new_account(msg):
@@ -1136,14 +1258,14 @@ def _resolve_office_next_action(db: Session, conv: AiConversation, text: str, me
             or _CHOICE_NEW.match(raw)
             or _CHOICE_NEW_ACCOUNT.match(raw)
             or _CHOICE_CONFIRM.match(raw)
-            or _CHOICE_CHANGE.match(raw)
+            or _CHOICE_CANCEL.match(raw)
         ):
             payload["office_pending_text"] = ((pending + "\n" if pending else "") + raw).strip()[:2000]
             _write_payload(conv, payload)
         if payload.get("office_selected_next"):
             _set_office_button_set(payload, "confirm")
             _write_payload(conv, payload)
-            return _office_confirm_ask(payload) + "\n\n(Pehle Confirm dabayein.)"
+            return _office_confirm_ask(db, conv, payload) + "\n\n(Pehle Confirm dabayein.)"
         _set_office_button_set(payload, "pick")
         _write_payload(conv, payload)
         return _office_next_ask(payload)
@@ -1152,18 +1274,26 @@ def _resolve_office_next_action(db: Session, conv: AiConversation, text: str, me
         if payload.get("office_selected_next"):
             _set_office_button_set(payload, "confirm")
             _write_payload(conv, payload)
-            return _office_confirm_ask(payload)
+            return _office_confirm_ask(db, conv, payload)
         _set_office_button_set(payload, "pick")
         _write_payload(conv, payload)
         return _office_next_ask(payload)
 
+    # Free-typed text while awaiting — nudge back to interactive buttons (no action).
     if payload.get("office_selected_next"):
         _set_office_button_set(payload, "confirm")
         _write_payload(conv, payload)
-        return _office_confirm_ask(payload)
+        return (
+            "Please neeche ke *Confirm* / *Cancel* buttons use karein.\n\n"
+            + _office_confirm_ask(db, conv, payload)
+        )
     _set_office_button_set(payload, "pick")
     _write_payload(conv, payload)
-    return _office_next_ask(payload)
+    return (
+        "Please neeche *Select option* se ek choice choose karein "
+        "(type mat karein).\n\n"
+        + _office_next_ask(payload)
+    )
 
 
 def _maybe_offer_update_or_new(
@@ -1187,12 +1317,8 @@ def _maybe_offer_update_or_new(
             selected = str(payload.get("office_selected_next") or "").upper()
             if selected:
                 return _execute_office_selection(db, conv, selected, "")
-        if msg.upper() == "CHANGE" or _CHOICE_CHANGE.match(msg):
-            payload["office_selected_next"] = None
-            payload["awaiting_office_next_action"] = True
-            _set_office_button_set(payload, "pick")
-            _write_payload(conv, payload)
-            return _office_next_ask(payload)
+        if msg.upper() == "CANCEL" or _CHOICE_CANCEL.match(msg):
+            return _cancel_office_selection(db, conv)
         if msg.upper() == "NEW_ACCOUNT" or _CHOICE_NEW_ACCOUNT.match(msg):
             payload["awaiting_office_next_action"] = True
             _write_payload(conv, payload)
@@ -1445,10 +1571,10 @@ def _office_post_result(payload: dict, who: str) -> str:
         + (f"\n🔗 {link}" if link else "")
         + "\n\n*Aage kya karna hai?* Ek option select karein:\n"
         "1. 🟢 *Nayi Listing* — Same account se another listing\n"
-        "2. 🟡 *Update Previous Listing* — Purani listing edit/update\n"
+        "2. 🟡 *Update Previous Listing* — Existing listing edit/update\n"
         "3. 🔵 *New Account + New Listing* — Naye customer se post\n\n"
-        "Neeche se *ek* option select karein, phir *Confirm* dabayein."
-        + f"\n\nSelected account: {who}"
+        "Neeche *Select option* se choose karein, phir *Confirm*."
+        + f"\n\nSelected Account: {who}"
     )
 
 

@@ -1595,17 +1595,45 @@ def test_office_button_id_new_account_clears_customer(db, client):
     assert om.active_target(db.query(AiOfficeSession).one()) is None
 
 
-def test_office_change_resets_selection(db, client):
+def test_office_cancel_stops_pending_action(db, client):
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    old = _live_office_card(db, conv)
+    om.arm_office_next_choice(db, conv)
+    staged = om.handle_office_turn(db, conv, om.OFFICE_BTN_UPDATE)
+    assert "You selected" in staged and "Selected Account" in staged
+    assert _payload(conv).get("office_selected_next") == "UPDATE"
+    cancelled = om.handle_office_turn(db, conv, om.OFFICE_BTN_CANCEL)
+    assert cancelled and "cancel" in cancelled.lower()
+    pl = _payload(conv)
+    assert pl.get("office_selected_next") in (None, "")
+    assert pl.get("awaiting_office_next_action") in (False, None)
+    assert pl.get("listing_edit_mode") in (False, None)
+    assert conv.draft_id == old.id  # no update started
+    assert om.active_target(db.query(AiOfficeSession).one())["user_id"] == "77"
+
+
+def test_office_confirm_is_idempotent(db, client):
     conv = _conv(db, account_type="office")
     om.handle_office_turn(db, conv, "customer 9876543210")
     _live_office_card(db, conv)
     om.arm_office_next_choice(db, conv)
-    om.handle_office_turn(db, conv, om.OFFICE_BTN_UPDATE)
-    assert _payload(conv).get("office_selected_next") == "UPDATE"
-    again = om.handle_office_turn(db, conv, om.OFFICE_BTN_CHANGE)
-    assert again and "Nayi Listing" in again
-    assert _payload(conv).get("office_selected_next") in (None, "")
-    assert _payload(conv).get("office_button_set") == "pick"
+    om.handle_office_turn(db, conv, om.OFFICE_BTN_NEW_SAME)
+    nonce = _payload(conv).get("office_confirm_nonce")
+    assert nonce
+    first = om.handle_office_turn(db, conv, om.OFFICE_BTN_CONFIRM)
+    assert first and "nayi listing" in first.lower()
+    # Replay same confirm nonce (duplicate execution guard).
+    pl = _payload(conv)
+    pl["office_confirm_nonce"] = nonce
+    pl["office_executed_nonce"] = nonce
+    pl["awaiting_office_next_action"] = True
+    pl["office_selected_next"] = "NEW"
+    pl["office_ready_for_next"] = True
+    pl["listing_edit_mode"] = False
+    _write_payload(conv, pl)
+    second = om._execute_office_selection(db, conv, "NEW", "")
+    assert second and "pehle hi" in second.lower()
 
 
 def test_office_choice_buttons_shape():
@@ -1613,6 +1641,12 @@ def test_office_choice_buttons_shape():
     for b in om.OFFICE_CHOICE_BUTTONS:
         assert len(b["title"]) <= 20
         assert b["id"].startswith("office_")
+    assert len(om.OFFICE_LIST_ROWS) == 3
+    for r in om.OFFICE_LIST_ROWS:
+        assert len(r["title"]) <= 24
+        assert len(r.get("description") or "") <= 72
     assert len(om.OFFICE_CONFIRM_BUTTONS) == 2
-    for b in om.OFFICE_CONFIRM_BUTTONS:
-        assert len(b["title"]) <= 20
+    titles = {b["title"] for b in om.OFFICE_CONFIRM_BUTTONS}
+    assert titles == {"Confirm", "Cancel"}
+    ui_pick = {"mode": "list"}
+    assert ui_pick["mode"] == "list"

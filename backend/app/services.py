@@ -781,6 +781,62 @@ def send_whatsapp_reply_buttons(
     return _wa_graph_post(meta, payload, timeout=timeout, retries=retries)
 
 
+def send_whatsapp_list(
+    meta: MetaSettings,
+    to: str,
+    body_text: str,
+    rows: list[dict],
+    *,
+    button_label: str = "Select option",
+    section_title: str = "Options",
+    header_text: str = "",
+    footer_text: str = "",
+    timeout: float = 20,
+    retries: int = 0,
+) -> dict:
+    """Send an interactive list message (single-select rows).
+
+    Each row: {"id": str, "title": str, "description": str?}.
+    Limits: button 20, row title 24, description 72, max 10 rows.
+    """
+    to = to_whatsapp_id(to)
+    if not rows:
+        raise RuntimeError("At least one list row required.")
+    list_rows = []
+    for row in rows[:10]:
+        rid = str(row.get("id") or row.get("title") or "opt")[:200]
+        title = str(row.get("title") or rid)[:24]
+        if not title.strip():
+            continue
+        item = {"id": rid, "title": title}
+        desc = str(row.get("description") or "").strip()
+        if desc:
+            item["description"] = desc[:72]
+        list_rows.append(item)
+    if not list_rows:
+        raise RuntimeError("At least one list row required.")
+    interactive: dict = {
+        "type": "list",
+        "body": {"text": (body_text or "")[:1024]},
+        "action": {
+            "button": str(button_label or "Select option")[:20],
+            "sections": [{"title": str(section_title or "Options")[:24], "rows": list_rows}],
+        },
+    }
+    if header_text:
+        interactive["header"] = {"type": "text", "text": str(header_text)[:60]}
+    if footer_text:
+        interactive["footer"] = {"text": str(footer_text)[:60]}
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "interactive",
+        "interactive": interactive,
+    }
+    return _wa_graph_post(meta, payload, timeout=timeout, retries=retries)
+
+
 def send_whatsapp_delete(meta: MetaSettings, message_id: str) -> dict:
     message_id = (message_id or "").strip()
     if not meta.phone_number_id or not meta.system_user_token:

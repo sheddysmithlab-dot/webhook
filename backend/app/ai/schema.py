@@ -367,6 +367,8 @@ def empty_payload() -> dict:
         "office_send_choice_buttons": False,
         "office_button_set": None,  # "pick" | "confirm"
         "office_selected_next": None,  # NEW | UPDATE | NEW_ACCOUNT
+        "office_confirm_nonce": None,
+        "office_executed_nonce": None,
     }
 
 

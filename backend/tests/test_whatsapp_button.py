@@ -27,9 +27,10 @@ def test_listing_live_button_i18n():
 
 
 def test_send_whatsapp_button_import():
-    from app.services import send_whatsapp_button, send_whatsapp_reply_buttons
+    from app.services import send_whatsapp_button, send_whatsapp_list, send_whatsapp_reply_buttons
     assert callable(send_whatsapp_button)
     assert callable(send_whatsapp_reply_buttons)
+    assert callable(send_whatsapp_list)
 
 
 def test_send_listing_button_import():
