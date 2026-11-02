@@ -762,6 +762,21 @@ def prompt_chat_turn(db, conv: AiConversation, text: str, media_note: str = "") 
     if ledger_sync(conv):
         payload = _payload(conv)
 
+    # Stuck on optional state/city ask — Skip / Yes must advance, not loop.
+    from .confirm import is_skip_optional, skip_place_and_confirm
+
+    if is_skip_optional(msg) or (
+        is_yes(msg)
+        and (
+            str(payload.get("next_ask") or "").lower() in {"state", "city", "location"}
+            or str(conv.error_message or "").startswith(("ask:state", "ask:location", "ask:city"))
+        )
+    ):
+        skipped_place = skip_place_and_confirm(db, conv, lang)
+        if skipped_place:
+            return skipped_place
+        payload = _payload(conv)
+
     # Hard: Haan / Yes confirmation only via confirm handler
     if payload.get("awaiting_confirm") or conv.state == "AWAITING_CONFIRMATION":
         hit = handle_confirmation(db, conv, text, lang)

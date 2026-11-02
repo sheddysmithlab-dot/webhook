@@ -669,7 +669,7 @@ def build_confirmation_summary(
 
     if is_buyer(_payload(conv)):
         return buyer_reply(db, conv, lang, repeat=True)
-    from .confirm import listing_already_confirmed, no_place_note, start_new_listing
+    from .confirm import listing_already_confirmed, start_new_listing
 
     # Never re-ask YES on a card that already went live / was submitted.
     if listing_already_confirmed(db, conv):
@@ -677,23 +677,12 @@ def build_confirmation_summary(
         return t(lang, "vehicle_new_ok") + "\n" + t(lang, "more_detail")
     result = filter_result if filter_result is not None else filter_memory(db, conv)
     payload = handle_data_filter_result(db, conv, result)
-    place_ask = no_place_note(payload, lang)
-    if place_ask and not any(payload.get(k) for k in ("state", "city", "location")):
-        payload["awaiting_confirm"] = False
-        payload["next_ask"] = "state"
-        _set_rm_state(payload, "DATA_COLLECTION")
-        _write_payload(conv, payload)
-        conv.error_message = "ask:state"
-        return "\n".join(
-            [
-                t(lang, "summary_header"),
-                listing_title(payload),
-                place_ask,
-            ]
-        )
+    # Location tip stays optional under confirm — never block YES/Skip on state.
     payload["awaiting_confirm"] = True
     payload["customer_confirmed"] = False
     payload["confirm_rejected"] = False
+    payload["next_ask"] = None
+    conv.error_message = ""
     _set_rm_state(payload, "WAITING_FOR_USER_CONFIRMATION")
     nd = result.normalized_data or {}
     vehicle = result.data.get("vehicle") if isinstance(result.data.get("vehicle"), str) else listing_title(payload)
@@ -1121,6 +1110,21 @@ def handle_message(db: Session, conv: AiConversation, text: str, media_note: str
     load_account_context(db, conv)
     payload = _payload(conv)
     msg = (text or "").strip()
+
+    from .confirm import is_skip_optional, is_yes, skip_place_and_confirm
+
+    # Optional state/city loop: Skip / Yes must not re-ask forever.
+    if is_skip_optional(msg) or (
+        is_yes(msg)
+        and (
+            str(payload.get("next_ask") or "").lower() in {"state", "city", "location"}
+            or str(conv.error_message or "").startswith(("ask:state", "ask:location", "ask:city"))
+        )
+    ):
+        skipped_place = skip_place_and_confirm(db, conv, lang)
+        if skipped_place:
+            return skipped_place
+        payload = _payload(conv)
 
     from .prompt import soft_rules_fallback
 

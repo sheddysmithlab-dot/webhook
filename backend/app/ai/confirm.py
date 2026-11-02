@@ -123,9 +123,49 @@ def is_soft_confirm(text: str) -> bool:
     return bool(_SOFT_CONFIRM.search(msg))
 
 
+_SKIP_PLACE = re.compile(
+    r"^\s*(skip|baad\s*me|baad\s*mein|later|nahi\s*(malum|pata|patt)|"
+    r"mat\s*pooch|koi\s*nahi|bas\s*(yahi|post|confirm)|"
+    r"नहीं\s*(मालूम|पता)|बाद\s*में|स्किप)[\s!.]*$",
+    re.I,
+)
+
+
+def is_skip_optional(text: str) -> bool:
+    """Skip / baad me / nahi pata — optional fields (state/city) can be bypassed."""
+    msg = (text or "").strip()
+    return bool(msg) and len(msg) <= 40 and bool(_SKIP_PLACE.match(msg))
+
+
+def skip_place_and_confirm(db: Session, conv: AiConversation, lang: str = "hinglish") -> str | None:
+    """If we were stuck asking state/city, mark it skipped and open (or keep) confirm."""
+    payload = _payload(conv)
+    asking = str(payload.get("next_ask") or "").lower() in {"state", "city", "location"}
+    ask_key = str(conv.error_message or "")
+    asking = asking or ask_key.startswith("ask:state") or ask_key.startswith("ask:location") or ask_key.startswith("ask:city")
+    if not asking and payload.get("awaiting_confirm"):
+        return None
+    if not asking:
+        return None
+    skipped = list(payload.get("skipped_asks") or [])
+    for key in ("state", "city", "location"):
+        if key not in skipped:
+            skipped.append(key)
+    payload["skipped_asks"] = skipped
+    payload["next_ask"] = None
+    conv.error_message = ""
+    if not collection_ready(payload):
+        _write_payload(conv, payload)
+        return t(lang, "more_detail")
+    return send_summary(db, conv, lang)
+
+
 def confirms_listing(text: str, *, awaiting: bool = False) -> bool:
-    """Yes / post-now, plus soft 'details complete' only while a confirm card is open."""
+    """Yes / post-now, plus soft 'details complete' / Skip only while a confirm card is open."""
     if is_yes(text) or _POST_CONFIRM.search(text or ""):
+        return True
+    # On the confirm card, Skip means "location optional — post with what we have".
+    if awaiting and is_skip_optional(text):
         return True
     return bool(awaiting and is_soft_confirm(text))
 
@@ -276,23 +316,15 @@ def send_summary(db: Session, conv: AiConversation, lang: str = "hinglish") -> s
     if listing_already_confirmed(db, conv, payload):
         start_new_listing(db, conv, {}, [])
         return t(lang, "vehicle_new_ok") + "\n" + t(lang, "more_detail")
-    # Missing place: ask location first — do not open the YES lock yet.
-    place_ask = no_place_note(payload, lang)
-    if place_ask and not any(payload.get(k) for k in ("state", "city", "location")):
-        conv.error_message = "ask:state"
-        payload["next_ask"] = "state"
-        payload["awaiting_confirm"] = False
-        _write_payload(conv, payload)
-        return summary_text(payload, lang=lang) + "\n" + place_ask
+    # Location is optional tip only — always open YES lock so Haan/Skip are not stuck.
     text = summary_text(payload, lang=lang)
     for note in summary_notes(payload, lang):
-        # Place already handled above; keep photo note only.
-        if note == place_ask:
-            continue
         text += "\n" + note
     payload["awaiting_confirm"] = True
     payload["confirm_rejected"] = False
+    payload["next_ask"] = None
     payload["summary_json"] = snapshot(payload)
+    conv.error_message = ""
     _write_payload(conv, payload)
     return text
 
