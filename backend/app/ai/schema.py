@@ -365,6 +365,8 @@ def empty_payload() -> dict:
         "office_held_media_ids": [],
         "office_replay_text": None,
         "office_send_choice_buttons": False,
+        "office_button_set": None,  # "pick" | "confirm"
+        "office_selected_next": None,  # NEW | UPDATE | NEW_ACCOUNT
     }
 
 

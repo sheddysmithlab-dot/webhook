@@ -1513,10 +1513,11 @@ def test_office_after_live_asks_update_or_new(db, client):
     om.handle_office_turn(db, conv, "customer 9876543210")
     _live_office_card(db, conv)
     ask = om.handle_office_turn(db, conv, "tyre 4 h paper update milega")
-    assert ask and "Nayi listing" in ask and "Update purani" in ask and "Naya account" in ask
+    assert ask and "Nayi Listing" in ask and "Update Previous Listing" in ask and "New Account" in ask
+    assert "Confirm" in ask
     pl = _payload(conv)
     assert pl.get("awaiting_office_next_action") is True
-    assert pl.get("office_send_choice_buttons") is True
+    assert pl.get("office_button_set") == "pick"
     assert pl.get("office_last_live_listing_id") == "1031"
     assert "tyre 4" in (pl.get("office_pending_text") or "")
 
@@ -1526,7 +1527,9 @@ def test_office_after_live_update_resumes_edit_mode(db, client):
     om.handle_office_turn(db, conv, "customer 9876543210")
     draft = _live_office_card(db, conv)
     om.handle_office_turn(db, conv, "tyre 4 h")
-    assert om.handle_office_turn(db, conv, "UPDATE") is None
+    staged = om.handle_office_turn(db, conv, "UPDATE")
+    assert staged and "Confirm" in staged and _payload(conv).get("office_selected_next") == "UPDATE"
+    assert om.handle_office_turn(db, conv, "Confirm") is None
     pl = _payload(conv)
     assert pl.get("listing_edit_mode") is True
     assert pl.get("awaiting_office_next_action") in (False, None)
@@ -1540,7 +1543,9 @@ def test_office_after_live_new_starts_fresh_card(db, client):
     om.handle_office_turn(db, conv, "customer 9876543210")
     old = _live_office_card(db, conv)
     om.handle_office_turn(db, conv, "Tata tipper 2020 price 18 lakh")
-    assert om.handle_office_turn(db, conv, "NEW") is None
+    staged = om.handle_office_turn(db, conv, "NEW")
+    assert staged and "Confirm" in staged and _payload(conv).get("office_selected_next") == "NEW"
+    assert om.handle_office_turn(db, conv, "Confirm") is None
     pl = _payload(conv)
     assert pl.get("listing_edit_mode") in (False, None)
     assert pl.get("awaiting_office_next_action") in (False, None)
@@ -1555,7 +1560,7 @@ def test_office_photo_after_live_held_until_choice(db, client):
     _live_office_card(db, conv)
     assert om.should_hold_media_after_live(db, conv) is True
     ask = om.handle_office_turn(db, conv, "", media_note="image id=99")
-    assert ask and "Update purani" in ask
+    assert ask and "Update Previous Listing" in ask
 
 
 def test_office_bare_new_after_live_does_not_patch_listing(db, client):
@@ -1563,7 +1568,11 @@ def test_office_bare_new_after_live_does_not_patch_listing(db, client):
     conv = _conv(db, account_type="office")
     om.handle_office_turn(db, conv, "customer 9876543210")
     old = _live_office_card(db, conv, listing_id="1079")
-    reply = om.handle_office_turn(db, conv, "New")
+    staged = om.handle_office_turn(db, conv, "New")
+    assert staged and "Confirm" in staged
+    assert _payload(conv).get("office_selected_next") == "NEW"
+    assert conv.draft_id == old.id  # not started until Confirm
+    reply = om.handle_office_turn(db, conv, "Confirm")
     assert reply and "nayi listing" in reply.lower()
     pl = _payload(conv)
     assert pl.get("listing_edit_mode") in (False, None)
@@ -1577,9 +1586,26 @@ def test_office_button_id_new_account_clears_customer(db, client):
     om.handle_office_turn(db, conv, "customer 9876543210")
     _live_office_card(db, conv)
     om.arm_office_next_choice(db, conv)
-    reply = om.handle_office_turn(db, conv, om.OFFICE_BTN_NEW_ACCOUNT)
-    assert reply and "naya account" in reply.lower()
+    staged = om.handle_office_turn(db, conv, om.OFFICE_BTN_NEW_ACCOUNT)
+    assert staged and "Confirm" in staged and _payload(conv).get("office_selected_next") == "NEW_ACCOUNT"
+    # still selected until Confirm
+    assert om.active_target(db.query(AiOfficeSession).one())["user_id"] == "77"
+    reply = om.handle_office_turn(db, conv, om.OFFICE_BTN_CONFIRM)
+    assert reply and ("naya account" in reply.lower() or "customer" in reply.lower())
     assert om.active_target(db.query(AiOfficeSession).one()) is None
+
+
+def test_office_change_resets_selection(db, client):
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    _live_office_card(db, conv)
+    om.arm_office_next_choice(db, conv)
+    om.handle_office_turn(db, conv, om.OFFICE_BTN_UPDATE)
+    assert _payload(conv).get("office_selected_next") == "UPDATE"
+    again = om.handle_office_turn(db, conv, om.OFFICE_BTN_CHANGE)
+    assert again and "Nayi Listing" in again
+    assert _payload(conv).get("office_selected_next") in (None, "")
+    assert _payload(conv).get("office_button_set") == "pick"
 
 
 def test_office_choice_buttons_shape():
@@ -1587,3 +1613,6 @@ def test_office_choice_buttons_shape():
     for b in om.OFFICE_CHOICE_BUTTONS:
         assert len(b["title"]) <= 20
         assert b["id"].startswith("office_")
+    assert len(om.OFFICE_CONFIRM_BUTTONS) == 2
+    for b in om.OFFICE_CONFIRM_BUTTONS:
+        assert len(b["title"]) <= 20
