@@ -369,6 +369,9 @@ def empty_payload() -> dict:
         "office_selected_next": None,  # NEW | UPDATE | NEW_ACCOUNT
         "office_confirm_nonce": None,
         "office_executed_nonce": None,
+        # General WhatsApp interactive asks (sell/buy, confirm, menu)
+        "wa_ui_pending": False,
+        "wa_ui": None,
     }
 
 

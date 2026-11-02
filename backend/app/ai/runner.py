@@ -235,11 +235,15 @@ def parse_meta_message(msg: dict) -> dict:
         inter = msg.get("interactive") or {}
         br = inter.get("button_reply") if isinstance(inter.get("button_reply"), dict) else {}
         lr = inter.get("list_reply") if isinstance(inter.get("list_reply"), dict) else {}
-        # Prefer stable button id for office MCQ choices (title is display-only).
+        # Prefer stable button/list id (title is display-only).
         bid = str(br.get("id") or lr.get("id") or "").strip()
         title = str(br.get("title") or lr.get("title") or "").strip()
         if bid.startswith("office_"):
             text = bid
+        elif bid.startswith("wa_"):
+            from .wa_choice import resolve_wa_choice_text
+
+            text = resolve_wa_choice_text(bid, title) or title or text
         else:
             text = title or text
     elif typ in {"reaction", "sticker", "ephemeral", "unsupported", "system"}:
@@ -767,17 +771,21 @@ def process_inbound(
             meta = get_or_create_settings(db)
             try:
                 from .office_mode import take_office_interactive_ui
+                from .wa_choice import ensure_interactive_for_reply, take_wa_interactive_ui
                 from ..services import send_whatsapp_list, send_whatsapp_reply_buttons
 
-                ui = take_office_interactive_ui(conv)
+                try:
+                    ensure_interactive_for_reply(conv, reply)
+                except Exception:
+                    log.exception("wa_choice ensure interactive failed")
+
+                ui = take_office_interactive_ui(conv) or take_wa_interactive_ui(conv)
                 if ui.get("mode") == "list":
-                    # Short interactive body (full tip already has the options as text
-                    # fallback). List rows = radio-style pick; Confirm comes next.
+                    # Short interactive body when the tip is long; list rows = radio pick.
                     list_body = reply
                     if len(list_body) > 900:
                         list_body = (
-                            "Aage kya karna hai? Neeche *Select option* se choose karein, "
-                            "phir *Confirm*."
+                            "Aage kya karna hai? Neeche *Select option* se choose karein."
                         )
                     try:
                         result = send_whatsapp_list(
@@ -786,30 +794,30 @@ def process_inbound(
                             list_body,
                             ui.get("rows") or [],
                             button_label=str(ui.get("button_label") or "Select option"),
-                            section_title=str(ui.get("section_title") or "Next action"),
+                            section_title=str(ui.get("section_title") or "Options"),
                         )
-                        log.info("office interactive list sent mobile=***%s", mobile[-4:])
+                        log.info("interactive list sent mobile=***%s", mobile[-4:])
                     except Exception:
-                        log.exception("office list message failed — falling back to reply buttons")
+                        log.exception("interactive list failed — falling back to reply buttons")
                         try:
                             result = send_whatsapp_reply_buttons(
                                 meta, mobile, reply, ui.get("fallback_buttons") or []
                             )
-                            log.info("office interactive reply-buttons sent mobile=***%s", mobile[-4:])
+                            log.info("interactive reply-buttons sent mobile=***%s", mobile[-4:])
                         except Exception:
-                            log.exception("office reply-button fallback failed — text only")
+                            log.exception("reply-button fallback failed — text only")
                             result = send_whatsapp_text(meta, mobile, reply)
                 elif ui.get("mode") == "buttons" and ui.get("buttons"):
                     try:
                         result = send_whatsapp_reply_buttons(meta, mobile, reply, ui["buttons"])
-                        log.info("office confirm buttons sent mobile=***%s", mobile[-4:])
+                        log.info("interactive buttons sent mobile=***%s", mobile[-4:])
                     except Exception:
-                        log.exception("office confirm buttons failed — falling back to text")
+                        log.exception("interactive buttons failed — falling back to text")
                         result = send_whatsapp_text(meta, mobile, reply)
                 else:
                     if "Aage kya karna hai" in (reply or "") or "Select option" in (reply or ""):
                         log.warning(
-                            "office next-step tip without interactive UI mobile=***%s",
+                            "choice tip without interactive UI mobile=***%s",
                             mobile[-4:] if mobile else "",
                         )
                     result = send_whatsapp_text(meta, mobile, reply)

@@ -839,20 +839,6 @@ def schedule_photo_reread(conv_id: int, lang: str = "hinglish", draft_id: int | 
                         body = f"{body}\n\n{place_note}"
                     body = f"{body}\n\n{t(lang, 'confirm_ask')}"
                     body = decorate_office_reply(db, conv, body)
-                    meta = get_or_create_settings(db)
-                    result = send_whatsapp_text(meta, conv.mobile, body)
-                    store_chat(
-                        db,
-                        wamid=result.get("wamid") or f"vision.{conv.id}.{int(time.time())}",
-                        conversation_id=conv.conversation_id or f"CONV_{conv.mobile}",
-                        from_mobile=meta.phone_number_id or "infradealer",
-                        from_name="InfraDealer AI",
-                        to_mobile=conv.mobile,
-                        direction="outbound",
-                        body=body,
-                        status="sent",
-                        unread=False,
-                    )
                     pl = _payload(conv)
                     pl.pop("photo_reread_pending", None)
                     # confirm_ask must open the confirm lock — else "Haan"/"No" miss the card
@@ -869,6 +855,34 @@ def schedule_photo_reread(conv_id: int, lang: str = "hinglish", draft_id: int | 
                     except Exception:
                         log.exception("vision.followup awaiting_confirm failed")
                     _write_payload(conv, pl)
+                    meta = get_or_create_settings(db)
+                    result = {}
+                    try:
+                        from .wa_choice import arm_confirm_choice, take_wa_interactive_ui
+                        from ..services import send_whatsapp_reply_buttons
+
+                        if pl.get("awaiting_confirm"):
+                            arm_confirm_choice(conv)
+                        ui = take_wa_interactive_ui(conv)
+                        if ui.get("mode") == "buttons" and ui.get("buttons"):
+                            result = send_whatsapp_reply_buttons(meta, conv.mobile, body, ui["buttons"])
+                        else:
+                            result = send_whatsapp_text(meta, conv.mobile, body)
+                    except Exception:
+                        log.exception("vision.followup interactive send failed — text only")
+                        result = send_whatsapp_text(meta, conv.mobile, body)
+                    store_chat(
+                        db,
+                        wamid=result.get("wamid") or f"vision.{conv.id}.{int(time.time())}",
+                        conversation_id=conv.conversation_id or f"CONV_{conv.mobile}",
+                        from_mobile=meta.phone_number_id or "infradealer",
+                        from_name="InfraDealer AI",
+                        to_mobile=conv.mobile,
+                        direction="outbound",
+                        body=body,
+                        status="sent",
+                        unread=False,
+                    )
                     db.commit()
                     log.info(
                         "vision.followup_sent mobile=***%s images=%d",

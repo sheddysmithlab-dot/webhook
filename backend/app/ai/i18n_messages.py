@@ -2,9 +2,9 @@
 
 MESSAGES = {
     "greet": {
-        "hinglish": "Namaste! Main InfraDealer AI Agent hoon. Aap gaadi/machine bechna chahte ho ya kharidna?",
-        "hi": "नमस्ते! मैं InfraDealer AI एजेंट हूँ। आप गाड़ी/मशीन बेचना चाहते हैं या खरीदना?",
-        "en": "Hello! I'm the InfraDealer AI Agent. Do you want to sell or buy a vehicle/machine?",
+        "hinglish": "Namaste! Main InfraDealer AI Agent hoon. Aap gaadi/machine bechna chahte ho ya kharidna?\nNeeche *Sell* / *Buy* dabayein.",
+        "hi": "नमस्ते! मैं InfraDealer AI एजेंट हूँ। आप गाड़ी/मशीन बेचना चाहते हैं या खरीदना?\nनीचे *Sell* / *Buy* दबाएँ।",
+        "en": "Hello! I'm the InfraDealer AI Agent. Do you want to sell or buy a vehicle/machine?\nTap *Sell* / *Buy* below.",
         "pa": "ਸਤ ਸ੍ਰੀ ਅਕਾਲ! ਮੈਂ InfraDealer ਰਿਲੇਸ਼ਨਸ਼ਪ ਮੈਨੇਜਰ ਹਾਂ। ਤੁਸੀਂ ਵਾਹਨ/ਮਸ਼ਨ ਵੇਚਣਾ ਚਾਹੁੰਦੇ ਹੋ ਜਾਂ ਖਰੀਦਣਾ?",
         "pa_roman": "Sat sri akal! Main InfraDealer relationship manager haan. Tusi vaahan/mashin wechna chaahunde ho ya khareedna?",
         "gu": "નમસ્તે! હું InfraDealer રિલેશનશિપ મેનેજર છું. તમે વાહન/મશીન વેચવું છો કે ખરીદવું?",
@@ -25,9 +25,9 @@ MESSAGES = {
         "ur_roman": "Adab! Main InfraDealer relationship manager hoon. Aap gaari/mashin bechna chahte hain ya khareedna?",
     },
     "intent": {
-        "hinglish": "Aap sell karna chahte ho ya buy?",
-        "hi": "आप बेचना चाहते हैं या खरीदना?",
-        "en": "Would you like to sell or buy?",
+        "hinglish": "Aap sell karna chahte ho ya buy? Neeche *Sell* / *Buy* dabayein.",
+        "hi": "आप बेचना चाहते हैं या खरीदना? नीचे *Sell* / *Buy* दबाएँ।",
+        "en": "Would you like to sell or buy? Tap *Sell* / *Buy* below.",
         "pa": "ਤੁਸੀਂ ਵੇਚਣਾ ਚਾਹੁੰਦੇ ਹੋ ਜਾਂ ਖਰੀਦਣਾ?",
         "pa_roman": "Tusi wechna chaahunde ho ya khareedna?",
         "gu": "તમે વેચવું છો કે ખરીદવું?",
@@ -333,9 +333,9 @@ MESSAGES = {
         "en": "All details received. Reply Yes to confirm.",
     },
     "confirm_ask": {
-        "hinglish": "Kya ye details sahi hain? Haan likhiye.",
-        "hi": "क्या ये डिटेल्स सही हैं? हाँ लिखिए।",
-        "en": "Are these details correct? Reply Yes.",
+        "hinglish": "Kya ye details sahi hain? Neeche *Haan* / *Nahi* dabayein.",
+        "hi": "क्या ये डिटेल्स सही हैं? नीचे *हाँ* / *नहीं* दबाएँ।",
+        "en": "Are these details correct? Tap *Yes* / *No* below.",
     },
     "confirm_what_change": {
         "hinglish": "Theek hai — kya badalna hai? (brand / model / year / price / location / photos) likh dijiye.",
@@ -954,9 +954,9 @@ MESSAGES = {
         "en": "Visit Website",
     },
     "infradealer_options": {
-        "hinglish": "Sir, kya aap karna chahte hain?\n\n1. Gaadi bechna (Sell)\n2. Gaadi kharidna (Buy)\n3. apni listing dekhna (Status)\n4. account setup\n\nNumber reply kijiye.",
-        "hi": "सर, क्या आप करना चाहते हैं?\n\n1. गाड़ी बेचना (Sell)\n2. गाड़ी खरीदना (Buy)\n3. अपनी लिस्टिंग देखना (Status)\n4. अकाउंट सेटअप\n\nनंबर रिप्लाई कीजिए।",
-        "en": "Sir, what would you like to do?\n\n1. Sell a vehicle\n2. Buy a vehicle\n3. Check listing status\n4. Account setup\n\nReply with a number.",
+        "hinglish": "Sir, kya aap karna chahte hain?\n\n1. Gaadi bechna (Sell)\n2. Gaadi kharidna (Buy)\n3. apni listing dekhna (Status)\n4. account setup\n\nNeeche *Select option* se choose karein.",
+        "hi": "सर, क्या आप करना चाहते हैं?\n\n1. गाड़ी बेचना (Sell)\n2. गाड़ी खरीदना (Buy)\n3. अपनी लिस्टिंग देखना (Status)\n4. अकाउंट सेटअप\n\nनीचे *Select option* से चुनें।",
+        "en": "Sir, what would you like to do?\n\n1. Sell a vehicle\n2. Buy a vehicle\n3. Check listing status\n4. Account setup\n\nChoose via *Select option* below.",
     },
     "ai_error_retry": {
         "hinglish": "Ji Sir, main abhi technical dikkat me hoon. Aap thodi der baad phir se connect karein.",

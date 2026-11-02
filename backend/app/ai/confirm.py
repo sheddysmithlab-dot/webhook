@@ -326,6 +326,12 @@ def send_summary(db: Session, conv: AiConversation, lang: str = "hinglish") -> s
     payload["summary_json"] = snapshot(payload)
     conv.error_message = ""
     _write_payload(conv, payload)
+    try:
+        from .wa_choice import arm_confirm_choice
+
+        arm_confirm_choice(conv)
+    except Exception:
+        log.exception("arm confirm choice buttons failed")
     return text
 
 
