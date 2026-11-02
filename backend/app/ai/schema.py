@@ -364,6 +364,7 @@ def empty_payload() -> dict:
         "office_pending_text": None,
         "office_held_media_ids": [],
         "office_replay_text": None,
+        "office_send_choice_buttons": False,
     }
 
 

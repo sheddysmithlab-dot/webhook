@@ -1513,9 +1513,10 @@ def test_office_after_live_asks_update_or_new(db, client):
     om.handle_office_turn(db, conv, "customer 9876543210")
     _live_office_card(db, conv)
     ask = om.handle_office_turn(db, conv, "tyre 4 h paper update milega")
-    assert ask and "UPDATE" in ask and "NEW" in ask
+    assert ask and "Nayi listing" in ask and "Update purani" in ask and "Naya account" in ask
     pl = _payload(conv)
     assert pl.get("awaiting_office_next_action") is True
+    assert pl.get("office_send_choice_buttons") is True
     assert pl.get("office_last_live_listing_id") == "1031"
     assert "tyre 4" in (pl.get("office_pending_text") or "")
 
@@ -1554,4 +1555,35 @@ def test_office_photo_after_live_held_until_choice(db, client):
     _live_office_card(db, conv)
     assert om.should_hold_media_after_live(db, conv) is True
     ask = om.handle_office_turn(db, conv, "", media_note="image id=99")
-    assert ask and "UPDATE" in ask
+    assert ask and "Update purani" in ask
+
+
+def test_office_bare_new_after_live_does_not_patch_listing(db, client):
+    """Bug: typing 'New' was stored as RTO/place and patched listing 1079."""
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    old = _live_office_card(db, conv, listing_id="1079")
+    reply = om.handle_office_turn(db, conv, "New")
+    assert reply and "nayi listing" in reply.lower()
+    pl = _payload(conv)
+    assert pl.get("listing_edit_mode") in (False, None)
+    assert conv.draft_id != old.id
+    assert not pl.get("infradealer_listing_id")
+    assert om.active_target(db.query(AiOfficeSession).one())["user_id"] == "77"
+
+
+def test_office_button_id_new_account_clears_customer(db, client):
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    _live_office_card(db, conv)
+    om.arm_office_next_choice(db, conv)
+    reply = om.handle_office_turn(db, conv, om.OFFICE_BTN_NEW_ACCOUNT)
+    assert reply and "naya account" in reply.lower()
+    assert om.active_target(db.query(AiOfficeSession).one()) is None
+
+
+def test_office_choice_buttons_shape():
+    assert len(om.OFFICE_CHOICE_BUTTONS) == 3
+    for b in om.OFFICE_CHOICE_BUTTONS:
+        assert len(b["title"]) <= 20
+        assert b["id"].startswith("office_")

@@ -671,47 +671,12 @@ def send_whatsapp_fast(meta: MetaSettings, to: str, body: str, preview_url: bool
     return send_whatsapp_text(meta, to, body, preview_url=preview_url, timeout=12.0, retries=1)
 
 
-def send_whatsapp_button(
-    meta: MetaSettings,
-    to: str,
-    body_text: str,
-    buttons: list[dict],
-    *,
-    timeout: float = 20,
-    retries: int = 0,
-) -> dict:
-    """Send an interactive button message via WhatsApp Business API.
-
-    Args:
-        body_text: Main message text shown above buttons.
-        buttons: List of {"title": str, "url": str} dicts; only the first is sent.
-    """
-    to = to_whatsapp_id(to)
+def _wa_graph_post(meta: MetaSettings, payload: dict, *, timeout: float = 20, retries: int = 0) -> dict:
+    to_check = str((payload or {}).get("to") or "")
     if not meta.phone_number_id or not meta.system_user_token:
         raise RuntimeError("Phone Number ID aur System User Token save karo.")
-    if not to:
+    if not to_check:
         raise RuntimeError("Valid WhatsApp recipient missing.")
-    if not buttons:
-        raise RuntimeError("At least one button required.")
-    # Cloud API allows a single URL button per message (interactive cta_url).
-    first = buttons[0]
-    payload = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": to,
-        "type": "interactive",
-        "interactive": {
-            "type": "cta_url",
-            "body": {"text": body_text[:1024]},
-            "action": {
-                "name": "cta_url",
-                "parameters": {
-                    "display_text": str(first.get("title") or "Open")[:20],
-                    "url": str(first.get("url") or "https://infradealer.com"),
-                },
-            },
-        },
-    }
     url = graph_url(meta, f"{meta.phone_number_id}/messages")
     headers = {"Authorization": f"Bearer {meta.system_user_token}"}
     attempts = max(1, int(retries) + 1)
@@ -734,7 +699,86 @@ def send_whatsapp_button(
                 time.sleep(0.35)
                 continue
             raise
-    raise last_err or RuntimeError("WhatsApp button send failed")
+    raise last_err or RuntimeError("WhatsApp send failed")
+
+
+def send_whatsapp_button(
+    meta: MetaSettings,
+    to: str,
+    body_text: str,
+    buttons: list[dict],
+    *,
+    timeout: float = 20,
+    retries: int = 0,
+) -> dict:
+    """Send an interactive button message via WhatsApp Business API.
+
+    Args:
+        body_text: Main message text shown above buttons.
+        buttons: List of {"title": str, "url": str} dicts; only the first is sent.
+    """
+    to = to_whatsapp_id(to)
+    if not buttons:
+        raise RuntimeError("At least one button required.")
+    # Cloud API allows a single URL button per message (interactive cta_url).
+    first = buttons[0]
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "cta_url",
+            "body": {"text": body_text[:1024]},
+            "action": {
+                "name": "cta_url",
+                "parameters": {
+                    "display_text": str(first.get("title") or "Open")[:20],
+                    "url": str(first.get("url") or "https://infradealer.com"),
+                },
+            },
+        },
+    }
+    return _wa_graph_post(meta, payload, timeout=timeout, retries=retries)
+
+
+def send_whatsapp_reply_buttons(
+    meta: MetaSettings,
+    to: str,
+    body_text: str,
+    buttons: list[dict],
+    *,
+    timeout: float = 20,
+    retries: int = 0,
+) -> dict:
+    """Send up to 3 quick-reply buttons (interactive type=button).
+
+    Each button: {"id": str, "title": str}. Title max 20 chars (WhatsApp limit).
+    """
+    to = to_whatsapp_id(to)
+    if not buttons:
+        raise RuntimeError("At least one reply button required.")
+    rows = []
+    for btn in buttons[:3]:
+        bid = str(btn.get("id") or btn.get("title") or "opt")[:256]
+        title = str(btn.get("title") or bid)[:20]
+        if not title.strip():
+            continue
+        rows.append({"type": "reply", "reply": {"id": bid, "title": title}})
+    if not rows:
+        raise RuntimeError("At least one reply button required.")
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": (body_text or "")[:1024]},
+            "action": {"buttons": rows},
+        },
+    }
+    return _wa_graph_post(meta, payload, timeout=timeout, retries=retries)
 
 
 def send_whatsapp_delete(meta: MetaSettings, message_id: str) -> dict:

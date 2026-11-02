@@ -233,7 +233,15 @@ def parse_meta_message(msg: dict) -> dict:
         text = ((msg.get("button") or {}).get("text")) or text
     elif typ == "interactive":
         inter = msg.get("interactive") or {}
-        text = ((inter.get("button_reply") or {}).get("title")) or ((inter.get("list_reply") or {}).get("title")) or text
+        br = inter.get("button_reply") if isinstance(inter.get("button_reply"), dict) else {}
+        lr = inter.get("list_reply") if isinstance(inter.get("list_reply"), dict) else {}
+        # Prefer stable button id for office MCQ choices (title is display-only).
+        bid = str(br.get("id") or lr.get("id") or "").strip()
+        title = str(br.get("title") or lr.get("title") or "").strip()
+        if bid.startswith("office_"):
+            text = bid
+        else:
+            text = title or text
     elif typ in {"reaction", "sticker", "ephemeral", "unsupported", "system"}:
         return {"type": typ, "text": "", "media": None}
     # Meta sometimes prefixes button/quick replies as "Reply Name"
@@ -754,7 +762,18 @@ def process_inbound(
             t_wa0 = time.perf_counter()
             meta = get_or_create_settings(db)
             try:
-                result = send_whatsapp_text(meta, mobile, reply)
+                from .office_mode import take_office_choice_buttons
+                from ..services import send_whatsapp_reply_buttons
+
+                choice_btns = take_office_choice_buttons(conv)
+                if choice_btns:
+                    try:
+                        result = send_whatsapp_reply_buttons(meta, mobile, reply, choice_btns)
+                    except Exception:
+                        log.exception("office choice buttons failed — falling back to text")
+                        result = send_whatsapp_text(meta, mobile, reply)
+                else:
+                    result = send_whatsapp_text(meta, mobile, reply)
                 store_chat(
                     db,
                     wamid=result.get("wamid") or f"ai.{conv.id}.{int(utcnow().timestamp())}",

@@ -103,13 +103,30 @@ _OFFICE_LAST_KEYS = (
     "office_last_live_title",
     "office_pending_text",
     "office_held_media_ids",
+    "office_send_choice_buttons",
+)
+# WhatsApp reply-button ids + short titles (title max 20 chars).
+OFFICE_BTN_NEW_SAME = "office_new_same"
+OFFICE_BTN_UPDATE = "office_update"
+OFFICE_BTN_NEW_ACCOUNT = "office_new_account"
+OFFICE_CHOICE_BUTTONS = (
+    {"id": OFFICE_BTN_NEW_SAME, "title": "Nayi listing"},
+    {"id": OFFICE_BTN_UPDATE, "title": "Update purani"},
+    {"id": OFFICE_BTN_NEW_ACCOUNT, "title": "Naya account"},
 )
 _CHOICE_UPDATE = re.compile(
-    r"^\s*(?:1|update|edit|badlo|badal\w*|purani|pichhli|pichli|previous)\s*[.!]*\s*$",
+    r"^\s*(?:1|update|edit|badlo|badal\w*|purani|pichhli|pichli|previous|update\s*purani|"
+    r"office_update)\s*[.!]*\s*$",
     re.I,
 )
 _CHOICE_NEW = re.compile(
-    r"^\s*(?:2|new|naya|nayi|alag)\s*(?:wali|wale|listing|post|card|ad)?\s*[.!]*\s*$",
+    r"^\s*(?:2|new|naya|nayi|alag|nayi\s*listing|office_new_same)\s*"
+    r"(?:wali|wale|listing|post|card|ad)?\s*[.!]*\s*$",
+    re.I,
+)
+_CHOICE_NEW_ACCOUNT = re.compile(
+    r"^\s*(?:3|naya\s*account|new\s*account|dusra\s*(?:account|customer|number|mobile)|"
+    r"office_new_account)\s*[.!]*\s*$",
     re.I,
 )
 _VEHICLE_WORD = re.compile(
@@ -686,6 +703,14 @@ def _close_posted_card(db: Session, conv: AiConversation, *, keep_awaiting: bool
     payload = _payload(conv)
     _restore_office_keys(payload, saved)
     payload["office_ready_for_next"] = True
+    # Do NOT keep live listing_id/url on the active chat — else "New" becomes a
+    # place edit and sync_posted_product patches the previous listing.
+    payload["infradealer_listing_id"] = None
+    payload["posted_product_id"] = None
+    payload["listing_url"] = None
+    payload["listing_status"] = None
+    payload["summary_json"] = None
+    payload["confirmed_json"] = None
     if floor not in (None, ""):
         payload["office_draft_floor"] = floor
     _write_payload(conv, payload)
@@ -718,7 +743,9 @@ def _looks_like_listing_followup(text: str, media_note: str = "") -> bool:
     msg = (text or "").strip()
     if not msg or _GREETING.match(msg):
         return False
-    if _CHOICE_UPDATE.match(msg) or _CHOICE_NEW.match(msg):
+    if _CHOICE_UPDATE.match(msg) or _CHOICE_NEW.match(msg) or _CHOICE_NEW_ACCOUNT.match(msg):
+        return False
+    if msg.upper() in {"NEW", "UPDATE", "NEW_ACCOUNT"}:
         return False
     if _NEW_LISTING.search(msg) and not _LISTING_SIGNAL.search(msg) and not _VEHICLE_WORD.search(msg):
         return False
@@ -736,11 +763,52 @@ def _office_next_ask(payload: dict) -> str:
     url = str(payload.get("office_last_live_url") or "").strip()
     link = f"\n🔗 {url}" if url else ""
     return (
-        f"Photo/detail mil gayi — confirm karein:{link}\n"
-        f"1️⃣ *UPDATE* — purani listing ({title}) update\n"
-        f"2️⃣ *NEW* — same account pe nayi listing\n\n"
-        "Reply: *UPDATE* ya *NEW*"
+        f"Confirm karein — aage kya karna hai?{link}\n"
+        f"• *Nayi listing* — same account pe nayi post\n"
+        f"• *Update purani* — ({title}) edit\n"
+        f"• *Naya account* — dusra customer + nayi listing\n\n"
+        "Neeche se button choose karein."
     )
+
+
+def arm_office_next_choice(db: Session, conv: AiConversation) -> None:
+    """After a live URL: remember the listing and ask via reply buttons next send."""
+    if _known_operator(db, conv) is None:
+        return
+    if not _capture_office_last_live(db, conv):
+        return
+    payload = _payload(conv)
+    payload["awaiting_office_next_action"] = True
+    payload["office_ready_for_next"] = True
+    payload["office_send_choice_buttons"] = True
+    _write_payload(conv, payload)
+
+
+def office_choice_buttons_pending(conv: AiConversation) -> bool:
+    return bool(_payload(conv).get("office_send_choice_buttons"))
+
+
+def take_office_choice_buttons(conv: AiConversation) -> list[dict]:
+    """Consume the one-shot flag and return WhatsApp reply-button defs."""
+    payload = _payload(conv)
+    if not payload.get("office_send_choice_buttons"):
+        return []
+    payload["office_send_choice_buttons"] = False
+    _write_payload(conv, payload)
+    return [dict(b) for b in OFFICE_CHOICE_BUTTONS]
+
+
+def normalize_office_choice_text(text: str) -> str:
+    """Map WhatsApp button id/title to a stable choice token."""
+    msg = (text or "").strip()
+    low = msg.lower()
+    if low in {OFFICE_BTN_NEW_SAME, "nayi listing", "nayi listing same"}:
+        return "NEW"
+    if low in {OFFICE_BTN_UPDATE, "update purani", "update"}:
+        return "UPDATE"
+    if low in {OFFICE_BTN_NEW_ACCOUNT, "naya account", "new account"}:
+        return "NEW_ACCOUNT"
+    return msg
 
 
 def _bind_held_office_media(db: Session, conv: AiConversation) -> None:
@@ -853,17 +921,30 @@ def _resume_office_last_for_update(db: Session, conv: AiConversation):
     return draft
 
 
+def _selected_who(db: Session, conv: AiConversation) -> str:
+    row = _known_operator(db, conv)
+    target = active_target(row) if row is not None else None
+    return _post_to_label(target or {}) if target else "selected customer"
+
+
 def _office_start_new_after_live(db: Session, conv: AiConversation, pending_text: str = "") -> str | None:
     from .confirm import start_new_listing
 
+    who = _selected_who(db, conv)
     start_new_listing(db, conv, {"intent": "SELL"}, [])
     payload = _payload(conv)
     _clear_office_next_flags(payload)
     if pending_text:
         payload["office_replay_text"] = pending_text
+        _write_payload(conv, payload)
+        _bind_held_office_media(db, conv)
+        return None
     _write_payload(conv, payload)
     _bind_held_office_media(db, conv)
-    return None
+    return (
+        f"✅ Same account (*{who}*) pe nayi listing shuru.\n"
+        "Is gaadi ki photos + details bhejein."
+    )
 
 
 def _office_resume_update_after_live(db: Session, conv: AiConversation, pending_text: str = "") -> str | None:
@@ -871,6 +952,7 @@ def _office_resume_update_after_live(db: Session, conv: AiConversation, pending_
     payload = _payload(conv)
     held = list(payload.get("office_held_media_ids") or [])
     pending = (pending_text or "").strip()
+    title = str(payload.get("office_last_live_title") or "purani listing").strip()
     _clear_office_next_flags(payload, keep_last=True)
     payload["office_held_media_ids"] = held
     payload["listing_edit_mode"] = True
@@ -879,23 +961,54 @@ def _office_resume_update_after_live(db: Session, conv: AiConversation, pending_
     _write_payload(conv, payload)
     _bind_held_office_media(db, conv)
     if draft is None and not pending:
-        return "Purani listing nahi mili. NEW likh kar nayi listing shuru karein."
-    return None
+        return "Purani listing nahi mili. *Nayi listing* button dabayein."
+    if pending:
+        return None
+    url = str(payload.get("listing_url") or payload.get("office_last_live_url") or "").strip()
+    return (
+        f"✅ Purani listing edit mode: *{title}*"
+        + (f"\n🔗 {url}" if url else "")
+        + "\nJo detail/photo change karni hai woh bhejein."
+    )
+
+
+def _office_start_new_account(db: Session, conv: AiConversation) -> str:
+    from .confirm import start_new_listing
+
+    row = _known_operator(db, conv)
+    if row is not None:
+        _clear_target(row)
+        row.step = ""
+        row.pending_phone = ""
+        _touch(row)
+    try:
+        start_new_listing(db, conv, {}, [])
+    except Exception:
+        log.exception("office_mode: start_new_listing on new-account choice failed")
+    payload = _payload(conv)
+    _clear_office_next_flags(payload)
+    _write_payload(conv, payload)
+    return (
+        "✅ Theek hai — naya account + nayi listing.\n"
+        "Customer ka mobile number bhejein:\n"
+        "customer 98XXXXXXXX"
+    )
 
 
 def _resolve_office_next_action(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str | None:
     payload = _payload(conv)
-    msg = (text or "").strip()
+    raw = (text or "").strip()
+    msg = normalize_office_choice_text(raw)
     pending = str(payload.get("office_pending_text") or "").strip()
 
     # Different customer number → drop the ask and let select flow run.
-    if _customer_phone_in_text(msg, _digits10(conv.mobile)):
+    if _customer_phone_in_text(raw, _digits10(conv.mobile)):
         _clear_office_next_flags(payload)
         _write_payload(conv, payload)
         return None
 
     def _choice_new(m: str) -> bool:
-        if _CHOICE_NEW.match(m):
+        if m.upper() == "NEW" or _CHOICE_NEW.match(m):
             return True
         if not _NEW_LISTING.search(m) or _UPDATE_PREV.search(m):
             return False
@@ -903,31 +1016,39 @@ def _resolve_office_next_action(db: Session, conv: AiConversation, text: str, me
         return not (_LISTING_SIGNAL.search(m) or _VEHICLE_WORD.search(m)) and len(m.split()) <= 10
 
     def _choice_update(m: str) -> bool:
-        if _CHOICE_UPDATE.match(m):
+        if m.upper() == "UPDATE" or _CHOICE_UPDATE.match(m):
             return True
         if not _UPDATE_PREV.search(m) or _NEW_LISTING.search(m):
             return False
         return not (_LISTING_SIGNAL.search(m) or _VEHICLE_WORD.search(m)) and len(m.split()) <= 10
 
+    def _choice_new_account(m: str) -> bool:
+        return m.upper() == "NEW_ACCOUNT" or bool(_CHOICE_NEW_ACCOUNT.match(m))
+
+    if _choice_new_account(msg):
+        return _office_start_new_account(db, conv)
     if _choice_new(msg):
         return _office_start_new_after_live(db, conv, pending)
     if _choice_update(msg):
         return _office_resume_update_after_live(db, conv, pending)
 
     # More photos while waiting — keep buffering and re-ask.
-    if _looks_like_listing_followup(msg, media_note):
-        if msg and not _CHOICE_UPDATE.match(msg) and not _CHOICE_NEW.match(msg):
-            payload["office_pending_text"] = ((pending + "\n" if pending else "") + msg).strip()[:2000]
+    if _looks_like_listing_followup(raw, media_note):
+        if raw and not _CHOICE_UPDATE.match(raw) and not _CHOICE_NEW.match(raw) and not _CHOICE_NEW_ACCOUNT.match(raw):
+            payload["office_pending_text"] = ((pending + "\n" if pending else "") + raw).strip()[:2000]
             _write_payload(conv, payload)
-        return _office_next_ask(payload) + "\n\n(Pehle UPDATE ya NEW choose karein.)"
+        payload["office_send_choice_buttons"] = True
+        _write_payload(conv, payload)
+        return _office_next_ask(payload)
 
-    if not msg and media_note:
-        return _office_next_ask(payload) + "\n\n(Pehle UPDATE ya NEW choose karein.)"
+    if not raw and media_note:
+        payload["office_send_choice_buttons"] = True
+        _write_payload(conv, payload)
+        return _office_next_ask(payload)
 
-    return (
-        "Confirm karein: purani listing *UPDATE* karni hai, ya same account pe *NEW* listing?\n"
-        "Reply: *UPDATE* ya *NEW*"
-    )
+    payload["office_send_choice_buttons"] = True
+    _write_payload(conv, payload)
+    return _office_next_ask(payload)
 
 
 def _maybe_offer_update_or_new(
@@ -941,14 +1062,19 @@ def _maybe_offer_update_or_new(
     if payload.get("awaiting_office_next_action"):
         return _resolve_office_next_action(db, conv, text, media_note)
 
-    msg = (text or "").strip()
-    # Explicit NEW/UPDATE with a remembered live card — no need to re-ask.
+    raw = (text or "").strip()
+    msg = normalize_office_choice_text(raw)
+    # Explicit NEW / UPDATE / new-account with a remembered live card — no re-ask.
     if payload.get("office_ready_for_next") and (
         payload.get("office_last_live_listing_id") or payload.get("office_last_live_draft_id")
     ):
-        if _CHOICE_NEW.match(msg) or (_NEW_LISTING.search(msg) and not _LISTING_SIGNAL.search(msg) and not media_note):
+        if msg.upper() == "NEW_ACCOUNT" or _CHOICE_NEW_ACCOUNT.match(msg):
+            return _office_start_new_account(db, conv)
+        if msg.upper() == "NEW" or _CHOICE_NEW.match(msg) or (
+            _NEW_LISTING.search(msg) and not _LISTING_SIGNAL.search(msg) and not media_note
+        ):
             return _office_start_new_after_live(db, conv, "")
-        if _CHOICE_UPDATE.match(msg) or (
+        if msg.upper() == "UPDATE" or _CHOICE_UPDATE.match(msg) or (
             _UPDATE_PREV.search(msg) and not _NEW_LISTING.search(msg) and not _LISTING_SIGNAL.search(msg) and not media_note
         ):
             return _office_resume_update_after_live(db, conv, "")
@@ -956,7 +1082,7 @@ def _maybe_offer_update_or_new(
     if not _looks_like_listing_followup(text, media_note):
         return None
     # New customer number in the same message → select flow, not update/new ask.
-    if _customer_phone_in_text(msg, _digits10(conv.mobile)) and not _SAME_WORD.search(msg):
+    if _customer_phone_in_text(raw, _digits10(conv.mobile)) and not _SAME_WORD.search(raw):
         return None
     if not _capture_office_last_live(db, conv):
         return None
@@ -964,8 +1090,9 @@ def _maybe_offer_update_or_new(
     payload = _payload(conv)
     payload["awaiting_office_next_action"] = True
     payload["office_ready_for_next"] = True
-    if msg:
-        payload["office_pending_text"] = msg[:2000]
+    payload["office_send_choice_buttons"] = True
+    if raw:
+        payload["office_pending_text"] = raw[:2000]
     _write_payload(conv, payload)
     try:
         _close_posted_card(db, conv, keep_awaiting=True)
@@ -974,8 +1101,9 @@ def _maybe_offer_update_or_new(
     payload = _payload(conv)
     payload["awaiting_office_next_action"] = True
     payload["office_ready_for_next"] = True
-    if msg and not payload.get("office_pending_text"):
-        payload["office_pending_text"] = msg[:2000]
+    payload["office_send_choice_buttons"] = True
+    if raw and not payload.get("office_pending_text"):
+        payload["office_pending_text"] = raw[:2000]
     _write_payload(conv, payload)
     return _office_next_ask(payload)
 
@@ -994,6 +1122,7 @@ def handle_office_turn(
 ) -> str | None:
     """Reply for office commands / guards, or None to continue the normal flow."""
     mobile = _digits10(conv.mobile)
+    text = normalize_office_choice_text(text)
     try:
         offer = _maybe_offer_update_or_new(db, conv, text, media_note)
         if offer is not None:
@@ -1001,6 +1130,16 @@ def handle_office_turn(
         # Choice resolved with buffered details → skip auto-close so edit/new card stays.
         if not _payload(conv).get("office_replay_text"):
             _close_posted_card(db, conv)
+        # Bare "New"/"UPDATE" right after live URL (close just armed office_ready).
+        pl = _payload(conv)
+        if pl.get("office_ready_for_next") and (
+            pl.get("office_last_live_listing_id") or pl.get("office_last_live_draft_id")
+        ):
+            offer2 = _maybe_offer_update_or_new(db, conv, text, media_note)
+            if offer2 is not None:
+                return offer2
+            if pl.get("office_replay_text"):
+                return None
     except Exception:
         log.exception("office_mode: closing posted card / update-new ask failed")
     before = _target_id(db, mobile)
@@ -1172,8 +1311,11 @@ def _office_post_result(payload: dict, who: str) -> str:
     return (
         f"✅ Listing {who} ke account par post ho gayi (live)."
         + (f"\n🔗 {link}" if link else "")
-        + f"\n\nAgli baar photo/detail bhejoge to *UPDATE* (purani) ya *NEW* (nayi listing) poochhunga. "
-        f"Selected: {who}. Dusra customer: 98XXXXXXXX."
+        + "\n\nAage kya karna hai? Neeche se button choose karein:\n"
+        "• *Nayi listing* — same account\n"
+        "• *Update purani* — is listing ko edit\n"
+        "• *Naya account* — dusra customer"
+        + f"\n\nSelected: {who}"
     )
 
 
@@ -1204,6 +1346,11 @@ def decorate_office_reply(db: Session, conv: AiConversation, reply: str) -> str:
             target = active_target(operator) or {}
             who = _post_to_label(target)
             reply = _office_post_result(_payload(conv), who)
+            if "post ho gayi (live)" in reply:
+                try:
+                    arm_office_next_choice(db, conv)
+                except Exception:
+                    log.exception("office_mode: arm next choice after live failed")
     except Exception:
         log.exception("office_mode: cooldown strip failed")
     if "Post to:" in reply:
