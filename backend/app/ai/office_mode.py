@@ -79,7 +79,45 @@ _GREETING = re.compile(
     r"^\s*(?:hi+|hii+|hel+o+|helo|hey+|namaste|namaskar|ram\s*ram|menu|help|start|options?|sir)\s*[.!?]*\s*$",
     re.I,
 )
+# After a live URL: operator can update that listing or start another on the same customer.
+_UPDATE_PREV = re.compile(
+    r"\b(update|edit|badlo|badal\w*|purani|pichhli|pichli|previous|wahi|same)\b"
+    r"|\b(listing|post|card|ad)\s*(update|edit|badlo)"
+    r"|\b(update|edit|badlo)\s*(listing|post|card|ad|karo|kr\s*do)?\b",
+    re.I,
+)
+_NEW_LISTING = re.compile(
+    r"\b(new|naya|nayi|alag|dusri|doosri)\b.{0,20}\b(listing|post|card|ad|gaadi|gadi)\b"
+    r"|\b(listing|post|card|ad)\b.{0,16}\b(new|naya|nayi|alag)\b"
+    r"|\b(nayi|naya|new)\s*(wali|wale)?\s*$",
+    re.I,
+)
 _SHORT_WORDS = 14
+_OFFICE_LAST_KEYS = (
+    "office_ready_for_next",
+    "awaiting_office_next_action",
+    "office_last_live_listing_id",
+    "office_last_live_url",
+    "office_last_live_draft_id",
+    "office_last_live_card_id",
+    "office_last_live_title",
+    "office_pending_text",
+    "office_held_media_ids",
+)
+_CHOICE_UPDATE = re.compile(
+    r"^\s*(?:1|update|edit|badlo|badal\w*|purani|pichhli|pichli|previous)\s*[.!]*\s*$",
+    re.I,
+)
+_CHOICE_NEW = re.compile(
+    r"^\s*(?:2|new|naya|nayi|alag)\s*(?:wali|wale|listing|post|card|ad)?\s*[.!]*\s*$",
+    re.I,
+)
+_VEHICLE_WORD = re.compile(
+    r"\b(?:jcb|tata|ashok|leyland|eicher|mahindra|tipper|tractor|excavator|trailer|trolley|"
+    r"tyre|tayar|photo|pic|image|price|rate|model|year|km|hours?|hrs|bechni|bechna|bikau|"
+    r"gaadi|gadi|truck|dumper)\b",
+    re.I,
+)
 
 
 def _now() -> datetime:
@@ -558,8 +596,77 @@ def last_listing_allowed(db: Session, conv: AiConversation, draft) -> bool:
     return (draft.status or "").upper() in _SUBMITTED or confirmed not in ("", "{}", "null")
 
 
-def _close_posted_card(db: Session, conv: AiConversation) -> None:
+def _listing_title_bits(payload: dict, draft=None) -> str:
+    bits = [
+        str(payload.get("brand") or "").strip(),
+        str(payload.get("model") or "").strip(),
+        str(payload.get("year") or "").strip(),
+    ]
+    title = " ".join(b for b in bits if b)
+    if title:
+        return title[:60]
+    if draft is not None:
+        return str(getattr(draft, "title", "") or getattr(draft, "card_id", "") or "")[:60]
+    return str(payload.get("office_last_live_title") or "previous listing")[:60]
+
+
+def _capture_office_last_live(db: Session, conv: AiConversation) -> bool:
+    """Remember the live listing so the next photo/detail can update it or start a new card."""
+    payload = _payload(conv)
+    if payload.get("office_last_live_listing_id") or payload.get("office_last_live_draft_id"):
+        payload["office_ready_for_next"] = True
+        _write_payload(conv, payload)
+        return True
+    from ..models import AiListingDraft
+
+    draft = db.get(AiListingDraft, conv.draft_id) if conv.draft_id else None
+    status = (draft.status or "").upper() if draft else str(payload.get("listing_status") or "").upper()
+    lid = str(payload.get("infradealer_listing_id") or payload.get("posted_product_id") or "").strip()
+    if draft is None or status not in _LIVE_STATUSES or not lid:
+        return False
+    payload["office_last_live_listing_id"] = lid
+    payload["office_last_live_url"] = str(payload.get("listing_url") or "").strip()
+    payload["office_last_live_draft_id"] = int(draft.id)
+    payload["office_last_live_card_id"] = str(draft.card_id or payload.get("active_card_id") or "")
+    payload["office_last_live_title"] = _listing_title_bits(payload, draft)
+    payload["office_ready_for_next"] = True
+    _write_payload(conv, payload)
+    return True
+
+
+def _restore_office_keys(payload: dict, saved: dict) -> None:
+    for key in _OFFICE_LAST_KEYS:
+        val = saved.get(key)
+        if val not in (None, "", [], {}):
+            payload[key] = val
+
+
+def _clear_office_next_flags(payload: dict, *, keep_last: bool = False) -> None:
+    payload["awaiting_office_next_action"] = False
+    payload["office_ready_for_next"] = False
+    payload["office_pending_text"] = ""
+    payload["office_held_media_ids"] = []
+    payload.pop("office_replay_text", None)
+    if keep_last:
+        return
+    for key in (
+        "office_last_live_listing_id",
+        "office_last_live_url",
+        "office_last_live_draft_id",
+        "office_last_live_card_id",
+        "office_last_live_title",
+    ):
+        payload[key] = None
+
+
+def _close_posted_card(db: Session, conv: AiConversation, *, keep_awaiting: bool = False) -> None:
     """A live card is finished: the next message starts clean instead of re-confirming it."""
+    payload = _payload(conv)
+    if payload.get("listing_edit_mode"):
+        return
+    if payload.get("awaiting_office_next_action") and not keep_awaiting:
+        # Choice pending — do not wipe the ask/context mid-flight.
+        return
     if not conv.draft_id or _known_operator(db, conv) is None:
         return
     from ..models import AiListingDraft
@@ -568,15 +675,309 @@ def _close_posted_card(db: Session, conv: AiConversation) -> None:
     draft = db.get(AiListingDraft, conv.draft_id)
     if draft is None or (draft.status or "").upper() not in _LIVE_STATUSES:
         return
+    _capture_office_last_live(db, conv)
+    payload = _payload(conv)
+    floor = payload.get("office_draft_floor")
+    saved = {k: payload.get(k) for k in _OFFICE_LAST_KEYS}
+    if keep_awaiting:
+        saved["awaiting_office_next_action"] = True
+        saved["office_ready_for_next"] = True
+    clear_card_chat_data(db, conv, draft)
+    payload = _payload(conv)
+    _restore_office_keys(payload, saved)
+    payload["office_ready_for_next"] = True
+    if floor not in (None, ""):
+        payload["office_draft_floor"] = floor
+    _write_payload(conv, payload)
+
+
+def should_hold_media_after_live(db: Session, conv: AiConversation) -> bool:
+    """Office: after a live URL, hold photos until UPDATE vs NEW is chosen."""
+    try:
+        if _known_operator(db, conv) is None:
+            return False
+    except Exception:
+        return False
     payload = _payload(conv)
     if payload.get("listing_edit_mode"):
+        return False
+    if payload.get("awaiting_office_next_action") or payload.get("office_ready_for_next"):
+        return True
+    if not conv.draft_id:
+        return False
+    from ..models import AiListingDraft
+
+    draft = db.get(AiListingDraft, conv.draft_id)
+    return bool(draft and (draft.status or "").upper() in _LIVE_STATUSES)
+
+
+def _looks_like_listing_followup(text: str, media_note: str = "") -> bool:
+    note = media_note or ""
+    if re.search(r"\b(?:image|photo|video)\b|id=\d+", note, re.I):
+        return True
+    msg = (text or "").strip()
+    if not msg or _GREETING.match(msg):
+        return False
+    if _CHOICE_UPDATE.match(msg) or _CHOICE_NEW.match(msg):
+        return False
+    if _NEW_LISTING.search(msg) and not _LISTING_SIGNAL.search(msg) and not _VEHICLE_WORD.search(msg):
+        return False
+    if _DETAIL.search(msg) and _short(msg) and not _DETAIL_SKIP.search(msg):
+        return False
+    if _LISTING_SIGNAL.search(msg) or _VEHICLE_WORD.search(msg):
+        return True
+    if len(msg) > 40 and not _PHONE_IN_TEXT.search(msg):
+        return True
+    return False
+
+
+def _office_next_ask(payload: dict) -> str:
+    title = str(payload.get("office_last_live_title") or "previous listing").strip() or "previous listing"
+    url = str(payload.get("office_last_live_url") or "").strip()
+    link = f"\n🔗 {url}" if url else ""
+    return (
+        f"Photo/detail mil gayi — confirm karein:{link}\n"
+        f"1️⃣ *UPDATE* — purani listing ({title}) update\n"
+        f"2️⃣ *NEW* — same account pe nayi listing\n\n"
+        "Reply: *UPDATE* ya *NEW*"
+    )
+
+
+def _bind_held_office_media(db: Session, conv: AiConversation) -> None:
+    from .cards import MAX_PHOTOS
+    from ..models import AiMedia
+
+    if not conv.draft_id:
         return
-    floor = payload.get("office_draft_floor")
-    clear_card_chat_data(db, conv, draft)
-    if floor not in (None, ""):
-        payload = _payload(conv)
-        payload["office_draft_floor"] = floor
+    payload = _payload(conv)
+    held = [int(x) for x in (payload.get("office_held_media_ids") or []) if str(x).isdigit() or isinstance(x, int)]
+    rows = []
+    if held:
+        rows = (
+            db.query(AiMedia)
+            .filter(AiMedia.id.in_(held[-MAX_PHOTOS:]), AiMedia.conversation_id == conv.id)
+            .order_by(AiMedia.id.asc())
+            .all()
+        )
+    if not rows:
+        rows = (
+            db.query(AiMedia)
+            .filter(
+                AiMedia.conversation_id == conv.id,
+                AiMedia.draft_id.is_(None),
+                AiMedia.kind.in_(["image", "photo", "video"]),
+            )
+            .order_by(AiMedia.id.desc())
+            .limit(MAX_PHOTOS)
+            .all()
+        )
+        rows = list(reversed(rows))
+    ids = []
+    for row in rows:
+        row.draft_id = conv.draft_id
+        ids.append(row.id)
+    if ids:
+        payload["media_ids"] = list(dict.fromkeys([*(payload.get("media_ids") or []), *ids]))[:MAX_PHOTOS]
+        payload["office_held_media_ids"] = []
         _write_payload(conv, payload)
+
+
+def _resume_office_last_for_update(db: Session, conv: AiConversation):
+    from ..models import AiListingDraft
+    from .session_memory import resume_last_listing_for_update
+
+    payload = _payload(conv)
+    lid = str(payload.get("office_last_live_listing_id") or "").strip()
+    url = str(payload.get("office_last_live_url") or "").strip()
+    title = str(payload.get("office_last_live_title") or "").strip()
+    draft_id = payload.get("office_last_live_draft_id")
+    card_id = str(payload.get("office_last_live_card_id") or "").strip()
+    draft = db.get(AiListingDraft, int(draft_id)) if draft_id not in (None, "") else None
+    if draft is None:
+        draft = resume_last_listing_for_update(db, conv)
+    else:
+        try:
+            if conv.draft_id and conv.draft_id != draft.id:
+                from .cards import persist_active_card_session
+
+                persist_active_card_session(db, conv)
+        except Exception:
+            pass
+        from .cards import hydrate_card_session
+        import json
+
+        conv.draft_id = draft.id
+        hydrate_card_session(db, conv, draft)
+        payload = _payload(conv)
+        confirmed = {}
+        try:
+            confirmed = json.loads(draft.confirmed_json or "{}")
+            if not isinstance(confirmed, dict):
+                confirmed = {}
+        except Exception:
+            confirmed = {}
+        for key, val in confirmed.items():
+            if val not in (None, "", [], {}) and not payload.get(key):
+                payload[key] = val
+        payload["intent"] = payload.get("intent") or draft.intent or "SELL"
+        payload["active_card_id"] = draft.card_id
+        payload["awaiting_confirm"] = False
+        payload["customer_confirmed"] = False
+        payload["chat_cleared"] = False
+        payload["rm_state"] = "DATA_COLLECTION"
+        payload["workflow_state"] = "CORRECTION_REQUIRED"
+        payload["master_workflow_state"] = "CORRECTION_REQUIRED"
+        payload["listing_edit_mode"] = True
+        payload["editing_draft_id"] = draft.id
+        payload["draft_version"] = int(payload.get("draft_version") or 1) + 1
+        payload["confirmed_version"] = None
+        _write_payload(conv, payload)
+        conv.intent = "SELL"
+        conv.state = "SELL_DATA_COLLECTION"
+    payload = _payload(conv)
+    if lid:
+        payload["infradealer_listing_id"] = lid
+        payload["posted_product_id"] = lid
+        payload["office_last_live_listing_id"] = lid
+    if url:
+        payload["listing_url"] = url
+        payload["office_last_live_url"] = url
+    if title:
+        payload["office_last_live_title"] = title
+    if draft is not None:
+        payload["office_last_live_draft_id"] = draft.id
+        payload["office_last_live_card_id"] = draft.card_id or card_id
+    payload["listing_status"] = payload.get("listing_status") or "LIVE"
+    payload["listing_edit_mode"] = True
+    _write_payload(conv, payload)
+    return draft
+
+
+def _office_start_new_after_live(db: Session, conv: AiConversation, pending_text: str = "") -> str | None:
+    from .confirm import start_new_listing
+
+    start_new_listing(db, conv, {"intent": "SELL"}, [])
+    payload = _payload(conv)
+    _clear_office_next_flags(payload)
+    if pending_text:
+        payload["office_replay_text"] = pending_text
+    _write_payload(conv, payload)
+    _bind_held_office_media(db, conv)
+    return None
+
+
+def _office_resume_update_after_live(db: Session, conv: AiConversation, pending_text: str = "") -> str | None:
+    draft = _resume_office_last_for_update(db, conv)
+    payload = _payload(conv)
+    held = list(payload.get("office_held_media_ids") or [])
+    pending = (pending_text or "").strip()
+    _clear_office_next_flags(payload, keep_last=True)
+    payload["office_held_media_ids"] = held
+    payload["listing_edit_mode"] = True
+    if pending:
+        payload["office_replay_text"] = pending
+    _write_payload(conv, payload)
+    _bind_held_office_media(db, conv)
+    if draft is None and not pending:
+        return "Purani listing nahi mili. NEW likh kar nayi listing shuru karein."
+    return None
+
+
+def _resolve_office_next_action(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str | None:
+    payload = _payload(conv)
+    msg = (text or "").strip()
+    pending = str(payload.get("office_pending_text") or "").strip()
+
+    # Different customer number → drop the ask and let select flow run.
+    if _customer_phone_in_text(msg, _digits10(conv.mobile)):
+        _clear_office_next_flags(payload)
+        _write_payload(conv, payload)
+        return None
+
+    def _choice_new(m: str) -> bool:
+        if _CHOICE_NEW.match(m):
+            return True
+        if not _NEW_LISTING.search(m) or _UPDATE_PREV.search(m):
+            return False
+        # "new listing" alone — not "new listing tyre 4 / price …"
+        return not (_LISTING_SIGNAL.search(m) or _VEHICLE_WORD.search(m)) and len(m.split()) <= 10
+
+    def _choice_update(m: str) -> bool:
+        if _CHOICE_UPDATE.match(m):
+            return True
+        if not _UPDATE_PREV.search(m) or _NEW_LISTING.search(m):
+            return False
+        return not (_LISTING_SIGNAL.search(m) or _VEHICLE_WORD.search(m)) and len(m.split()) <= 10
+
+    if _choice_new(msg):
+        return _office_start_new_after_live(db, conv, pending)
+    if _choice_update(msg):
+        return _office_resume_update_after_live(db, conv, pending)
+
+    # More photos while waiting — keep buffering and re-ask.
+    if _looks_like_listing_followup(msg, media_note):
+        if msg and not _CHOICE_UPDATE.match(msg) and not _CHOICE_NEW.match(msg):
+            payload["office_pending_text"] = ((pending + "\n" if pending else "") + msg).strip()[:2000]
+            _write_payload(conv, payload)
+        return _office_next_ask(payload) + "\n\n(Pehle UPDATE ya NEW choose karein.)"
+
+    if not msg and media_note:
+        return _office_next_ask(payload) + "\n\n(Pehle UPDATE ya NEW choose karein.)"
+
+    return (
+        "Confirm karein: purani listing *UPDATE* karni hai, ya same account pe *NEW* listing?\n"
+        "Reply: *UPDATE* ya *NEW*"
+    )
+
+
+def _maybe_offer_update_or_new(
+    db: Session, conv: AiConversation, text: str, media_note: str = ""
+) -> str | None:
+    if _known_operator(db, conv) is None:
+        return None
+    payload = _payload(conv)
+    if payload.get("listing_edit_mode"):
+        return None
+    if payload.get("awaiting_office_next_action"):
+        return _resolve_office_next_action(db, conv, text, media_note)
+
+    msg = (text or "").strip()
+    # Explicit NEW/UPDATE with a remembered live card — no need to re-ask.
+    if payload.get("office_ready_for_next") and (
+        payload.get("office_last_live_listing_id") or payload.get("office_last_live_draft_id")
+    ):
+        if _CHOICE_NEW.match(msg) or (_NEW_LISTING.search(msg) and not _LISTING_SIGNAL.search(msg) and not media_note):
+            return _office_start_new_after_live(db, conv, "")
+        if _CHOICE_UPDATE.match(msg) or (
+            _UPDATE_PREV.search(msg) and not _NEW_LISTING.search(msg) and not _LISTING_SIGNAL.search(msg) and not media_note
+        ):
+            return _office_resume_update_after_live(db, conv, "")
+
+    if not _looks_like_listing_followup(text, media_note):
+        return None
+    # New customer number in the same message → select flow, not update/new ask.
+    if _customer_phone_in_text(msg, _digits10(conv.mobile)) and not _SAME_WORD.search(msg):
+        return None
+    if not _capture_office_last_live(db, conv):
+        return None
+
+    payload = _payload(conv)
+    payload["awaiting_office_next_action"] = True
+    payload["office_ready_for_next"] = True
+    if msg:
+        payload["office_pending_text"] = msg[:2000]
+    _write_payload(conv, payload)
+    try:
+        _close_posted_card(db, conv, keep_awaiting=True)
+    except Exception:
+        log.exception("office_mode: soft-close before update/new ask failed")
+    payload = _payload(conv)
+    payload["awaiting_office_next_action"] = True
+    payload["office_ready_for_next"] = True
+    if msg and not payload.get("office_pending_text"):
+        payload["office_pending_text"] = msg[:2000]
+    _write_payload(conv, payload)
+    return _office_next_ask(payload)
 
 
 def _wants_account_switch(msg: str) -> bool:
@@ -588,13 +989,20 @@ def _wants_account_switch(msg: str) -> bool:
     return bool(_SWITCH_WORD.search(msg) and (_ACCOUNT_WORD.search(msg) or _NUMBER_WORD.search(msg)))
 
 
-def handle_office_turn(db: Session, conv: AiConversation, text: str, lang: str = "") -> str | None:
+def handle_office_turn(
+    db: Session, conv: AiConversation, text: str, lang: str = "", media_note: str = ""
+) -> str | None:
     """Reply for office commands / guards, or None to continue the normal flow."""
     mobile = _digits10(conv.mobile)
     try:
-        _close_posted_card(db, conv)
+        offer = _maybe_offer_update_or_new(db, conv, text, media_note)
+        if offer is not None:
+            return offer
+        # Choice resolved with buffered details → skip auto-close so edit/new card stays.
+        if not _payload(conv).get("office_replay_text"):
+            _close_posted_card(db, conv)
     except Exception:
-        log.exception("office_mode: closing posted card failed")
+        log.exception("office_mode: closing posted card / update-new ask failed")
     before = _target_id(db, mobile)
     reply = _handle_office_turn(db, conv, text, lang)
     if reply and mobile:
@@ -764,8 +1172,8 @@ def _office_post_result(payload: dict, who: str) -> str:
     return (
         f"✅ Listing {who} ke account par post ho gayi (live)."
         + (f"\n🔗 {link}" if link else "")
-        + f"\n\nAgli listing: *abhi selected* customer ({who}) ki agli gaadi bhejein, "
-        "ya dusra customer select karein (98XXXXXXXX)."
+        + f"\n\nAgli baar photo/detail bhejoge to *UPDATE* (purani) ya *NEW* (nayi listing) poochhunga. "
+        f"Selected: {who}. Dusra customer: 98XXXXXXXX."
     )
 
 

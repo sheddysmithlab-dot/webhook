@@ -1292,6 +1292,28 @@ def extract_fields(messages: list | None, fields: dict | None = None) -> dict:
         if int(tyre_n) % 2 == 0 and _blank(out.get("axles")):
             out["axles"] = str(int(tyre_n) // 2)
 
+    # "34 feet trolley" / "28 ft trailer" — keep body length in body_type + description.
+    m_len = re.search(
+        r"\b(\d{2})\s*(?:feet|foot|ft|फीट|फुट)\b(?:\s*(?:trolley|trailer|tipper|body|container|ट्रोली|ट्रेलर|ट्राली))?",
+        blob,
+        re.I,
+    )
+    if m_len:
+        n_ft = m_len.group(1)
+        tail = (m_len.group(0) or "").lower()
+        kind = "trolley" if re.search(r"trolley|ट्रोली|ट्राली", tail) else (
+            "trailer" if re.search(r"trailer|ट्रेलर", tail) else (
+                "tipper" if "tipper" in tail else "body"
+            )
+        )
+        length_note = f"{n_ft} feet {kind}".strip()
+        if _blank(out.get("body_type")):
+            out["body_type"] = f"{n_ft} ft {kind}"
+        desc = str(out.get("description") or "")
+        if length_note.lower() not in desc.lower():
+            out["description"] = ((desc + ", ") if desc else "") + length_note
+            out["description"] = out["description"][:300]
+
     # "Ramesh 99507 85689" is a name + number, not a town.
     name_with_phone = had_phone and (len(blob.split()) <= 2 or not re.search(r"[^\W\d_]", blob))
     if _blank(out.get("city")) and _blank(out.get("location")) and _blank(out.get("state")) and not name_with_phone:

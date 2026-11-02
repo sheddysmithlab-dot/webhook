@@ -353,6 +353,17 @@ def empty_payload() -> dict:
         "listing_edit_mode": False,
         "editing_draft_id": None,
         "office_draft_floor": None,
+        # Office post-desk: after a live URL, ask UPDATE vs NEW on same customer.
+        "office_ready_for_next": False,
+        "awaiting_office_next_action": False,
+        "office_last_live_listing_id": None,
+        "office_last_live_url": None,
+        "office_last_live_draft_id": None,
+        "office_last_live_card_id": None,
+        "office_last_live_title": None,
+        "office_pending_text": None,
+        "office_held_media_ids": [],
+        "office_replay_text": None,
     }
 
 

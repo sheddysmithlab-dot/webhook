@@ -16,7 +16,7 @@ import app.ai.office_mode as om
 from app.ai.account import handle_same_number_account_policy
 from app.ai.tools import _payload, _write_payload
 from app.database import Base
-from app.models import AiConversation, AiOfficeSession
+from app.models import AiConversation, AiListingDraft, AiOfficeSession
 
 OPERATOR = "8224000829"
 CUSTOMER = {"user_id": "77", "username": "ramesh.kumar", "name": "ramesh.kumar", "phone": "9876543210", "status": "active"}
@@ -1477,3 +1477,81 @@ def test_office_details_ask_on_photo_card_is_not_account_info(db, client):
         assert wants_card_details(msg), msg
     for msg in ("details sahi hai", "account details", "details: 2019 model 4 lakh"):
         assert not wants_card_details(msg), msg
+
+
+def _live_office_card(db, conv, listing_id="1031"):
+    draft = AiListingDraft(
+        mobile=conv.mobile,
+        conversation_id=conv.id,
+        card_id=f"CARD-{listing_id}",
+        status="POSTED",
+        intent="SELL",
+        title="Tata 2518",
+        confirmed_json='{"brand":"Tata","model":"2518","year":2019,"tyres":"10"}',
+    )
+    db.add(draft)
+    db.flush()
+    conv.draft_id = draft.id
+    pl = _payload(conv)
+    pl.update({
+        "brand": "Tata",
+        "model": "2518",
+        "year": 2019,
+        "tyres": "10",
+        "listing_status": "POSTED",
+        "infradealer_listing_id": listing_id,
+        "listing_url": f"https://infradealer.com/listings/{listing_id}",
+        "office_draft_floor": 0,
+        "account_type": "office",
+    })
+    _write_payload(conv, pl)
+    return draft
+
+
+def test_office_after_live_asks_update_or_new(db, client):
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    _live_office_card(db, conv)
+    ask = om.handle_office_turn(db, conv, "tyre 4 h paper update milega")
+    assert ask and "UPDATE" in ask and "NEW" in ask
+    pl = _payload(conv)
+    assert pl.get("awaiting_office_next_action") is True
+    assert pl.get("office_last_live_listing_id") == "1031"
+    assert "tyre 4" in (pl.get("office_pending_text") or "")
+
+
+def test_office_after_live_update_resumes_edit_mode(db, client):
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    draft = _live_office_card(db, conv)
+    om.handle_office_turn(db, conv, "tyre 4 h")
+    assert om.handle_office_turn(db, conv, "UPDATE") is None
+    pl = _payload(conv)
+    assert pl.get("listing_edit_mode") is True
+    assert pl.get("awaiting_office_next_action") in (False, None)
+    assert conv.draft_id == draft.id
+    assert pl.get("office_replay_text") and "tyre 4" in pl["office_replay_text"]
+    assert pl.get("infradealer_listing_id") == "1031"
+
+
+def test_office_after_live_new_starts_fresh_card(db, client):
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    old = _live_office_card(db, conv)
+    om.handle_office_turn(db, conv, "Tata tipper 2020 price 18 lakh")
+    assert om.handle_office_turn(db, conv, "NEW") is None
+    pl = _payload(conv)
+    assert pl.get("listing_edit_mode") in (False, None)
+    assert pl.get("awaiting_office_next_action") in (False, None)
+    assert conv.draft_id != old.id
+    assert pl.get("office_replay_text") and "tipper" in pl["office_replay_text"].lower()
+    assert om.active_target(db.query(AiOfficeSession).one())["user_id"] == "77"
+
+
+def test_office_photo_after_live_held_until_choice(db, client):
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    _live_office_card(db, conv)
+    assert om.should_hold_media_after_live(db, conv) is True
+    ask = om.handle_office_turn(db, conv, "", media_note="image id=99")
+    assert ask and "UPDATE" in ask

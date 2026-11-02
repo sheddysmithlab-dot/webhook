@@ -289,7 +289,19 @@ def attach_media(db: Session, conv: AiConversation, wamid: str, media: dict | No
         return f"{dup.kind} id={dup.id} duplicate_skipped"
 
     payload = _payload(conv)
-    awaiting_choice = conv.state == "AWAITING_VEHICLE_CHOICE" or payload.get("awaiting_vehicle_choice")
+    hold_office = False
+    try:
+        from .office_mode import should_hold_media_after_live
+
+        hold_office = should_hold_media_after_live(db, conv)
+    except Exception:
+        hold_office = False
+    awaiting_choice = (
+        conv.state == "AWAITING_VEHICLE_CHOICE"
+        or payload.get("awaiting_vehicle_choice")
+        or hold_office
+        or payload.get("awaiting_office_next_action")
+    )
     if not awaiting_choice and kind in {"image", "photo"} and not payload.get("listing_edit_mode"):
         from .confirm import card_submitted, start_new_listing
 
@@ -336,6 +348,11 @@ def attach_media(db: Session, conv: AiConversation, wamid: str, media: dict | No
         pending.append(row.id)
         payload["pending_media_ids"] = pending
         row.draft_id = None
+        if hold_office or payload.get("awaiting_office_next_action") or payload.get("office_ready_for_next"):
+            held = list(payload.get("office_held_media_ids") or [])
+            held.append(row.id)
+            payload["office_held_media_ids"] = held[-20:]
+            payload["office_ready_for_next"] = True
     else:
         ids = list(payload.get("media_ids") or [])
         if kind in {"image", "photo"} and len([i for i in ids if i]) >= MAX_PHOTOS:
@@ -554,7 +571,12 @@ def process_inbound(
             from .agent_intro import with_agent_intro
             from .office_mode import decorate_office_reply, handle_office_turn
 
-            office_reply = handle_office_turn(db, conv, text, lang)
+            office_reply = handle_office_turn(db, conv, text, lang, media_note=media_note or "")
+            pl_office = _payload(conv)
+            replay = pl_office.pop("office_replay_text", None)
+            if replay:
+                text = str(replay)
+                _write_payload(conv, pl_office)
             voice_unheard = bool(
                 media and media.get("kind") == "audio" and (text or "").strip() == "[voice note]"
             )
