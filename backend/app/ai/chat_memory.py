@@ -669,10 +669,24 @@ def build_confirmation_summary(
 
     if is_buyer(_payload(conv)):
         return buyer_reply(db, conv, lang, repeat=True)
-    from .confirm import listing_already_confirmed, start_new_listing
+    from .confirm import listing_already_confirmed, start_new_listing, sync_posted_product
+    from .schema import listing_title
 
     # Never re-ask YES on a card that already went live / was submitted.
+    # Office edit mode must patch the live card — not spawn "nayi listing".
     if listing_already_confirmed(db, conv):
+        pl = _payload(conv)
+        if pl.get("listing_edit_mode"):
+            try:
+                sync_posted_product(db, conv)
+            except Exception:
+                log.exception("build_confirmation_summary edit sync failed")
+            title = (
+                str(pl.get("office_last_live_title") or "").strip()
+                or listing_title(pl)
+                or "listing"
+            )
+            return t(lang, "edit_update_ok", title=title)
         start_new_listing(db, conv, {}, [])
         return t(lang, "vehicle_new_ok") + "\n" + t(lang, "more_detail")
     result = filter_result if filter_result is not None else filter_memory(db, conv)

@@ -1693,3 +1693,37 @@ def test_office_choice_buttons_shape():
     assert titles == {"Confirm", "Cancel"}
     ui_pick = {"mode": "list"}
     assert ui_pick["mode"] == "list"
+
+
+def test_office_normalize_multiline_list_reply():
+    assert om.normalize_office_choice_text("New Account\nNew customer + new listing") == "NEW_ACCOUNT"
+    assert om.normalize_office_choice_text("Nayi Listing\nSame account se another listing") == "NEW"
+    assert om._explicit_office_mcq("New Account") == "NEW_ACCOUNT"
+
+
+def test_office_new_account_works_while_in_edit_mode(db, client):
+    """Bug: edit mode ignored New Account list tap → fell through to category ask."""
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    _live_office_card(db, conv)
+    om.arm_office_next_choice(db, conv)
+    om.handle_office_turn(db, conv, om.OFFICE_BTN_UPDATE)
+    om.handle_office_turn(db, conv, om.OFFICE_BTN_CONFIRM)
+    assert _payload(conv).get("listing_edit_mode") is True
+    # Re-tap old list while still editing
+    staged = om.handle_office_turn(db, conv, "New Account\nNew customer + new listing")
+    assert staged and "Confirm" in staged
+    assert _payload(conv).get("office_selected_next") == "NEW_ACCOUNT"
+    assert _payload(conv).get("listing_edit_mode") in (False, None)
+    reply = om.handle_office_turn(db, conv, om.OFFICE_BTN_CONFIRM)
+    assert reply and "customer" in reply.lower()
+    assert "category" not in reply.lower()
+    assert om.active_target(db.query(AiOfficeSession).one()) is None
+
+
+def test_more_detail_i18n_not_placeholder():
+    from app.ai.i18n import t
+
+    out = t("hinglish", "more_detail")
+    assert out and "[" not in out
+    assert "details" in out.lower() or "photo" in out.lower()

@@ -947,12 +947,19 @@ def take_office_choice_buttons(conv: AiConversation) -> list[dict]:
 def normalize_office_choice_text(text: str) -> str:
     """Map WhatsApp button/list id/title to a stable choice token."""
     msg = (text or "").strip()
-    low = msg.lower()
-    if low in {OFFICE_BTN_CONFIRM, "confirm"}:
+    # WhatsApp list UI may quote "Title\\nDescription" — use the first line for matching.
+    first = msg.split("\n", 1)[0].strip()
+    low = first.lower()
+    full_low = msg.lower()
+    if low in {OFFICE_BTN_CONFIRM, "confirm"} or full_low.startswith(OFFICE_BTN_CONFIRM):
         return "CONFIRM"
-    if low in {OFFICE_BTN_CANCEL, OFFICE_BTN_CHANGE, "cancel", "change"}:
+    if low in {OFFICE_BTN_CANCEL, OFFICE_BTN_CHANGE, "cancel", "change"} or full_low.startswith(
+        OFFICE_BTN_CANCEL
+    ):
         return "CANCEL"
-    if low in {OFFICE_BTN_NEW_SAME, "nayi listing", "nayi listing same"}:
+    if low in {OFFICE_BTN_NEW_SAME, "nayi listing", "nayi listing same"} or full_low.startswith(
+        OFFICE_BTN_NEW_SAME
+    ):
         return "NEW"
     if low in {
         OFFICE_BTN_UPDATE,
@@ -961,11 +968,45 @@ def normalize_office_choice_text(text: str) -> str:
         "update previous",
         "update previous listing",
         "update",
-    }:
+    } or full_low.startswith(OFFICE_BTN_UPDATE):
         return "UPDATE"
-    if low in {OFFICE_BTN_NEW_ACCOUNT, "naya account", "new account", "new account + new listing"}:
+    if low in {
+        OFFICE_BTN_NEW_ACCOUNT,
+        "naya account",
+        "new account",
+        "new account + new listing",
+    } or full_low.startswith(OFFICE_BTN_NEW_ACCOUNT):
         return "NEW_ACCOUNT"
+    # Description-only / long list reply body
+    if "new account" in full_low or "naya account" in full_low or "new customer" in full_low:
+        return "NEW_ACCOUNT"
+    if "nayi listing" in full_low or "same account" in full_low:
+        return "NEW"
+    if "update previous" in full_low or "update listing" in full_low:
+        return "UPDATE"
     return msg
+
+
+def _explicit_office_mcq(text: str) -> str | None:
+    """NEW / UPDATE / NEW_ACCOUNT / CONFIRM / CANCEL if this is an office MCQ tap."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    msg = normalize_office_choice_text(raw)
+    up = msg.upper()
+    if up in {"NEW", "UPDATE", "NEW_ACCOUNT", "CONFIRM", "CANCEL"}:
+        return up
+    if _CHOICE_CONFIRM.match(msg) or _CHOICE_CONFIRM.match(raw):
+        return "CONFIRM"
+    if _CHOICE_CANCEL.match(msg) or _CHOICE_CANCEL.match(raw):
+        return "CANCEL"
+    if _CHOICE_NEW_ACCOUNT.match(msg) or _CHOICE_NEW_ACCOUNT.match(raw):
+        return "NEW_ACCOUNT"
+    if _CHOICE_NEW.match(msg) or _CHOICE_NEW.match(raw):
+        return "NEW"
+    if _CHOICE_UPDATE.match(msg) or _CHOICE_UPDATE.match(raw):
+        return "UPDATE"
+    return None
 
 
 def _stage_office_selection(db: Session, conv: AiConversation, choice: str) -> str:
@@ -1341,45 +1382,77 @@ def _resolve_office_next_action(db: Session, conv: AiConversation, text: str, me
     )
 
 
+def _stage_office_mcq(db: Session, conv: AiConversation, choice: str) -> str:
+    """Stage pick → Confirm; leave edit mode when switching to NEW / NEW_ACCOUNT."""
+    payload = _payload(conv)
+    key = str(choice or "").upper()
+    if key in {"NEW", "NEW_ACCOUNT"}:
+        # Leaving edit mode: don't replay edit junk (e.g. "Price 0") into the new card.
+        if payload.get("listing_edit_mode"):
+            payload["office_pending_text"] = ""
+        payload["listing_edit_mode"] = False
+        payload["editing_draft_id"] = None
+    payload["awaiting_office_next_action"] = True
+    payload["office_ready_for_next"] = True
+    _write_payload(conv, payload)
+    return _stage_office_selection(db, conv, key)
+
+
 def _maybe_offer_update_or_new(
     db: Session, conv: AiConversation, text: str, media_note: str = ""
 ) -> str | None:
     if _known_operator(db, conv) is None:
         return None
     payload = _payload(conv)
-    if payload.get("listing_edit_mode"):
-        return None
-    if payload.get("awaiting_office_next_action"):
-        return _resolve_office_next_action(db, conv, text, media_note)
-
     raw = (text or "").strip()
     msg = normalize_office_choice_text(raw)
-    # Explicit NEW / UPDATE / new-account with a remembered live card → stage, then Confirm.
-    if payload.get("office_ready_for_next") and (
-        payload.get("office_last_live_listing_id") or payload.get("office_last_live_draft_id")
-    ):
-        if msg.upper() == "CONFIRM" or _CHOICE_CONFIRM.match(msg):
+    choice = _explicit_office_mcq(raw)
+
+    # Edit mode: still honour office list/Confirm taps (old WhatsApp list re-taps).
+    if payload.get("listing_edit_mode"):
+        if choice is None:
+            return None
+        if choice in {"NEW", "NEW_ACCOUNT", "UPDATE"}:
+            return _stage_office_mcq(db, conv, choice)
+        if choice == "CONFIRM":
             selected = str(payload.get("office_selected_next") or "").upper()
             if selected:
                 return _execute_office_selection(db, conv, selected, "")
-        if msg.upper() == "CANCEL" or _CHOICE_CANCEL.match(msg):
+            return _stage_office_mcq(db, conv, "UPDATE") if (
+                payload.get("office_last_live_listing_id") or payload.get("office_last_live_draft_id")
+            ) else None
+        if choice == "CANCEL":
+            return _cancel_office_selection(db, conv)
+        return None
+
+    if payload.get("awaiting_office_next_action"):
+        return _resolve_office_next_action(db, conv, text, media_note)
+
+    has_last = bool(
+        payload.get("office_last_live_listing_id") or payload.get("office_last_live_draft_id")
+    )
+    # Explicit NEW / UPDATE / new-account — including re-taps after ready flag was cleared.
+    if choice in {"NEW", "UPDATE", "NEW_ACCOUNT"} and (
+        has_last or payload.get("office_ready_for_next") or _capture_office_last_live(db, conv)
+    ):
+        return _stage_office_mcq(db, conv, choice)
+    if payload.get("office_ready_for_next") and has_last:
+        if choice == "CONFIRM" or msg.upper() == "CONFIRM" or _CHOICE_CONFIRM.match(msg):
+            selected = str(payload.get("office_selected_next") or "").upper()
+            if selected:
+                return _execute_office_selection(db, conv, selected, "")
+        if choice == "CANCEL" or msg.upper() == "CANCEL" or _CHOICE_CANCEL.match(msg):
             return _cancel_office_selection(db, conv)
         if msg.upper() == "NEW_ACCOUNT" or _CHOICE_NEW_ACCOUNT.match(msg):
-            payload["awaiting_office_next_action"] = True
-            _write_payload(conv, payload)
-            return _stage_office_selection(db, conv, "NEW_ACCOUNT")
+            return _stage_office_mcq(db, conv, "NEW_ACCOUNT")
         if msg.upper() == "NEW" or _CHOICE_NEW.match(msg) or (
             _NEW_LISTING.search(msg) and not _LISTING_SIGNAL.search(msg) and not media_note
         ):
-            payload["awaiting_office_next_action"] = True
-            _write_payload(conv, payload)
-            return _stage_office_selection(db, conv, "NEW")
+            return _stage_office_mcq(db, conv, "NEW")
         if msg.upper() == "UPDATE" or _CHOICE_UPDATE.match(msg) or (
             _UPDATE_PREV.search(msg) and not _NEW_LISTING.search(msg) and not _LISTING_SIGNAL.search(msg) and not media_note
         ):
-            payload["awaiting_office_next_action"] = True
-            _write_payload(conv, payload)
-            return _stage_office_selection(db, conv, "UPDATE")
+            return _stage_office_mcq(db, conv, "UPDATE")
 
     if not _looks_like_listing_followup(text, media_note):
         return None

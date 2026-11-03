@@ -978,6 +978,16 @@ MESSAGES = {
         "hi": "ठीक है, नई लिस्टिंग शुरू करते हैं।",
         "en": "Okay, let's start a new listing.",
     },
+    "more_detail": {
+        "hinglish": "Is gaadi ki details / photos bhej dijiye (category, brand, model, year, price).",
+        "hi": "इस गाड़ी की डिटेल्स / फोटो भेज दीजिए (कैटेगरी, ब्रांड, मॉडल, साल, कीमत)।",
+        "en": "Please send this vehicle's details / photos (category, brand, model, year, price).",
+    },
+    "edit_update_ok": {
+        "hinglish": "✅ Change save / sync ho gaya (*{title}*).\nAur detail/photo change karni ho to bhejein.",
+        "hi": "✅ बदलाव सेव / सिंक हो गया (*{title}*)।\nऔर डिटेल/फोटो बदलनी हो तो भेजें।",
+        "en": "✅ Update saved / synced (*{title}*).\nSend more detail/photo changes if needed.",
+    },
     "vehicle_new_from_photos": {
         "hinglish": "🆕 Photos / details alag gaadi ke lagte hain — naya card start kiya.",
         "hi": "🆕 फोटो / डिटेल्स अलग गाड़ी के लगते हैं — नया कार्ड शुरू किया।",

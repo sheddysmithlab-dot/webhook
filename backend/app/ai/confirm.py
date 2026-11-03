@@ -322,7 +322,19 @@ def send_summary(db: Session, conv: AiConversation, lang: str = "hinglish") -> s
     if is_buyer(payload):
         return buyer_reply(db, conv, lang)
     # Finished card must not re-open confirm — clear it so the next vehicle can collect.
+    # Exception: office edit mode patches the live listing — never spawn a new card here.
     if listing_already_confirmed(db, conv, payload):
+        if payload.get("listing_edit_mode"):
+            try:
+                sync_posted_product(db, conv)
+            except Exception:
+                log.exception("send_summary edit sync failed")
+            title = (
+                str(payload.get("office_last_live_title") or "").strip()
+                or listing_title(payload)
+                or "listing"
+            )
+            return t(lang, "edit_update_ok", title=title)
         start_new_listing(db, conv, {}, [])
         return t(lang, "vehicle_new_ok") + "\n" + t(lang, "more_detail")
     # Location is optional tip only — always open YES lock so Haan/Skip are not stuck.
