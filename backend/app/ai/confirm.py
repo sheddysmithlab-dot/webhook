@@ -296,10 +296,19 @@ def no_place_note(payload: dict, lang: str = "hinglish") -> str:
         return ""
     code = (lang or "hinglish").lower()
     if code in {"hi", "hindi"}:
-        return "📍 गाड़ी किस राज्य/शहर में है? लिख दें तो खरीदार आसानी से ढूँढ पाएँगे।"
+        return (
+            "📍 गाड़ी किस राज्य/शहर में है? लिख दें तो खरीदार आसानी से ढूँढ पाएँगे।\n"
+            "Neeche *Haan* (post) ya *Skip location* dabayein."
+        )
     if code in {"en", "english"}:
-        return "📍 Which state/city is the vehicle in? Adding it helps buyers find it."
-    return "📍 Gaadi kis state/city me hai? Likh dijiye — buyers ko dhoondhne me aasani hogi."
+        return (
+            "📍 Which state/city is the vehicle in? Adding it helps buyers find it.\n"
+            "Tap *Yes* (post) or *Skip location* below."
+        )
+    return (
+        "📍 Gaadi kis state/city me hai? Likh dijiye — buyers ko dhoondhne me aasani hogi.\n"
+        "Neeche *Haan* (post) ya *Skip location* dabayein."
+    )
 
 
 def summary_notes(payload: dict, lang: str = "hinglish") -> list[str]:
@@ -327,9 +336,12 @@ def send_summary(db: Session, conv: AiConversation, lang: str = "hinglish") -> s
     conv.error_message = ""
     _write_payload(conv, payload)
     try:
-        from .wa_choice import arm_confirm_choice
+        from .wa_choice import arm_confirm_choice, arm_place_confirm_choice
 
-        arm_confirm_choice(conv)
+        if no_place_note(payload, lang):
+            arm_place_confirm_choice(conv)
+        else:
+            arm_confirm_choice(conv)
     except Exception:
         log.exception("arm confirm choice buttons failed")
     return text

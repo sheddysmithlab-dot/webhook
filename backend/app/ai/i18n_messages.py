@@ -48,9 +48,9 @@ MESSAGES = {
         "ur_roman": "Aap bechna chahte hain ya khareedna?",
     },
     "intent_confirm": {
-        "hinglish": "Toh {label} bechna hai ya kharidna?",
-        "hi": "तो {label} बेचना है या खरीदना?",
-        "en": "So you want to sell or buy {label}?",
+        "hinglish": "Toh {label} bechna hai ya kharidna?\nNeeche *Sell* / *Buy* dabayein.",
+        "hi": "तो {label} बेचना है या खरीदना?\nनीचे *Sell* / *Buy* दबाएँ।",
+        "en": "So you want to sell or buy {label}?\nTap *Sell* / *Buy* below.",
     },
     "intro": {
         "hinglish": "🤖 Main *InfraDealer AI Agent* hoon — gaadi/machine bechne, kharidne aur listing mein aapki madad karunga.",
@@ -58,9 +58,9 @@ MESSAGES = {
         "en": "🤖 I'm the *InfraDealer AI Agent* — here to help you sell, buy and list vehicles & machines.",
     },
     "category": {
-        "hinglish": "Kaunsi category hai? (Truck / Tipper / JCB / Excavator / Crane / Bus / Tractor / Other)",
-        "hi": "कौन सी कैटेगरी है? (ट्रक / टिपर / जेसीबी / एक्स्केवेटर / बस / ट्रैक्टर / अन्य)",
-        "en": "Which category? (Truck / Tipper / JCB / Excavator / Crane / Bus / Tractor / Other)",
+        "hinglish": "Kaunsi category hai? (Truck / Tipper / JCB / Excavator / Crane / Bus / Tractor / Other)\nNeeche *Select option* se choose karein.",
+        "hi": "कौन सी कैटेगरी है? (ट्रक / टिपर / जेसीबी / एक्स्केवेटर / बस / ट्रैक्टर / अन्य)\nनीचे *Select option* से चुनें।",
+        "en": "Which category? (Truck / Tipper / JCB / Excavator / Crane / Bus / Tractor / Other)\nChoose via *Select option* below.",
     },
     "brand": {
         "hinglish": "Brand bata dijiye.",
@@ -132,9 +132,9 @@ MESSAGES = {
         "ur_roman": "Model saal kya hai?",
     },
     "year_confirm": {
-        "hinglish": "Year {year} confirm kar doon?",
-        "hi": "ईयर {year} कन्फर्म कर दूँ?",
-        "en": "Shall I confirm year {year}?",
+        "hinglish": "Year {year} confirm kar doon? Neeche *Haan* / *Nahi* dabayein.",
+        "hi": "ईयर {year} कन्फर्म कर दूँ? नीचे *हाँ* / *नहीं* दबाएँ।",
+        "en": "Shall I confirm year {year}? Tap *Yes* / *No* below.",
     },
     "expected_price": {
         "hinglish": "Expected price bata dijiye.",
@@ -203,9 +203,9 @@ MESSAGES = {
         "en": "How many operating hours?",
     },
     "optional_bundle": {
-        "hinglish": "Kuch aur details bhejna hai? (KM / owners / finance / tyre % / city / kaam-galti) — ya 'skip' likhiye.",
-        "hi": "कुछ और डिटेल्स भेजना है? (किमी / मालिक / फाइनेंस / टायर % / शहर / काम-गलती) — या 'skip' लिखें।",
-        "en": "Any more details? (KM / owners / finance / tyre % / city / condition) — or type 'skip'.",
+        "hinglish": "Kuch aur details bhejna hai? (KM / owners / finance / tyre % / city / kaam-galti)\nNeeche *Skip* / *Continue* dabayein — ya detail type kijiye.",
+        "hi": "कुछ और डिटेल्स भेजना है? (किमी / मालिक / फाइनेंस / टायर % / शहर / काम-गलती)\nनीचे *Skip* / *Continue* दबाएँ — या डिटेल टाइप करें।",
+        "en": "Any more details? (KM / owners / finance / tyre % / city / condition)\nTap *Skip* / *Continue* below — or type details.",
     },
     "photos": {
         "hinglish": "Ab clear photos bhej dijiye (kam se kam 2).",
@@ -433,9 +433,9 @@ MESSAGES = {
         "en": "You have *no live/pending listing* right now. Send vehicle details to start one.",
     },
     "account_info_next": {
-        "hinglish": "Aur kuch chahiye? Vehicle bechna/kharidna, listing, ya password help — bataiye.",
-        "hi": "और कुछ चाहिए? वाहन बेचना/खरीदना, लिस्टिंग, या पासवर्ड हेल्प — बताइए।",
-        "en": "Need anything else — sell/buy, listing, or password help?",
+        "hinglish": "Aur kuch chahiye? Vehicle bechna/kharidna, listing, ya password help.\nNeeche *Select option* se choose karein.",
+        "hi": "और कुछ चाहिए? वाहन बेचना/खरीदना, लिस्टिंग, या पासवर्ड हेल्प।\nनीचे *Select option* से चुनें।",
+        "en": "Need anything else — sell/buy, listing, or password help?\nChoose via *Select option* below.",
     },
     "status_ask_human": {
         "hinglish": "Aapki current listing: *{status}*.",
@@ -610,9 +610,9 @@ MESSAGES = {
         "en": "Do you have an InfraDealer account? Reply Yes or No.",
     },
     "account_role": {
-        "hinglish": "Aap broker hain ya user? Broker ke liye alag process hai.",
-        "hi": "आप ब्रोकर हैं या यूजर? ब्रोकर के लिए अलग प्रक्रिया है।",
-        "en": "Are you a broker or a user? Broker has a separate process.",
+        "hinglish": "Aap broker hain ya user? Broker ke liye alag process hai.\nNeeche *Broker* / *User* dabayein.",
+        "hi": "आप ब्रोकर हैं या यूजर? ब्रोकर के लिए अलग प्रक्रिया है।\nनीचे *Broker* / *User* दबाएँ।",
+        "en": "Are you a broker or a user? Broker has a separate process.\nTap *Broker* / *User* below.",
     },
     "account_password": {
         "hinglish": "Account ke liye password set kijiye (kam se kam 6 character).",
@@ -625,14 +625,14 @@ MESSAGES = {
         "en": "Sir/Ma'am, your account is not ready to post a listing yet. Please check your account/credits on InfraDealer and try again.",
     },
     "account_wa_not_matched": {
-        "hinglish": "Sir/Ma'am, aapka InfraDealer account is WhatsApp number pe nahi mila. Kya main WhatsApp se aapka account bana du? Haan ya Nahi likhiye — ya *account banao* type kijiye.",
-        "hi": "सर/मैडम, आपका InfraDealer अकाउंट इस WhatsApp नंबर पर नहीं मिला। क्या मैं WhatsApp से आपका अकाउंट बना दूँ? हाँ या नहीं लिखिए — या *account banao* टाइप कीजिए।",
-        "en": "Sir/Ma'am, no InfraDealer account was found for this WhatsApp number. Shall I create your account here on WhatsApp? Reply Yes or No — or type *account banao*.",
+        "hinglish": "Sir/Ma'am, aapka InfraDealer account is WhatsApp number pe nahi mila. Kya main WhatsApp se aapka account bana du?\nNeeche *Haan* / *Nahi* dabayein — ya *account banao* type kijiye.",
+        "hi": "सर/मैडम, आपका InfraDealer अकाउंट इस WhatsApp नंबर पर नहीं मिला। क्या मैं WhatsApp से आपका अकाउंट बना दूँ?\nनीचे *हाँ* / *नहीं* दबाएँ — या *account banao* टाइप कीजिए।",
+        "en": "Sir/Ma'am, no InfraDealer account was found for this WhatsApp number. Shall I create your account here on WhatsApp?\nTap *Yes* / *No* below — or type *account banao*.",
     },
     "account_reg_offer": {
-        "hinglish": "Aapka InfraDealer account nahi mila.\nKya main WhatsApp se aapka account bana du?\nHaan / Nahi",
-        "hi": "आपका InfraDealer अकाउंट नहीं मिला।\nक्या मैं WhatsApp से आपका अकाउंट बना दूँ?\nहाँ / नहीं",
-        "en": "Your InfraDealer account was not found.\nShall I create your account on WhatsApp?\nYes / No",
+        "hinglish": "Aapka InfraDealer account nahi mila.\nKya main WhatsApp se aapka account bana du?\nNeeche *Haan* / *Nahi* dabayein.",
+        "hi": "आपका InfraDealer अकाउंट नहीं मिला।\nक्या मैं WhatsApp से आपका अकाउंट बना दूँ?\nनीचे *हाँ* / *नहीं* दबाएँ।",
+        "en": "Your InfraDealer account was not found.\nShall I create your account on WhatsApp?\nTap *Yes* / *No* below.",
     },
     "account_reg_offer_no": {
         "hinglish": "Theek hai. Registered WhatsApp number se message kijiye, ya baad me *account banao* likh kar yahi se account bana sakte hain.",
@@ -645,9 +645,9 @@ MESSAGES = {
         "en": "Great 👍\nFirst, please share your full name.",
     },
     "account_reg_ask_username": {
-        "hinglish": "Aapke liye username suggest kar raha hoon:\n*{username}*\n\nWebsite pe isi *username* ya apne *mobile number* se login hoga.\nKya ye username theek hai? Haan likhiye, ya naya username bhejiye.",
-        "hi": "आपके लिए यूज़रनेम सुझा रहा हूँ:\n*{username}*\n\nवेबसाइट पर इसी *यूज़रनेम* या अपने *मोबाइल नंबर* से लॉगिन होगा।\nक्या यह यूज़रनेम ठीक है? हाँ लिखिए, या नया यूज़रनेम भेजिए।",
-        "en": "Suggested username:\n*{username}*\n\nYou will log in on the website with this *username* or your *mobile number*.\nIs this okay? Reply Yes, or send a different username.",
+        "hinglish": "Aapke liye username suggest kar raha hoon:\n*{username}*\n\nWebsite pe isi *username* ya apne *mobile number* se login hoga.\nKya ye username theek hai? Neeche *Haan* / *Change* dabayein, ya naya username type kijiye.",
+        "hi": "आपके लिए यूज़रनेम सुझा रहा हूँ:\n*{username}*\n\nवेबसाइट पर इसी *यूज़रनेम* या अपने *मोबाइल नंबर* से लॉगिन होगा।\nक्या यह यूज़रनेम ठीक है? नीचे *हाँ* / *Change* दबाएँ, या नया यूज़रनेम टाइप करें।",
+        "en": "Suggested username:\n*{username}*\n\nYou will log in on the website with this *username* or your *mobile number*.\nIs this okay? Tap *Yes* / *Change* below, or send a different username.",
     },
     "account_reg_ask_email": {
         "hinglish": "Apni email ID bhejiye.",
@@ -919,14 +919,14 @@ MESSAGES = {
         "en": "No previous listing found for this number. Start a new listing?",
     },
     "chat_cleared": {
-        "hinglish": "Chat clear ho gayi. Nayi listing shuru karein ya last listing update karein.",
-        "hi": "चैट क्लियर हो गई। नई लिस्टिंग शुरू करें या लास्ट लिस्टिंग अपडेट करें।",
-        "en": "Chat cleared. Start a new listing or update the last one.",
+        "hinglish": "Chat clear ho gayi. Nayi listing shuru karein ya last listing update karein.\nNeeche *Nayi listing* / *Last update* dabayein.",
+        "hi": "चैट क्लियर हो गई। नई लिस्टिंग शुरू करें या लास्ट लिस्टिंग अपडेट करें।\nनीचे *Nayi listing* / *Last update* दबाएँ।",
+        "en": "Chat cleared. Start a new listing or update the last one.\nTap *Nayi listing* / *Last update* below.",
     },
     "chat_cleared_followup": {
-        "hinglish": "Ji — naya chat ready hai. Sell/buy bataiye, ya last listing update.",
-        "hi": "जी — नया चैट तैयार है। सेल/बय बताइए, या लास्ट लिस्टिंग अपडेट।",
-        "en": "Fresh chat ready. Sell/buy, or update last listing.",
+        "hinglish": "Ji — naya chat ready hai. Sell/buy bataiye, ya last listing update.\nNeeche *Nayi listing* / *Last update* dabayein.",
+        "hi": "जी — नया चैट तैयार है। सेल/बय बताइए, या लास्ट लिस्टिंग अपडेट।\nनीचे *Nayi listing* / *Last update* दबाएँ।",
+        "en": "Fresh chat ready. Sell/buy, or update last listing.\nTap *Nayi listing* / *Last update* below.",
     },
     "free_chat_fallback": {
         "hinglish": "Ji Sir, main yahan hoon. Kya listing se related kuch chahiye?",
@@ -989,9 +989,9 @@ MESSAGES = {
         "en": "Hello Sir! What would you like to list?",
     },
     "casual_hi_after_listing": {
-        "hinglish": "Ji Sir, listing submit ho chuki hai. Nayi listing chahiye?",
-        "hi": "जी सर, लिस्टिंग सबमिट हो चुकी है। नई लिस्टिंग चाहिए?",
-        "en": "Yes Sir, listing has been submitted. Need a new one?",
+        "hinglish": "Ji Sir, listing submit ho chuki hai. Nayi listing chahiye?\nNeeche *Haan* / *Nahi* dabayein.",
+        "hi": "जी सर, लिस्टिंग सबमिट हो चुकी है। नई लिस्टिंग चाहिए?\nनीचे *हाँ* / *नहीं* दबाएँ।",
+        "en": "Yes Sir, listing has been submitted. Need a new one?\nTap *Yes* / *No* below.",
     },
     "casual_while_confirm": {
         "hinglish": "Sir, {card} confirm karna baaki hai. Haan ya correction bhejiye.",
