@@ -1727,3 +1727,82 @@ def test_more_detail_i18n_not_placeholder():
     out = t("hinglish", "more_detail")
     assert out and "[" not in out
     assert "details" in out.lower() or "photo" in out.lower()
+
+
+def test_new_account_awaits_customer_blocks_category(db, client):
+    """Post-desk New Account+Confirm must ask mobile; Cancel must not jump to category."""
+    conv = _conv(db, account_type="office")
+    om.handle_office_turn(db, conv, "customer 9876543210")
+    _live_office_card(db, conv)
+    om.arm_office_next_choice(db, conv)
+    om.handle_office_turn(db, conv, om.OFFICE_BTN_NEW_ACCOUNT)
+    reply = om.handle_office_turn(db, conv, om.OFFICE_BTN_CONFIRM)
+    assert reply and "customer" in reply.lower() and "98" in reply
+    pl = _payload(conv)
+    assert pl.get("office_awaiting_customer") is True
+    assert pl.get("intent") in (None, "")
+    assert "category" not in reply.lower()
+
+    cancel = om.handle_office_turn(db, conv, om.OFFICE_BTN_CANCEL)
+    assert cancel and "cancel" in cancel.lower()
+    assert "category" not in cancel.lower()
+    assert _payload(conv).get("office_awaiting_customer") is True
+
+    blocked = om.handle_office_turn(db, conv, "Truck tipper")
+    assert blocked and "customer" in blocked.lower()
+    assert "category" not in blocked.lower()
+    assert _payload(conv).get("office_awaiting_customer") is True
+
+    selected = om.handle_office_turn(db, conv, "customer 9876543210")
+    assert selected and "Customer selected" in selected
+    pl2 = _payload(conv)
+    assert pl2.get("office_awaiting_customer") in (False, None)
+    assert pl2.get("intent") == "SELL"
+
+
+def test_self_post_live_new_vs_update_flow(db, client, monkeypatch):
+    """Own-number customer: after live → New vs Update; Update shows full review + Confirm."""
+    monkeypatch.setattr(om, "_known_operator", lambda db, conv: None)
+    conv = _conv(db, mobile="9988776655", account_type="customer")
+    pl = _payload(conv)
+    pl.update(
+        {
+            "intent": "SELL",
+            "category": "Truck",
+            "brand": "Tata",
+            "model": "407",
+            "year": 2019,
+            "expected_price": 850000,
+            "infradealer_listing_id": "L-9001",
+            "listing_url": "https://infradealer.com/l/9001",
+            "listing_status": "LIVE",
+        }
+    )
+    _write_payload(conv, pl)
+    om.arm_self_next_choice(db, conv)
+    assert _payload(conv).get("awaiting_self_next_action") is True
+    assert _payload(conv).get("office_button_set") == "self_pick"
+
+    staged = om.handle_self_next_turn(db, conv, om.SELF_BTN_UPDATE)
+    assert staged and "Confirm" in staged
+    assert _payload(conv).get("self_selected_next") == "UPDATE"
+
+    started = om.handle_self_next_turn(db, conv, om.OFFICE_BTN_CONFIRM)
+    assert started and "update" in started.lower()
+    pl2 = _payload(conv)
+    assert pl2.get("listing_edit_mode") is True
+    assert pl2.get("self_edit_review_pending") is True
+    assert "Tata" in started or "407" in started or "detail" in started.lower()
+
+    # Field change → let extract run; wrap builds Confirm review.
+    assert om.handle_self_next_turn(db, conv, "price 9 lakh") is None
+    wrapped = om.wrap_self_edit_review(db, conv, "Price update note kiya.", "hinglish")
+    assert "Update review" in wrapped and "Confirm" in wrapped
+    assert _payload(conv).get("office_button_set") == "self_confirm"
+
+    # New listing path asks for details (not account).
+    om.arm_self_next_choice(db, conv)
+    om.handle_self_next_turn(db, conv, om.SELF_BTN_NEW)
+    new_reply = om.handle_self_next_turn(db, conv, om.OFFICE_BTN_CONFIRM)
+    assert new_reply and "nayi listing" in new_reply.lower()
+    assert "customer 98" not in new_reply.lower()

@@ -544,11 +544,17 @@ def start_new_listing(db: Session, conv: AiConversation, fields: dict | None = N
         payload[key] = deepcopy(defaults.get(key))
     payload["media_ids"] = list(media_ids or [])
     payload["draft_version"] = 1
-    payload["intent"] = (fields or {}).get("intent") or intent or "SELL"
-    if fields:
-        for k, v in fields.items():
-            if v is not None:
-                payload[k] = v
+    fields = fields or {}
+    # Explicit intent (incl. None) wins — office New Account must not default to SELL.
+    if "intent" in fields:
+        payload["intent"] = fields["intent"]
+    else:
+        payload["intent"] = intent or "SELL"
+    for k, v in fields.items():
+        if k == "intent":
+            continue
+        if v is not None:
+            payload[k] = v
     _write_payload(conv, payload)
     draft = _draft_for(db, conv)
     return draft

@@ -108,6 +108,26 @@ _OFFICE_LAST_KEYS = (
     "office_selected_next",
     "office_confirm_nonce",
     "office_executed_nonce",
+    "office_awaiting_customer",
+)
+# Customer (own WhatsApp) post-live — no "New Account" row.
+SELF_BTN_NEW = "self_new_same"
+SELF_BTN_UPDATE = "self_update"
+SELF_LIST_ROWS = (
+    {
+        "id": SELF_BTN_NEW,
+        "title": "Nayi Listing",
+        "description": "Nayi listing start karni hai",
+    },
+    {
+        "id": SELF_BTN_UPDATE,
+        "title": "Update Previous",
+        "description": "Purani listing edit/update",
+    },
+)
+SELF_CHOICE_BUTTONS = (
+    {"id": SELF_BTN_NEW, "title": "Nayi Listing"},
+    {"id": SELF_BTN_UPDATE, "title": "Update listing"},
 )
 # WhatsApp interactive ids. Flow: list/reply pick → Confirm/Cancel buttons.
 OFFICE_BTN_NEW_SAME = "office_new_same"
@@ -737,6 +757,7 @@ def _clear_office_next_flags(payload: dict, *, keep_last: bool = False) -> None:
     payload["office_selected_next"] = None
     payload["office_confirm_nonce"] = None
     payload.pop("office_replay_text", None)
+    # office_awaiting_customer is managed separately (kept after New Account Confirm).
     if keep_last:
         return
     for key in (
@@ -747,6 +768,14 @@ def _clear_office_next_flags(payload: dict, *, keep_last: bool = False) -> None:
         "office_last_live_title",
     ):
         payload[key] = None
+
+
+def _customer_select_hint() -> str:
+    return (
+        "✅ Theek hai — naya account + nayi listing.\n"
+        "Customer ka mobile number bhejein (kis account par listing daalni hai):\n"
+        "customer 98XXXXXXXX"
+    )
 
 
 def _close_posted_card(db: Session, conv: AiConversation, *, keep_awaiting: bool = False) -> None:
@@ -925,6 +954,16 @@ def take_office_interactive_ui(conv: AiConversation) -> dict:
     _write_payload(conv, payload)
     if kind == "confirm":
         return {"mode": "buttons", "buttons": [dict(b) for b in OFFICE_CONFIRM_BUTTONS]}
+    if kind == "self_pick":
+        return {
+            "mode": "list",
+            "button_label": "Select option",
+            "section_title": "Next action",
+            "rows": [dict(r) for r in SELF_LIST_ROWS],
+            "fallback_buttons": [dict(b) for b in SELF_CHOICE_BUTTONS],
+        }
+    if kind == "self_confirm":
+        return {"mode": "buttons", "buttons": [dict(b) for b in OFFICE_CONFIRM_BUTTONS]}
     return {
         "mode": "list",
         "button_label": "Select option",
@@ -957,18 +996,19 @@ def normalize_office_choice_text(text: str) -> str:
         OFFICE_BTN_CANCEL
     ):
         return "CANCEL"
-    if low in {OFFICE_BTN_NEW_SAME, "nayi listing", "nayi listing same"} or full_low.startswith(
+    if low in {OFFICE_BTN_NEW_SAME, SELF_BTN_NEW, "nayi listing", "nayi listing same"} or full_low.startswith(
         OFFICE_BTN_NEW_SAME
-    ):
+    ) or full_low.startswith(SELF_BTN_NEW):
         return "NEW"
     if low in {
         OFFICE_BTN_UPDATE,
+        SELF_BTN_UPDATE,
         "update purani",
         "update listing",
         "update previous",
         "update previous listing",
         "update",
-    } or full_low.startswith(OFFICE_BTN_UPDATE):
+    } or full_low.startswith(OFFICE_BTN_UPDATE) or full_low.startswith(SELF_BTN_UPDATE):
         return "UPDATE"
     if low in {
         OFFICE_BTN_NEW_ACCOUNT,
@@ -1275,17 +1315,20 @@ def _office_start_new_account(db: Session, conv: AiConversation) -> str:
         row.pending_phone = ""
         _touch(row)
     try:
-        start_new_listing(db, conv, {}, [])
+        # Clear intent explicitly — default SELL would ask category before customer pick.
+        start_new_listing(db, conv, {"intent": None}, [])
     except Exception:
         log.exception("office_mode: start_new_listing on new-account choice failed")
     payload = _payload(conv)
     _clear_office_next_flags(payload)
+    payload["office_awaiting_customer"] = True
+    payload["intent"] = None
+    payload["listing_edit_mode"] = False
+    payload["category"] = None
+    conv.intent = ""
+    conv.state = "NEW"
     _write_payload(conv, payload)
-    return (
-        "✅ Theek hai — naya account + nayi listing.\n"
-        "Customer ka mobile number bhejein:\n"
-        "customer 98XXXXXXXX"
-    )
+    return _customer_select_hint()
 
 
 def _resolve_office_next_action(db: Session, conv: AiConversation, text: str, media_note: str = "") -> str | None:
@@ -1498,8 +1541,36 @@ def handle_office_turn(
 ) -> str | None:
     """Reply for office commands / guards, or None to continue the normal flow."""
     mobile = _digits10(conv.mobile)
+    raw_in = (text or "").strip()
     text = normalize_office_choice_text(text)
     try:
+        # Late Cancel after New Account already confirmed — never fall into category ask.
+        pl0 = _payload(conv)
+        choice0 = _explicit_office_mcq(raw_in)
+        if pl0.get("office_awaiting_customer"):
+            if choice0 == "CANCEL":
+                return (
+                    "❌ Cancel — theek hai.\n"
+                    "Jis customer ke account par listing daalni hai uska number bhejein:\n"
+                    "customer 98XXXXXXXX"
+                )
+            if choice0 in {"CONFIRM", "NEW", "UPDATE", "NEW_ACCOUNT"}:
+                return _customer_select_hint()
+            # No phone yet — block collect/category (incl. photos-only / empty taps).
+            if not _customer_phone_in_text(raw_in, mobile) and not _PHONE_IN_TEXT.search(raw_in):
+                return (
+                    "Pehle customer select karein — kis account par listing daalni hai?\n"
+                    "Format: customer 98XXXXXXXX"
+                )
+        elif choice0 == "CANCEL" and _known_operator(db, conv) is not None:
+            # Stale Cancel on an old Confirm message after action already ran.
+            if not pl0.get("awaiting_office_next_action"):
+                return (
+                    "❌ Cancel — koi naya action pending nahi hai.\n"
+                    "Nayi listing / update ke liye options dubara mangwa sakte ho, "
+                    "ya customer number bhejo."
+                )
+
         offer = _maybe_offer_update_or_new(db, conv, text, media_note)
         if offer is not None:
             return offer
@@ -1527,6 +1598,17 @@ def handle_office_turn(
                 reply += _on_target_change(db, conv, mobile, before, after)
             except Exception:
                 log.exception("office_mode: card reset on customer change failed")
+            # Customer selected after New Account — unlock listing collect.
+            try:
+                pl = _payload(conv)
+                if pl.get("office_awaiting_customer") and after:
+                    pl["office_awaiting_customer"] = False
+                    pl["intent"] = "SELL"
+                    conv.intent = "SELL"
+                    _write_payload(conv, pl)
+                    reply += "\n\nAb is customer ke liye nayi listing details + photos bhejein."
+            except Exception:
+                log.exception("office_mode: clear awaiting_customer failed")
     return reply
 
 
@@ -1711,12 +1793,244 @@ def _post_to_label(target: dict) -> str:
     return username or name or phone or "-"
 
 
+def _self_post_result(payload: dict) -> str:
+    lid = str(payload.get("infradealer_listing_id") or "")
+    status = str(payload.get("listing_status") or "").upper()
+    if not lid or status not in {"POSTED", "PENDING_REVIEW", "LIVE", "APPROVED"}:
+        return ""
+    link = str(payload.get("listing_url") or "").strip()
+    if not link:
+        from .data_push import public_listing_url
+
+        link = public_listing_url(lid)
+    return (
+        f"✅ Aapki listing live ho gayi hai."
+        + (f"\n🔗 {link}" if link else "")
+        + "\n\n*Aage kya karna hai?*\n"
+        "1. 🟢 *Nayi Listing* — Nayi listing start\n"
+        "2. 🟡 *Update Previous Listing* — Purani listing edit/update\n\n"
+        "Neeche *Select option* se choose karein, phir *Confirm*."
+    )
+
+
+def arm_self_next_choice(db: Session, conv: AiConversation) -> None:
+    """After a customer's own listing goes live — New vs Update (no New Account)."""
+    if _known_operator(db, conv) is not None:
+        return
+    _capture_office_last_live(db, conv)
+    payload = _payload(conv)
+    if not (
+        payload.get("office_last_live_listing_id")
+        or payload.get("infradealer_listing_id")
+    ):
+        return
+    if not payload.get("office_last_live_listing_id"):
+        lid = str(payload.get("infradealer_listing_id") or "").strip()
+        if lid:
+            payload["office_last_live_listing_id"] = lid
+            payload["office_last_live_url"] = str(payload.get("listing_url") or "").strip()
+            if conv.draft_id:
+                payload["office_last_live_draft_id"] = int(conv.draft_id)
+            payload["office_last_live_title"] = _listing_title_bits(payload, None)
+    payload["self_ready_for_next"] = True
+    payload["awaiting_self_next_action"] = True
+    payload["self_selected_next"] = None
+    payload["self_confirm_nonce"] = None
+    payload["self_edit_review_pending"] = False
+    payload["office_button_set"] = "self_pick"
+    payload["office_send_choice_buttons"] = True
+    _write_payload(conv, payload)
+    log.info("office_mode: armed self pick UI conv=%s", getattr(conv, "id", None))
+
+
+def _self_confirm_ask(payload: dict) -> str:
+    choice = str(payload.get("self_selected_next") or "").upper()
+    short = "Nayi Listing" if choice == "NEW" else "Update Previous Listing"
+    return (
+        f"You selected: *{short}*\n\n"
+        "Are you sure you want to continue?\n"
+        "Neeche *Confirm* ya *Cancel* dabayein."
+    )
+
+
+def _stage_self_selection(db: Session, conv: AiConversation, choice: str) -> str:
+    import time
+
+    payload = _payload(conv)
+    key = str(choice or "").upper()
+    lid = str(payload.get("office_last_live_listing_id") or "").strip()
+    payload["self_selected_next"] = key
+    payload["awaiting_self_next_action"] = True
+    payload["self_ready_for_next"] = True
+    payload["self_confirm_nonce"] = f"self:{key}:{lid}:{int(time.time())}:{conv.id}"
+    payload["office_button_set"] = "self_confirm"
+    payload["office_send_choice_buttons"] = True
+    _write_payload(conv, payload)
+    return _self_confirm_ask(payload)
+
+
+def _execute_self_selection(db: Session, conv: AiConversation, choice: str) -> str | None:
+    from .confirm import start_new_listing, summary_text
+
+    key = str(choice or "").upper()
+    payload = _payload(conv)
+    nonce = str(payload.get("self_confirm_nonce") or "").strip()
+    if key == "NEW":
+        start_new_listing(db, conv, {"intent": "SELL"}, [])
+        pl = _payload(conv)
+        pl["awaiting_self_next_action"] = False
+        pl["self_ready_for_next"] = False
+        pl["self_selected_next"] = None
+        pl["listing_edit_mode"] = False
+        _write_payload(conv, pl)
+        return (
+            "✅ Nayi listing shuru.\n"
+            "Gaadi/machine ki details + photos bhej dijiye "
+            "(category, brand, model, year, price)."
+        )
+    if key == "UPDATE":
+        draft = _resume_office_last_for_update(db, conv)
+        pl = _payload(conv)
+        pl["awaiting_self_next_action"] = False
+        pl["self_ready_for_next"] = False
+        pl["self_selected_next"] = None
+        pl["listing_edit_mode"] = True
+        pl["self_edit_review_pending"] = True
+        _write_payload(conv, pl)
+        title = str(pl.get("office_last_live_title") or "purani listing").strip()
+        url = str(pl.get("listing_url") or pl.get("office_last_live_url") or "").strip()
+        review = summary_text(pl, lang=getattr(conv, "language", None) or "hinglish")
+        if draft is None and not review:
+            return "Purani listing nahi mili. *Nayi Listing* choose karein."
+        return (
+            f"✅ Purani listing update mode: *{title}*"
+            + (f"\n🔗 {url}" if url else "")
+            + "\n\n*Abhi listing ki details:*\n"
+            + (review or "-")
+            + "\n\nJo detail/photo change karni hai woh bhejein.\n"
+            "Change ke baad full review + Confirm milega, phir update hoga."
+        )
+    return _stage_self_selection(db, conv, "NEW")
+
+
+def handle_self_next_turn(
+    db: Session, conv: AiConversation, text: str, lang: str = "", media_note: str = ""
+) -> str | None:
+    """Customer (own number) post-live New vs Update — pick then Confirm."""
+    if _known_operator(db, conv) is not None:
+        return None
+    payload = _payload(conv)
+    if not (
+        payload.get("awaiting_self_next_action")
+        or payload.get("self_ready_for_next")
+        or payload.get("self_edit_review_pending")
+    ):
+        return None
+
+    raw = (text or "").strip()
+    msg = normalize_office_choice_text(raw)
+    choice = _explicit_office_mcq(raw)
+    up = (choice or msg).upper() if (choice or msg) else ""
+
+    # After user sent an edit: show full review + Confirm before sync.
+    if payload.get("self_edit_review_pending") and payload.get("listing_edit_mode"):
+        from .confirm import summary_text, sync_posted_product
+
+        if up in {"CONFIRM", "HAAN"} or _CHOICE_CONFIRM.match(msg):
+            ok = False
+            try:
+                ok = sync_posted_product(db, conv)
+            except Exception:
+                log.exception("self edit sync failed")
+            pl = _payload(conv)
+            pl["self_edit_review_pending"] = False
+            _write_payload(conv, pl)
+            title = str(pl.get("office_last_live_title") or "listing").strip()
+            if ok:
+                return f"✅ *{title}* update ho gaya.\nAur change ho to bhejein."
+            return f"✅ Change note kiya (*{title}*). Team sync check karegi."
+        if up == "CANCEL" or _CHOICE_CANCEL.match(msg):
+            pl = _payload(conv)
+            pl["self_edit_review_pending"] = False
+            pl["listing_edit_mode"] = False
+            _write_payload(conv, pl)
+            return "❌ Update cancel. Listing waise hi live hai."
+        # Field / photo change — let normal extract run, then wrap_self_edit_review().
+        return None
+
+    if not (payload.get("awaiting_self_next_action") or payload.get("self_ready_for_next")):
+        return None
+
+    if up == "CONFIRM" or _CHOICE_CONFIRM.match(msg):
+        selected = str(payload.get("self_selected_next") or "").upper()
+        if not selected:
+            payload["office_button_set"] = "self_pick"
+            payload["office_send_choice_buttons"] = True
+            _write_payload(conv, payload)
+            return "Pehle ek option select karein, phir *Confirm*.\n\n" + (
+                _self_post_result(payload) or "Nayi Listing / Update Previous choose karein."
+            )
+        return _execute_self_selection(db, conv, selected)
+    if up == "CANCEL" or _CHOICE_CANCEL.match(msg):
+        payload["self_selected_next"] = None
+        payload["awaiting_self_next_action"] = False
+        payload["self_ready_for_next"] = bool(
+            payload.get("office_last_live_listing_id") or payload.get("office_last_live_draft_id")
+        )
+        payload["office_button_set"] = "self_pick" if payload["self_ready_for_next"] else None
+        payload["office_send_choice_buttons"] = bool(payload["office_button_set"])
+        _write_payload(conv, payload)
+        return "❌ Cancelled. Listing waise hi live hai."
+    if up in {"NEW", "UPDATE"}:
+        return _stage_self_selection(db, conv, up)
+
+    if payload.get("awaiting_self_next_action"):
+        payload["office_button_set"] = (
+            "self_confirm" if payload.get("self_selected_next") else "self_pick"
+        )
+        payload["office_send_choice_buttons"] = True
+        _write_payload(conv, payload)
+        if payload.get("self_selected_next"):
+            return "Neeche *Confirm* / *Cancel* dabayein.\n\n" + _self_confirm_ask(payload)
+        return (
+            "Neeche *Select option* se choose karein.\n\n"
+            + (_self_post_result(payload) or "Nayi Listing ya Update Previous.")
+        )
+    return None
+
+
+def wrap_self_edit_review(db: Session, conv: AiConversation, reply: str, lang: str = "hinglish") -> str:
+    """After a customer edits a live listing, show full card + Confirm before sync."""
+    payload = _payload(conv)
+    if not (payload.get("self_edit_review_pending") and payload.get("listing_edit_mode")):
+        return reply
+    # Skip only when this turn already answered with Confirm/Cancel buttons from handle_self.
+    if payload.get("office_button_set") == "self_confirm" and "Update review" in (reply or ""):
+        return reply
+    from .confirm import summary_text
+
+    review = summary_text(payload, lang=lang or "hinglish")
+    payload["office_button_set"] = "self_confirm"
+    payload["office_send_choice_buttons"] = True
+    payload["self_selected_next"] = "UPDATE"
+    _write_payload(conv, payload)
+    body = (
+        "*Update review — ye details Confirm par sync hongi:*\n"
+        + (review or "-")
+        + "\n\nNeeche *Confirm* (update) ya *Cancel* dabayein."
+    )
+    if reply and reply.strip() and "Update review" not in reply:
+        return f"{reply}\n\n{body}"
+    return body
+
+
 def decorate_office_reply(db: Session, conv: AiConversation, reply: str) -> str:
     """Show which customer account a listing will post to at the confirm step."""
     if not reply:
         return reply
     try:
-        operator = _known_operator(db, conv) if _COOLDOWN_LINE.search(reply) else None
+        cool = bool(_COOLDOWN_LINE.search(reply))
+        operator = _known_operator(db, conv) if cool else None
         if operator is not None:
             # Office listings go live immediately — never say "team will review".
             # Office listings are approved on creation; a failed push never reaches this text.
@@ -1728,6 +2042,15 @@ def decorate_office_reply(db: Session, conv: AiConversation, reply: str) -> str:
                     arm_office_next_choice(db, conv)
                 except Exception:
                     log.exception("office_mode: arm next choice after live failed")
+        elif cool:
+            # Customer's own number — New vs Update after live.
+            self_tip = _self_post_result(_payload(conv))
+            if self_tip:
+                reply = self_tip
+                try:
+                    arm_self_next_choice(db, conv)
+                except Exception:
+                    log.exception("office_mode: arm self next choice failed")
     except Exception:
         log.exception("office_mode: cooldown strip failed")
     if "Post to:" in reply:

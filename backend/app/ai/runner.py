@@ -238,7 +238,7 @@ def parse_meta_message(msg: dict) -> dict:
         # Prefer stable button/list id (title is display-only).
         bid = str(br.get("id") or lr.get("id") or "").strip()
         title = str(br.get("title") or lr.get("title") or "").strip()
-        if bid.startswith("office_"):
+        if bid.startswith("office_") or bid.startswith("self_"):
             text = bid
         elif bid.startswith("wa_"):
             from .wa_choice import resolve_wa_choice_text
@@ -581,9 +581,18 @@ def process_inbound(
             # Office operator commands (customer select / create) run on the raw
             # text, before typo correction and the same-number account policy.
             from .agent_intro import with_agent_intro
-            from .office_mode import decorate_office_reply, handle_office_turn
+            from .office_mode import decorate_office_reply, handle_office_turn, handle_self_next_turn
 
             office_reply = handle_office_turn(db, conv, text, lang, media_note=media_note or "")
+            if office_reply is None:
+                office_reply = handle_self_next_turn(
+                    db, conv, text, lang, media_note=media_note or ""
+                )
+            # Belt: never ask category while post-desk waits for customer mobile.
+            if office_reply is None and _payload(conv).get("office_awaiting_customer"):
+                from .office_mode import _customer_select_hint
+
+                office_reply = _customer_select_hint()
             pl_office = _payload(conv)
             replay = pl_office.pop("office_replay_text", None)
             if replay:
@@ -710,6 +719,12 @@ def process_inbound(
                 # Always decorate — arms WhatsApp list/Confirm after a live office tip,
                 # including when path=office_mode (previously skipped → plain-text options).
                 reply = decorate_office_reply(db, conv, reply)
+                try:
+                    from .office_mode import wrap_self_edit_review
+
+                    reply = wrap_self_edit_review(db, conv, reply, lang)
+                except Exception:
+                    log.exception("self edit review wrap failed")
                 if path != "office_mode":
                     reply = with_agent_intro(db, conv, conv_id, mobile, lang, reply)
 

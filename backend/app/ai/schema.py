@@ -369,6 +369,14 @@ def empty_payload() -> dict:
         "office_selected_next": None,  # NEW | UPDATE | NEW_ACCOUNT
         "office_confirm_nonce": None,
         "office_executed_nonce": None,
+        # After New Account+Confirm: wait for "customer 98…" before listing collect.
+        "office_awaiting_customer": False,
+        # Customer (own number) post-live: New vs Update previous.
+        "self_ready_for_next": False,
+        "awaiting_self_next_action": False,
+        "self_selected_next": None,  # NEW | UPDATE
+        "self_confirm_nonce": None,
+        "self_edit_review_pending": False,  # show full card before sync
         # General WhatsApp interactive asks (sell/buy, confirm, menu)
         "wa_ui_pending": False,
         "wa_ui": None,
